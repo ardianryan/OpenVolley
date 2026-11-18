@@ -103,6 +103,20 @@ function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
+/**
+ * Fluid broadcast shutter/wipe curve: starts moving immediately with zero dead-zone lag
+ * and cushions smoothly into rest (prevents the "stuck for 300ms" feeling of cubic easeIn).
+ */
+function easeFluidCurtain(v: number): number {
+  const t = clamp01(v);
+  return 1 - Math.pow(1 - Math.pow(t, 1.25), 3.4);
+}
+
+function smoothRange(edge0: number, edge1: number, x: number): number {
+  const t = clamp01((x - edge0) / Math.max(0.0001, edge1 - edge0));
+  return t * t * (3 - 2 * t);
+}
+
 function loadImage(src: string): Promise<HTMLImageElement | null> {
   const safeSrc = toCorsSafeAssetUrl(src);
   if (!safeSrc) return Promise.resolve(null);
@@ -110,26 +124,49 @@ function loadImage(src: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const img = new Image();
     // Always enforce anonymous CORS / same-origin proxy so HTMLCanvasElement stays 100% origin-clean
-    // for captureStream(), toDataURL(), and toBlob(). Verify on a 1x1 scratch canvas before returning!
+    // for captureStream(), toDataURL(), and toBlob(). Pre-decode async and verify on a 1x1 scratch canvas!
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      try {
-        const probe = document.createElement('canvas');
-        probe.width = 1;
-        probe.height = 1;
-        const pCtx = probe.getContext('2d');
-        if (pCtx) {
-          pCtx.drawImage(img, 0, 0, 1, 1);
-          pCtx.getImageData(0, 0, 1, 1);
+      const finalize = () => {
+        try {
+          const probe = document.createElement('canvas');
+          probe.width = 1;
+          probe.height = 1;
+          const pCtx = probe.getContext('2d');
+          if (pCtx) {
+            pCtx.drawImage(img, 0, 0, 1, 1);
+            pCtx.getImageData(0, 0, 1, 1);
+          }
+          resolve(img);
+        } catch {
+          resolve(null);
         }
-        resolve(img);
-      } catch {
-        resolve(null);
+      };
+      if (typeof img.decode === 'function') {
+        img.decode().then(finalize).catch(finalize);
+      } else {
+        finalize();
       }
     };
     img.onerror = () => resolve(null);
     img.src = safeSrc;
   });
+}
+
+function drawContainedCanvasImage(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  cx: number,
+  cy: number,
+  maxW: number,
+  maxH: number
+) {
+  const natW = img.naturalWidth || maxW;
+  const natH = img.naturalHeight || maxH;
+  const scale = Math.min(maxW / Math.max(1, natW), maxH / Math.max(1, natH));
+  const dw = natW * scale;
+  const dh = natH * scale;
+  ctx.drawImage(img, cx - dw / 2, cy - dh / 2, dw, dh);
 }
 
 function drawRoundedRect(
@@ -513,6 +550,140 @@ function drawAuroraAndBokeh(
         : 'rgba(245, 197, 56, 0.42)';
     ctx.fill();
   }
+  ctx.restore();
+}
+
+/**
+ * ReactBits-inspired `LightRays` Volumetric God-Rays Shader for 2D Canvas.
+ * Casts additive (`screen`) top-center stadium spotlight beams downward with organic
+ * multi-frequency wave undulation, overhead source bloom, and rising golden motes.
+ */
+function drawReactBitsLightRays(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  timeSec: number,
+  opts?: {
+    intensity?: number;
+    palette?: 'gold' | 'silver' | 'bronze';
+    rayLengthRatio?: number;
+    spreadRad?: number;
+  }
+) {
+  const intensity = clamp01(opts?.intensity ?? 1);
+  if (intensity <= 0.01) return;
+
+  const rgb =
+    opts?.palette === 'silver'
+      ? ([226, 232, 240] as const)
+      : opts?.palette === 'bronze'
+        ? ([253, 186, 116] as const)
+        : ([253, 224, 71] as const);
+
+  const coreRgb =
+    opts?.palette === 'silver'
+      ? ([255, 255, 255] as const)
+      : opts?.palette === 'bronze'
+        ? ([254, 215, 170] as const)
+        : ([255, 251, 235] as const);
+
+  const originX = w * 0.5 + Math.sin(timeSec * 0.42) * (w * 0.035);
+  const originY = -h * 0.14;
+  const maxLen = Math.hypot(w * 0.65, h) * (opts?.rayLengthRatio ?? 1.02);
+  const spread = opts?.spreadRad ?? 0.58;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+
+  // 1. Soft Top-Center Volumetric Ceiling Source Halo
+  const haloR = Math.max(w, h) * 0.62;
+  const haloGrad = ctx.createRadialGradient(
+    originX,
+    h * 0.02,
+    0,
+    originX,
+    h * 0.02,
+    haloR
+  );
+  haloGrad.addColorStop(0, `rgba(${coreRgb[0]}, ${coreRgb[1]}, ${coreRgb[2]}, ${(0.34 * intensity).toFixed(3)})`);
+  haloGrad.addColorStop(0.28, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${(0.16 * intensity).toFixed(3)})`);
+  haloGrad.addColorStop(0.68, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${(0.04 * intensity).toFixed(3)})`);
+  haloGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = haloGrad;
+  ctx.fillRect(0, 0, w, h);
+
+  // 2. 15 Multi-Harmonic Volumetric God-Ray Cones (Wide Soft Feather + Warm Core)
+  const rayCount = 15;
+  for (let i = 0; i < rayCount; i++) {
+    const norm = rayCount > 1 ? i / (rayCount - 1) - 0.5 : 0; // -0.5 .. +0.5
+    const centerFalloff = Math.cos(norm * Math.PI * 0.92); // brightest near center
+    const waveA = Math.sin(timeSec * 1.15 + i * 1.67);
+    const waveB = Math.cos(timeSec * 0.73 - i * 1.13);
+    const pulse = 0.55 + 0.45 * (waveA * 0.6 + waveB * 0.4);
+
+    const baseAngle = Math.PI * 0.5 + norm * spread * 2 + waveA * 0.022;
+    const halfSpreadOuter = (0.042 + (i % 3) * 0.014) * (0.85 + 0.3 * pulse);
+    const rayLen = maxLen * (0.78 + 0.22 * pulse);
+
+    const endCenterX = originX + Math.cos(baseAngle) * rayLen;
+    const endCenterY = originY + Math.sin(baseAngle) * rayLen;
+
+    const alphaOuter = 0.105 * intensity * centerFalloff * pulse;
+    if (alphaOuter > 0.004) {
+      const grad = ctx.createLinearGradient(originX, originY, endCenterX, endCenterY);
+      grad.addColorStop(0, `rgba(${coreRgb[0]}, ${coreRgb[1]}, ${coreRgb[2]}, ${(alphaOuter * 1.35).toFixed(3)})`);
+      grad.addColorStop(0.35, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alphaOuter.toFixed(3)})`);
+      grad.addColorStop(0.78, `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${(alphaOuter * 0.25).toFixed(3)})`);
+      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(originX, originY);
+      ctx.lineTo(
+        originX + Math.cos(baseAngle - halfSpreadOuter) * rayLen,
+        originY + Math.sin(baseAngle - halfSpreadOuter) * rayLen
+      );
+      ctx.lineTo(
+        originX + Math.cos(baseAngle + halfSpreadOuter) * rayLen,
+        originY + Math.sin(baseAngle + halfSpreadOuter) * rayLen
+      );
+      ctx.closePath();
+      ctx.fill();
+
+      // Inner luminous core filament
+      const halfSpreadCore = halfSpreadOuter * 0.36;
+      ctx.beginPath();
+      ctx.moveTo(originX, originY);
+      ctx.lineTo(
+        originX + Math.cos(baseAngle - halfSpreadCore) * (rayLen * 0.88),
+        originY + Math.sin(baseAngle - halfSpreadCore) * (rayLen * 0.88)
+      );
+      ctx.lineTo(
+        originX + Math.cos(baseAngle + halfSpreadCore) * (rayLen * 0.88),
+        originY + Math.sin(baseAngle + halfSpreadCore) * (rayLen * 0.88)
+      );
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // 3. Subtle Volumetric Dust Motes Drifting Gently Inside the Light Cone
+  for (let m = 0; m < 16; m++) {
+    const seedX = ((m * 137.5) % 100) / 100;
+    const seedY = ((m * 293.7) % 100) / 100;
+    const my = (((seedY - timeSec * (0.032 + (m % 3) * 0.008)) % 1) + 1) % 1;
+    const mx =
+      0.16 +
+      seedX * 0.68 +
+      Math.sin(timeSec * 0.8 + m) * 0.025;
+    const r = 1.6 + (m % 3) * 1.1;
+    const twinkle = (0.35 + 0.65 * Math.abs(Math.sin(timeSec * 1.4 + m * 2.1))) * (1 - my * 0.7);
+    ctx.beginPath();
+    ctx.arc(mx * w, my * h * 0.78, r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${coreRgb[0]}, ${coreRgb[1]}, ${coreRgb[2]}, ${(0.38 * intensity * twinkle).toFixed(3)})`;
+    ctx.fill();
+  }
+
   ctx.restore();
 }
 
@@ -971,26 +1142,32 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         ctx.restore();
       };
 
-      const computeKenBurnsTransform = (slideIdx: number, prog: number) => {
-        const eased = easeInOutCubic(clamp01(prog));
+      const computeKenBurnsTransform = (
+        slideIdx: number,
+        prog: number,
+        entrySettleBoost = 0
+      ) => {
+        // Linear + cosine drift (never freezes at t=0 when Scene 3 doors open!)
+        const p = clamp01(prog);
+        const settleZoom = entrySettleBoost * 0.065;
         if (slideIdx % 3 === 0) {
           return {
-            zoom: 1.13 - 0.1 * eased,
-            panX: Math.sin(eased * Math.PI) * (w * 0.02),
+            zoom: 1.12 - 0.09 * p + settleZoom,
+            panX: Math.sin(p * Math.PI) * (w * 0.018),
             panY: 0,
           };
         }
         if (slideIdx % 3 === 1) {
           return {
-            zoom: 1.03 + 0.09 * eased,
-            panX: (0.5 - eased) * (w * 0.03),
+            zoom: 1.03 + 0.08 * p + settleZoom,
+            panX: (0.5 - p) * (w * 0.026),
             panY: 0,
           };
         }
         return {
-          zoom: 1.12 - 0.09 * eased,
+          zoom: 1.11 - 0.08 * p + settleZoom,
           panX: 0,
-          panY: (0.5 - eased) * (h * 0.025),
+          panY: (0.5 - p) * (h * 0.022),
         };
       };
 
@@ -1016,8 +1193,13 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           const vidSource = canDrawLiveVideo ? vidEl : videoCoverImg;
 
           if (vidSource) {
+            const settle = animSlide
+              ? 1 - easeOutQuint(clamp01(elapsedInScene4 / 1.15))
+              : 0;
             const breathe = animSlide
-              ? 1.03 - 0.03 * clamp01(elapsedInScene4 / Math.max(1, timeline.scene4HoldSec))
+              ? 1.03 -
+                0.03 * clamp01(elapsedInScene4 / Math.max(1, timeline.scene4HoldSec)) +
+                settle * 0.055
               : 1;
             drawMediaCoverRect(vidSource, 0, 0, w, h, breathe, 0, 0);
           } else {
@@ -1107,15 +1289,23 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
             elapsedInScene4,
             timeline.scene4HoldSec
           );
+          const entrySettle =
+            slide.primaryIdx === 0
+              ? 1 - easeOutQuint(clamp01(elapsedInScene4 / 1.15))
+              : 0;
           const curImg = validPhotos[slide.primaryIdx] ?? validPhotos[0]!;
-          const kbCur = computeKenBurnsTransform(slide.primaryIdx, slide.localProgressPrimary);
+          const kbCur = computeKenBurnsTransform(
+            slide.primaryIdx,
+            slide.localProgressPrimary,
+            entrySettle
+          );
           drawMediaCoverRect(curImg, 0, 0, w, h, kbCur.zoom, kbCur.panX, kbCur.panY);
 
           if (slide.nextIdx !== null && slide.wipeProgress > 0) {
             const nextImg = validPhotos[slide.nextIdx];
             if (nextImg) {
               const kbNext = computeKenBurnsTransform(slide.nextIdx, slide.localProgressNext);
-              const easedWipe = easeInOutCubic(slide.wipeProgress);
+              const easedWipe = easeFluidCurtain(slide.wipeProgress);
               const leadX = -w * 0.35 + easedWipe * (w * 1.95);
 
               ctx.save();
@@ -1173,6 +1363,18 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
         if (animSlide) {
           drawAuroraAndBokeh(ctx, w, h, globalT, 0.45 * uiProgress, 'dark');
+        }
+        if (template === 'champion' || effectiveStageKey === 'final') {
+          drawReactBitsLightRays(ctx, w, h, globalT, {
+            intensity: animSlide ? 0.36 * clamp01(uiProgress * 1.15) : 0.34,
+            palette:
+              template === 'champion' && podiumVariant === 'runner_up'
+                ? 'silver'
+                : template === 'champion' && podiumVariant === 'third_place'
+                  ? 'bronze'
+                  : 'gold',
+            rayLengthRatio: 0.78,
+          });
         }
 
         // Top Brand Watermark (SVC + AVERSA) with Strict Anti-Collision Bounding Box
@@ -1245,11 +1447,13 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
         const slideY = (1 - easeOutQuint(cardT)) * 120;
         const floatY = animSlide ? Math.sin(globalT * 2.1) * 4 : 0;
-        const boxW = isLandscape ? Math.round(w * 0.76) : w - pad * 2;
+        const boxW = isLandscape ? Math.round(w * 0.71) : w - pad * 2;
         const boxH = Math.round(
           u *
             (template === 'highlight'
-              ? 0.22
+              ? isStory
+                ? 0.28
+                : 0.255
               : template === 'champion' && podiumVariant === 'podium_all'
                 ? isStory
                   ? 0.36
@@ -1484,15 +1688,16 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
               let textStartX = rx + rkW + 20;
               if (r.logo) {
-                const lgS = Math.round(rowH * 0.72);
-                ctx.drawImage(
+                const lgS = Math.round(rowH * 0.76);
+                drawContainedCanvasImage(
+                  ctx,
                   r.logo,
-                  textStartX,
-                  ry + (rowH - lgS) / 2,
+                  textStartX + lgS / 2,
+                  ry + rowH / 2,
                   lgS,
                   lgS
                 );
-                textStartX += lgS + 14;
+                textStartX += lgS + 16;
               }
 
               const tLabel = r.team
@@ -1535,41 +1740,82 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   : '#FACC15';
 
             const midY = boxY + Math.round(boxH * 0.47);
-            const crestSize = Math.round(boxH * 0.44);
-            let nameCenterX = w / 2;
-            let maxNameW = boxW - 56;
-
-            if (spotLogo) {
-              const crestX = boxX + 28;
-              const crestY = midY - Math.round(crestSize / 2);
-              drawRoundedRect(
-                ctx,
-                crestX - 8,
-                crestY - 8,
-                crestSize + 16,
-                crestSize + 16,
-                18
-              );
-              ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-              ctx.fill();
-              ctx.drawImage(spotLogo, crestX, crestY, crestSize, crestSize);
-              const leftReserved = crestSize + 52;
-              maxNameW = boxW - leftReserved - 28;
-              nameCenterX = boxX + leftReserved + maxNameW / 2;
-            }
-
+            const crestSize = Math.round(boxH * 0.52);
             const splicedSpot = splitTeamRegionName(
               spotTeam?.name || 'CHAMPION TEAM',
               spotTeam?.school
             );
+
+            const maxAllowedNameW = spotLogo
+              ? boxW - (crestSize + 64)
+              : boxW - 56;
+
             const fittedChamp = fitSingleLine(
               ctx,
               splicedSpot.primary.toUpperCase(),
-              maxNameW,
-              Math.round(boxH * 0.25),
+              maxAllowedNameW,
+              Math.round(boxH * 0.26),
               Math.round(boxH * 0.13),
               '800 {SIZE}px "Barlow Condensed", sans-serif'
             );
+            const fittedReg = splicedSpot.region
+              ? fitSingleLine(
+                  ctx,
+                  splicedSpot.region.toUpperCase(),
+                  maxAllowedNameW,
+                  Math.round(boxH * 0.11),
+                  Math.round(boxH * 0.072),
+                  '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
+                )
+              : null;
+
+            ctx.font = `800 ${fittedChamp.fontSize}px "Barlow Condensed", sans-serif`;
+            const champW = ctx.measureText(fittedChamp.text).width;
+            let regW = 0;
+            if (fittedReg) {
+              ctx.font = `700 ${fittedReg.fontSize}px "Plus Jakarta Sans", sans-serif`;
+              regW = ctx.measureText(fittedReg.text).width;
+            }
+            const textBlockW = Math.max(champW, regW);
+
+            let nameCenterX = w / 2;
+            if (spotLogo) {
+              const lockupGap = Math.round(boxH * 0.11);
+              const crestPad = 16;
+              const totalLockupW = Math.min(
+                boxW - 44,
+                crestSize + crestPad + lockupGap + textBlockW
+              );
+              const lockupLeft = Math.round(w / 2 - totalLockupW / 2);
+              const crestBoxCenterX = lockupLeft + (crestSize + crestPad) / 2;
+
+              drawRoundedRect(
+                ctx,
+                crestBoxCenterX - (crestSize + crestPad) / 2,
+                midY - (crestSize + crestPad) / 2,
+                crestSize + crestPad,
+                crestSize + crestPad,
+                18
+              );
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+              ctx.fill();
+              ctx.lineWidth = 1.4;
+              ctx.strokeStyle = 'rgba(250, 204, 21, 0.28)';
+              ctx.stroke();
+
+              drawContainedCanvasImage(
+                ctx,
+                spotLogo,
+                crestBoxCenterX,
+                midY,
+                crestSize,
+                crestSize
+              );
+
+              nameCenterX =
+                lockupLeft + crestSize + crestPad + lockupGap + textBlockW / 2;
+            }
+
             ctx.textAlign = 'center';
             ctx.font = `800 ${fittedChamp.fontSize}px "Barlow Condensed", sans-serif`;
             fillShinyText(
@@ -1577,28 +1823,20 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
               fittedChamp.text,
               nameCenterX,
               splicedSpot.region
-                ? midY - Math.round(boxH * 0.02)
+                ? midY - Math.round(boxH * 0.015)
                 : midY + Math.round(fittedChamp.fontSize * 0.34),
               animSlide ? globalT * 0.45 : 0.45,
               shineBase,
               '#FFFFFF'
             );
 
-            if (splicedSpot.region) {
-              const fittedReg = fitSingleLine(
-                ctx,
-                splicedSpot.region.toUpperCase(),
-                maxNameW,
-                Math.round(boxH * 0.105),
-                Math.round(boxH * 0.07),
-                '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
-              );
+            if (fittedReg) {
               ctx.fillStyle = '#CBD5E1';
               ctx.font = `700 ${fittedReg.fontSize}px "Plus Jakarta Sans", sans-serif`;
               ctx.fillText(
                 fittedReg.text,
                 nameCenterX,
-                midY + Math.round(boxH * 0.125)
+                midY + Math.round(boxH * 0.135)
               );
             }
           }
@@ -1623,15 +1861,15 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           return;
         }
 
-        // Center Score inside [boxY + 0.22*boxH .. boxY + 0.70*boxH]
+        // Center Score inside [boxY + 0.18*boxH .. boxY + 0.72*boxH]
         const countEase = animSlide ? easeOutQuint(clamp01((uiProgress - 0.18) / 0.82)) : 1;
         const dispA = Math.round(scoreA * countEase);
         const dispB = Math.round(scoreB * countEase);
         const scoreStr = template === 'upcoming' ? 'VS' : `${dispA} : ${dispB}`;
-        const scoreFont = Math.round(boxH * 0.32);
-        const midBandY = boxY + Math.round(boxH * 0.46);
+        const scoreFont = Math.round(boxH * 0.365);
+        const midBandY = boxY + Math.round(boxH * 0.455);
         ctx.font = `800 ${scoreFont}px "Barlow Condensed", sans-serif`;
-        const scoreBlockW = ctx.measureText(scoreStr).width + Math.round(u * 0.055);
+        const scoreBlockW = ctx.measureText(scoreStr).width + Math.round(boxW * 0.052);
 
         fillShinyText(
           ctx,
@@ -1643,16 +1881,23 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           '#FFFBEB'
         );
 
-        // Smart-Spliced Team Names strictly clamped between outer logo & center score block
+        // Proportional School Crests (~2x larger!) & Readable Team Typography
         const splicedA = splitTeamRegionName(teamA?.name || 'TIM A', teamA?.school);
         const splicedB = splitTeamRegionName(teamB?.name || 'TIM B', teamB?.school);
 
-        const tLogoSize = Math.round(boxH * 0.21);
+        const tLogoSize = Math.round(boxH * (isLandscape ? 0.41 : 0.37));
+        const logoPad = 12;
+        const logoBoxS = tLogoSize + logoPad;
+        const logoInsetX = Math.max(20, Math.round(boxW * 0.032));
         const sideTotalW = (boxW - scoreBlockW) / 2;
-        const leftOuterPad = assets.teamALogo ? tLogoSize + 28 : 20;
-        const rightOuterPad = assets.teamBLogo ? tLogoSize + 28 : 20;
-        const leftAvailW = Math.max(110, sideTotalW - leftOuterPad - 12);
-        const rightAvailW = Math.max(110, sideTotalW - rightOuterPad - 12);
+        const leftOuterPad = assets.teamALogo
+          ? logoInsetX + logoBoxS + Math.round(boxW * 0.018)
+          : 24;
+        const rightOuterPad = assets.teamBLogo
+          ? logoInsetX + logoBoxS + Math.round(boxW * 0.018)
+          : 24;
+        const leftAvailW = Math.max(108, sideTotalW - leftOuterPad - 10);
+        const rightAvailW = Math.max(108, sideTotalW - rightOuterPad - 10);
         const leftColCenter = boxX + leftOuterPad + leftAvailW / 2;
         const rightColCenter = boxX + boxW - rightOuterPad - rightAvailW / 2;
 
@@ -1662,39 +1907,78 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           maxColW: number
         ) => {
           const hasRegion = Boolean(spliced.region);
-          const fittedP = fitSingleLine(
-            ctx,
-            spliced.primary,
-            maxColW,
-            Math.round(boxH * 0.155),
-            Math.round(boxH * 0.09),
-            '800 {SIZE}px "Barlow Condensed", sans-serif'
-          );
-          ctx.fillStyle = '#FFFFFF';
-          ctx.font = `800 ${fittedP.fontSize}px "Barlow Condensed", sans-serif`;
-          ctx.fillText(
-            fittedP.text,
-            cx,
-            hasRegion
-              ? midBandY - Math.round(boxH * 0.015)
-              : midBandY + Math.round(fittedP.fontSize * 0.34)
-          );
+          const baseNameSize = Math.round(boxH * 0.215);
+          const minSingleSize = Math.round(boxH * 0.135);
+
+          ctx.font = `800 ${minSingleSize}px "Barlow Condensed", sans-serif`;
+          const fitsOneLineWell =
+            ctx.measureText(spliced.primary).width <= maxColW;
+
+          if (fitsOneLineWell) {
+            const fittedP = fitSingleLine(
+              ctx,
+              spliced.primary,
+              maxColW,
+              baseNameSize,
+              minSingleSize,
+              '800 {SIZE}px "Barlow Condensed", sans-serif'
+            );
+            ctx.fillStyle = '#FFFFFF';
+            ctx.textAlign = 'center';
+            ctx.font = `800 ${fittedP.fontSize}px "Barlow Condensed", sans-serif`;
+            ctx.fillText(
+              fittedP.text,
+              cx,
+              hasRegion
+                ? midBandY - Math.round(boxH * 0.01)
+                : midBandY + Math.round(fittedP.fontSize * 0.34)
+            );
+          } else {
+            const wrapped = wrapAndFitLines(
+              ctx,
+              spliced.primary,
+              maxColW,
+              Math.round(boxH * 0.165),
+              Math.round(boxH * 0.108),
+              '800 {SIZE}px "Barlow Condensed", sans-serif',
+              2
+            );
+            const lineStep = Math.round(wrapped.fontSize * 1.02);
+            const blockH =
+              wrapped.lines.length * lineStep -
+              (lineStep - wrapped.fontSize);
+            const startBaseY = hasRegion
+              ? midBandY -
+                Math.round(boxH * 0.055) -
+                Math.round((blockH - wrapped.fontSize) / 2)
+              : midBandY +
+                Math.round(wrapped.fontSize * 0.32) -
+                Math.round(((wrapped.lines.length - 1) * lineStep) / 2);
+
+            ctx.fillStyle = '#FFFFFF';
+            ctx.textAlign = 'center';
+            ctx.font = `800 ${wrapped.fontSize}px "Barlow Condensed", sans-serif`;
+            wrapped.lines.forEach((ln, idx) => {
+              ctx.fillText(ln, cx, startBaseY + idx * lineStep);
+            });
+          }
 
           if (hasRegion) {
             const fittedR = fitSingleLine(
               ctx,
               spliced.region,
               maxColW,
-              Math.round(boxH * 0.09),
-              Math.round(boxH * 0.062),
+              Math.round(boxH * 0.105),
+              Math.round(boxH * 0.068),
               '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
             );
             ctx.fillStyle = '#FDE68A';
+            ctx.textAlign = 'center';
             ctx.font = `700 ${fittedR.fontSize}px "Plus Jakarta Sans", sans-serif`;
             ctx.fillText(
               fittedR.text,
               cx,
-              midBandY + Math.round(boxH * 0.095)
+              midBandY + Math.round(boxH * 0.128)
             );
           }
         };
@@ -1703,26 +1987,58 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         drawCardTeam(splicedB, rightColCenter, rightAvailW);
 
         if (assets.teamALogo) {
-          ctx.drawImage(
+          const lx = boxX + logoInsetX + logoBoxS / 2;
+          drawRoundedRect(
+            ctx,
+            lx - logoBoxS / 2,
+            midBandY - logoBoxS / 2,
+            logoBoxS,
+            logoBoxS,
+            16
+          );
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.065)';
+          ctx.fill();
+          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = 'rgba(245, 197, 56, 0.24)';
+          ctx.stroke();
+          drawContainedCanvasImage(
+            ctx,
             assets.teamALogo,
-            boxX + 18,
-            midBandY - tLogoSize / 2,
+            lx,
+            midBandY,
             tLogoSize,
             tLogoSize
           );
         }
         if (assets.teamBLogo) {
-          ctx.drawImage(
+          const rx = boxX + boxW - logoInsetX - logoBoxS / 2;
+          drawRoundedRect(
+            ctx,
+            rx - logoBoxS / 2,
+            midBandY - logoBoxS / 2,
+            logoBoxS,
+            logoBoxS,
+            16
+          );
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.065)';
+          ctx.fill();
+          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = 'rgba(245, 197, 56, 0.24)';
+          ctx.stroke();
+          drawContainedCanvasImage(
+            ctx,
             assets.teamBLogo,
-            boxX + boxW - 18 - tLogoSize,
-            midBandY - tLogoSize / 2,
+            rx,
+            midBandY,
             tLogoSize,
             tLogoSize
           );
         }
 
-        const setSummary = activeMatch?.sets.length
-          ? activeMatch.sets.map((s) => `${s.scoreA}-${s.scoreB}`).join('  |  ')
+        const playedSets =
+          activeMatch?.sets.filter((s) => s.scoreA > 0 || s.scoreB > 0) ?? [];
+        const setSummary = playedSets.length
+          ? playedSets.map((s) => `${s.scoreA}-${s.scoreB}`).join('  |  ')
           : '';
 
         if (template === 'upcoming') {
@@ -1734,16 +2050,16 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
             ctx,
             schedLine,
             pillMaxW - 36,
-            Math.round(boxH * 0.095),
-            Math.round(boxH * 0.062),
+            Math.round(boxH * 0.1),
+            Math.round(boxH * 0.065),
             '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
           );
           ctx.font = `800 ${fittedSched.fontSize}px "Plus Jakarta Sans", sans-serif`;
           const schedTextW = ctx.measureText(fittedSched.text).width;
-          const schedPillH = Math.round(boxH * 0.165);
+          const schedPillH = Math.round(boxH * 0.168);
           const schedPillW = Math.min(pillMaxW, Math.round(schedTextW + 38));
           const schedPillX = Math.round(w / 2 - schedPillW / 2);
-          const schedPillY = boxY + Math.round(boxH * 0.765);
+          const schedPillY = boxY + Math.round(boxH * 0.768);
 
           drawRoundedRect(ctx, schedPillX, schedPillY, schedPillW, schedPillH, 999);
           ctx.fillStyle = 'rgba(2, 132, 199, 0.24)';
@@ -1758,19 +2074,21 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           ctx.fillText(fittedSched.text, w / 2, schedPillY + schedPillH / 2 + 1);
           ctx.textBaseline = 'alphabetic';
         } else {
+          const fallbackMatchMeta = `${tournament?.name || 'SVC'}  •  ${activeMatch?.courtName || 'Official Match'}`;
           const footerLine =
-            caption.trim() || setSummary || activeMatch?.courtName || 'SVC • AVERSA';
+            caption.trim() || setSummary || fallbackMatchMeta;
           const fittedFooter = fitSingleLine(
             ctx,
             footerLine,
             boxW - 48,
-            Math.round(boxH * 0.09),
-            Math.round(boxH * 0.065),
+            Math.round(boxH * 0.1),
+            Math.round(boxH * 0.068),
             '600 {SIZE}px "Plus Jakarta Sans", sans-serif'
           );
           ctx.fillStyle = '#E2E8F0';
+          ctx.textAlign = 'center';
           ctx.font = `600 ${fittedFooter.fontSize}px "Plus Jakarta Sans", sans-serif`;
-          ctx.fillText(fittedFooter.text, w / 2, boxY + Math.round(boxH * 0.875));
+          ctx.fillText(fittedFooter.text, w / 2, boxY + Math.round(boxH * 0.885));
         }
         ctx.restore();
       };
@@ -2182,8 +2500,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       // ----------------------------------------------------------------
       const drawScene3Matchup = (time: number, doorSplit: number) => {
         if (template === 'champion') {
-          const enterP = clamp01((time - 4.55) / 0.85);
-          const slideOffset = doorSplit * (isLandscape ? w * 0.62 : h * 0.68);
+          const enterP = clamp01((time - 4.32) / 0.88);
           const spotTeam =
             podiumVariant === 'runner_up'
               ? resolvedPodium2
@@ -2196,146 +2513,307 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
               : podiumVariant === 'third_place'
                 ? assets.podium3Logo
                 : assets.podium1Logo;
+          const rayPalette =
+            podiumVariant === 'runner_up'
+              ? ('silver' as const)
+              : podiumVariant === 'third_place'
+                ? ('bronze' as const)
+                : ('gold' as const);
+          const seamStroke =
+            podiumVariant === 'runner_up'
+              ? '#E2E8F0'
+              : podiumVariant === 'third_place'
+                ? '#FB923C'
+                : '#FACC15';
 
-          ctx.save();
+          const renderRoyalBackdrop = () => {
+            const royalGrad = ctx.createLinearGradient(0, 0, w, h);
+            royalGrad.addColorStop(0, '#070B14');
+            royalGrad.addColorStop(0.52, '#111A2E');
+            royalGrad.addColorStop(1, '#1E1608');
+            ctx.fillStyle = royalGrad;
+            ctx.fillRect(-w * 0.6, -h * 0.6, w * 2.2, h * 2.2);
+
+            drawAuroraAndBokeh(ctx, w, h, time, 0.65, 'dark');
+            drawReactBitsLightRays(ctx, w, h, time, {
+              intensity: 0.92 * easeOutCubic(enterP),
+              palette: rayPalette,
+              rayLengthRatio: 1.05,
+              spreadRad: 0.6,
+            });
+          };
+
+          // 1. TWO SYMMETRIC DIAGONAL ROYAL SHUTTER DOORS (100% Full Off-Screen Clearance!)
           if (isLandscape) {
-            ctx.translate(0, -slideOffset);
-          } else {
-            ctx.translate(0, -slideOffset);
-          }
+            const sx = doorSplit * w * 0.68;
 
-          const royalGrad = ctx.createLinearGradient(0, 0, w, h);
-          royalGrad.addColorStop(0, '#090D16');
-          royalGrad.addColorStop(0.5, '#172036');
-          royalGrad.addColorStop(1, '#291D09');
-          ctx.fillStyle = royalGrad;
-          ctx.fillRect(0, 0, w, h);
-
-          drawAuroraAndBokeh(ctx, w, h, time, 0.72, 'dark');
-
-          if (assets.burstRays) {
-            const rayS = Math.round(u * 0.92);
+            // Left Door
             ctx.save();
-            ctx.globalAlpha = 0.24 * enterP;
-            ctx.translate(w / 2, h * 0.46);
-            ctx.rotate(time * 0.18);
-            ctx.drawImage(assets.burstRays, -rayS / 2, -rayS / 2, rayS, rayS);
+            ctx.translate(-sx, 0);
+            ctx.beginPath();
+            ctx.moveTo(-w * 0.6, 0);
+            ctx.lineTo(w * 0.54, 0);
+            ctx.lineTo(w * 0.46, h);
+            ctx.lineTo(-w * 0.6, h);
+            ctx.closePath();
+            ctx.clip();
+            renderRoyalBackdrop();
+            if (doorSplit > 0.005) {
+              ctx.strokeStyle = seamStroke;
+              ctx.lineWidth = Math.max(6, u * 0.007);
+              ctx.beginPath();
+              ctx.moveTo(w * 0.54, -20);
+              ctx.lineTo(w * 0.46, h + 20);
+              ctx.stroke();
+            }
+            ctx.restore();
+
+            // Right Door
+            ctx.save();
+            ctx.translate(sx, 0);
+            ctx.beginPath();
+            ctx.moveTo(w * 0.54, 0);
+            ctx.lineTo(w * 1.6, 0);
+            ctx.lineTo(w * 1.6, h);
+            ctx.lineTo(w * 0.46, h);
+            ctx.closePath();
+            ctx.clip();
+            renderRoyalBackdrop();
+            if (doorSplit > 0.005) {
+              ctx.strokeStyle = seamStroke;
+              ctx.lineWidth = Math.max(6, u * 0.007);
+              ctx.beginPath();
+              ctx.moveTo(w * 0.54, -20);
+              ctx.lineTo(w * 0.46, h + 20);
+              ctx.stroke();
+            }
+            ctx.restore();
+          } else {
+            const sx = doorSplit * w * 0.6;
+            const sy = doorSplit * h * 0.84;
+
+            // Upper-Left Door
+            ctx.save();
+            ctx.translate(-sx, -sy);
+            ctx.beginPath();
+            ctx.moveTo(-w * 0.6, -h * 0.6);
+            ctx.lineTo(w * 1.6, -h * 0.6);
+            ctx.lineTo(w * 1.6, h * 0.44 - 0.12 * (w * 0.6));
+            ctx.lineTo(w, h * 0.44);
+            ctx.lineTo(0, h * 0.56);
+            ctx.lineTo(-w * 0.6, h * 0.56 + 0.12 * (w * 0.6));
+            ctx.closePath();
+            ctx.clip();
+            renderRoyalBackdrop();
+            if (doorSplit > 0.005) {
+              ctx.strokeStyle = seamStroke;
+              ctx.lineWidth = Math.max(6, u * 0.007);
+              ctx.beginPath();
+              ctx.moveTo(-w * 0.3, h * 0.56 + w * 0.036);
+              ctx.lineTo(w * 1.3, h * 0.44 - w * 0.036);
+              ctx.stroke();
+            }
+            ctx.restore();
+
+            // Lower-Right Door
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.beginPath();
+            ctx.moveTo(-w * 0.6, h * 0.56 + 0.12 * (w * 0.6));
+            ctx.lineTo(0, h * 0.56);
+            ctx.lineTo(w, h * 0.44);
+            ctx.lineTo(w * 1.6, h * 0.44 - 0.12 * (w * 0.6));
+            ctx.lineTo(w * 1.6, h * 1.6);
+            ctx.lineTo(-w * 0.6, h * 1.6);
+            ctx.closePath();
+            ctx.clip();
+            renderRoyalBackdrop();
+            if (doorSplit > 0.005) {
+              ctx.strokeStyle = seamStroke;
+              ctx.lineWidth = Math.max(6, u * 0.007);
+              ctx.beginPath();
+              ctx.moveTo(-w * 0.3, h * 0.56 + w * 0.036);
+              ctx.lineTo(w * 1.3, h * 0.44 - w * 0.036);
+              ctx.stroke();
+            }
             ctx.restore();
           }
 
-          drawVectorCrown(
-            ctx,
-            w / 2,
-            safeTop + Math.round(u * 0.08),
-            Math.round(u * 0.11 * easeOutBack(enterP)),
-            '#FACC15'
-          );
+          // 2. CORONATION CENTERPIECE WITH CAMERA ZOOM-THROUGH DISSOLVE
+          const centerFade = 1 - smoothRange(0.02, 0.66, doorSplit);
+          if (centerFade > 0.01) {
+            const camZoom = 1 + doorSplit * 0.16;
+            const floatCrest = Math.sin(time * 2.1) * 6;
 
-          ctx.textAlign = 'center';
-          ctx.font = `800 ${Math.round(u * 0.044)}px "Plus Jakarta Sans", sans-serif`;
-          fillShinyText(
-            ctx,
-            statusHeadline,
-            w / 2,
-            safeTop + Math.round(u * 0.19),
-            time * 0.55,
-            '#FACC15',
-            '#FFFFFF'
-          );
+            ctx.save();
+            ctx.globalAlpha = centerFade;
+            ctx.translate(w / 2, h / 2);
+            ctx.scale(camZoom, camZoom);
+            ctx.translate(-w / 2, -h / 2);
 
-          if (podiumVariant === 'podium_all') {
-            const pList = [
-              { rk: '1ST CHAMPION', tm: resolvedPodium1, col: '#FACC15' },
-              { rk: '2ND RUNNER-UP', tm: resolvedPodium2, col: '#E2E8F0' },
-              { rk: '3RD PLACE', tm: resolvedPodium3, col: '#FB923C' },
-            ];
-            let py = Math.round(h * 0.34);
-            const cardH = Math.round(u * 0.13);
-            pList.forEach((pItem, idx) => {
-              const localE = easeOutCubic(clamp01((enterP - idx * 0.15) / 0.7));
-              ctx.save();
-              ctx.globalAlpha = localE;
-              const cw = Math.round(w * (isLandscape ? 0.64 : 0.84));
-              const cx = Math.round((w - cw) / 2);
-              drawRoundedRect(ctx, cx, py + (1 - localE) * 24, cw, cardH, 20);
-              ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-              ctx.fill();
-              ctx.lineWidth = 2.5;
-              ctx.strokeStyle = pItem.col;
-              ctx.stroke();
-
-              ctx.fillStyle = pItem.col;
-              ctx.font = `800 ${Math.round(cardH * 0.25)}px "Plus Jakarta Sans", sans-serif`;
-              ctx.fillText(pItem.rk, w / 2, py + cardH * 0.34);
-
-              const fittedN = fitSingleLine(
-                ctx,
-                (pItem.tm?.name || 'TBD').toUpperCase(),
-                cw - 40,
-                Math.round(cardH * 0.38),
-                Math.round(cardH * 0.24),
-                '800 {SIZE}px "Barlow Condensed", sans-serif'
-              );
-              ctx.fillStyle = '#FFFFFF';
-              ctx.font = `800 ${fittedN.fontSize}px "Barlow Condensed", sans-serif`;
-              ctx.fillText(fittedN.text, w / 2, py + cardH * 0.78);
-              ctx.restore();
-              py += cardH + Math.round(u * 0.028);
-            });
-          } else {
-            const crestR = Math.round(u * 0.24 * easeOutBack(enterP));
-            if (spotLogo && crestR > 10) {
-              ctx.drawImage(
-                spotLogo,
-                w / 2 - crestR / 2,
-                h * 0.42 - crestR / 2,
-                crestR,
-                crestR
-              );
-            }
-            const fittedW = fitSingleLine(
+            drawVectorCrown(
               ctx,
-              (spotTeam?.name || 'CHAMPIONS').toUpperCase(),
-              w * 0.84,
-              Math.round(u * 0.095),
-              Math.round(u * 0.05),
-              '800 {SIZE}px "Barlow Condensed", sans-serif'
+              w / 2,
+              safeTop + Math.round(u * 0.082),
+              Math.round(u * 0.108 * easeOutBack(enterP)),
+              seamStroke
             );
-            ctx.font = `800 ${fittedW.fontSize}px "Barlow Condensed", sans-serif`;
+
+            ctx.textAlign = 'center';
+            ctx.font = `800 ${Math.round(u * 0.044)}px "Plus Jakarta Sans", sans-serif`;
             fillShinyText(
               ctx,
-              fittedW.text,
+              statusHeadline,
               w / 2,
-              Math.round(h * 0.66),
-              time * 0.5,
-              '#FACC15',
+              safeTop + Math.round(u * 0.19),
+              time * 0.55,
+              seamStroke,
               '#FFFFFF'
             );
-            if (spotTeam?.school) {
-              ctx.fillStyle = '#E2E8F0';
-              ctx.font = `700 ${Math.round(u * 0.034)}px "Plus Jakarta Sans", sans-serif`;
-              ctx.fillText(
-                spotTeam.school.toUpperCase(),
+
+            if (podiumVariant === 'podium_all') {
+              const pList = [
+                { rk: '1ST CHAMPION', tm: resolvedPodium1, col: '#FACC15' },
+                { rk: '2ND RUNNER-UP', tm: resolvedPodium2, col: '#E2E8F0' },
+                { rk: '3RD PLACE', tm: resolvedPodium3, col: '#FB923C' },
+              ];
+              let py = Math.round(h * 0.33);
+              const cardH = Math.round(u * 0.13);
+              pList.forEach((pItem, idx) => {
+                const localE = easeOutQuint(clamp01((enterP - idx * 0.12) / 0.72));
+                ctx.save();
+                ctx.globalAlpha = centerFade * localE;
+                const cw = Math.round(w * (isLandscape ? 0.64 : 0.84));
+                const cx = Math.round((w - cw) / 2);
+                drawRoundedRect(ctx, cx, py + (1 - localE) * 26, cw, cardH, 20);
+                ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+                ctx.fill();
+                ctx.lineWidth = 2.5;
+                ctx.strokeStyle = pItem.col;
+                ctx.stroke();
+
+                ctx.fillStyle = pItem.col;
+                ctx.font = `800 ${Math.round(cardH * 0.25)}px "Plus Jakarta Sans", sans-serif`;
+                ctx.fillText(pItem.rk, w / 2, py + (1 - localE) * 26 + cardH * 0.34);
+
+                const fittedN = fitSingleLine(
+                  ctx,
+                  (pItem.tm?.name || 'TBD').toUpperCase(),
+                  cw - 40,
+                  Math.round(cardH * 0.38),
+                  Math.round(cardH * 0.24),
+                  '800 {SIZE}px "Barlow Condensed", sans-serif'
+                );
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = `800 ${fittedN.fontSize}px "Barlow Condensed", sans-serif`;
+                ctx.fillText(fittedN.text, w / 2, py + (1 - localE) * 26 + cardH * 0.78);
+                ctx.restore();
+                py += cardH + Math.round(u * 0.028);
+              });
+            } else {
+              const crestScale = easeOutQuint(enterP);
+              const crestR = Math.round(u * 0.245 * crestScale);
+              const crestCY = h * 0.43 + floatCrest;
+
+              // Soft golden aura ring behind the Winner Crest
+              const crestGlow = ctx.createRadialGradient(
                 w / 2,
-                Math.round(h * 0.72)
+                crestCY,
+                crestR * 0.1,
+                w / 2,
+                crestCY,
+                crestR * 0.92
               );
+              crestGlow.addColorStop(0, 'rgba(250, 204, 21, 0.28)');
+              crestGlow.addColorStop(1, 'rgba(250, 204, 21, 0)');
+              ctx.fillStyle = crestGlow;
+              ctx.beginPath();
+              ctx.arc(w / 2, crestCY, crestR * 0.92, 0, Math.PI * 2);
+              ctx.fill();
+
+              if (spotLogo && crestR > 10) {
+                ctx.save();
+                ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+                ctx.shadowBlur = 24;
+                ctx.drawImage(
+                  spotLogo,
+                  w / 2 - crestR / 2,
+                  crestCY - crestR / 2,
+                  crestR,
+                  crestR
+                );
+                ctx.restore();
+              }
+
+              const nameEnter = easeOutQuint(clamp01((enterP - 0.1) / 0.85));
+              const nameLift = (1 - nameEnter) * 28;
+              const fittedW = fitSingleLine(
+                ctx,
+                (spotTeam?.name || 'CHAMPIONS').toUpperCase(),
+                w * 0.84,
+                Math.round(u * 0.095),
+                Math.round(u * 0.05),
+                '800 {SIZE}px "Barlow Condensed", sans-serif'
+              );
+              ctx.save();
+              ctx.globalAlpha = centerFade * nameEnter;
+              ctx.font = `800 ${fittedW.fontSize}px "Barlow Condensed", sans-serif`;
+              fillShinyText(
+                ctx,
+                fittedW.text,
+                w / 2,
+                Math.round(h * 0.66) + nameLift,
+                time * 0.5,
+                seamStroke,
+                '#FFFFFF'
+              );
+              if (spotTeam?.school) {
+                ctx.fillStyle = '#E2E8F0';
+                ctx.font = `700 ${Math.round(u * 0.034)}px "Plus Jakarta Sans", sans-serif`;
+                ctx.fillText(
+                  spotTeam.school.toUpperCase(),
+                  w / 2,
+                  Math.round(h * 0.72) + nameLift
+                );
+              }
+              ctx.restore();
             }
+
+            ctx.fillStyle = '#FDE68A';
+            ctx.font = `800 ${Math.round(u * 0.026)}px "Plus Jakarta Sans", sans-serif`;
+            ctx.fillText(
+              `${tournament?.name || 'SVC'} • ${data.settings?.eventName || ''}`.toUpperCase(),
+              w / 2,
+              h - safeBottom
+            );
+            ctx.restore();
           }
 
-          ctx.fillStyle = '#FDE68A';
-          ctx.font = `800 ${Math.round(u * 0.028)}px "Plus Jakarta Sans", sans-serif`;
-          ctx.fillText(
-            `${tournament?.name || 'SVC'} • ${data.settings?.eventName || ''}`.toUpperCase(),
-            w / 2,
-            h - safeBottom
-          );
-          ctx.restore();
+          // 3. SOFT VOLUMETRIC GOLDEN FLASH BLOOM ALONG THE PARTING SEAM
+          if (doorSplit > 0.01 && doorSplit < 0.92) {
+            const flashAlpha = Math.sin(clamp01(doorSplit / 0.92) * Math.PI) * 0.24;
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen';
+            const flashGrad = ctx.createRadialGradient(
+              w / 2,
+              h / 2,
+              0,
+              w / 2,
+              h / 2,
+              Math.max(w, h) * 0.55
+            );
+            flashGrad.addColorStop(0, `rgba(254, 240, 138, ${flashAlpha.toFixed(3)})`);
+            flashGrad.addColorStop(1, 'rgba(254, 240, 138, 0)');
+            ctx.fillStyle = flashGrad;
+            ctx.fillRect(0, 0, w, h);
+            ctx.restore();
+          }
           return;
         }
 
-        const enterP = clamp01((time - 4.55) / 0.9);
-        const teamBP = clamp01((time - 4.7) / 0.9);
-        const drift = clamp01((time - 4.5) / 3.5) * 20 - 10;
+        const enterP = clamp01((time - 4.32) / 0.9);
+        const teamBP = clamp01((time - 4.48) / 0.9);
+        const drift = clamp01((time - 4.35) / 3.6) * 20 - 10;
         const splicedMatchA = splitTeamRegionName(teamA?.name || 'TIM A', teamA?.school);
         const splicedMatchB = splitTeamRegionName(teamB?.name || 'TIM B', teamB?.school);
 
@@ -2351,7 +2829,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           prog: number,
           primaryCol: string,
           regionCol: string,
-          shineCol?: string
+          shineCol?: string,
+          logoImg?: HTMLImageElement | null
         ) => {
           const measured = measureWrappedBlock(
             ctx,
@@ -2362,17 +2841,40 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
             '800 {SIZE}px "Barlow Condensed", sans-serif',
             2
           );
+          const availBandH = Math.max(80, bandBottom - bandTop);
+          const crestH = logoImg
+            ? Math.min(Math.round(availBandH * 0.34), Math.round(u * (isSquare ? 0.1 : 0.128)))
+            : 0;
+          const crestGap = logoImg ? Math.round(crestH * 0.22) : 0;
           const regGap = spliced.region ? Math.round(regionSize * 0.42) : 0;
           const regH = spliced.region ? regionSize : 0;
-          const blockTotalH = measured.totalH + regGap + regH;
+          const blockTotalH = crestH + crestGap + measured.totalH + regGap + regH;
           const bandMid = (bandTop + bandBottom) / 2;
-          const blockTop = Math.max(bandTop, Math.round(bandMid - blockTotalH / 2));
+          let curTop = Math.max(bandTop, Math.round(bandMid - blockTotalH / 2));
+
+          if (logoImg && crestH > 12) {
+            const cScale = easeOutBack(clamp01(prog / 0.72));
+            if (cScale > 0.02) {
+              ctx.save();
+              ctx.globalAlpha = easeOutCubic(clamp01(prog / 0.55));
+              drawContainedCanvasImage(
+                ctx,
+                logoImg,
+                cx,
+                curTop + crestH / 2,
+                crestH * cScale,
+                crestH * cScale
+              );
+              ctx.restore();
+            }
+            curTop += crestH + crestGap;
+          }
 
           const res = drawWrappedBlock(
             ctx,
             spliced.primary,
             cx,
-            blockTop,
+            curTop,
             maxColW,
             basePrimary,
             minPrimary,
@@ -2412,9 +2914,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
         if (isLandscape) {
           // ============================================================
-          // 16:9 LANDSCAPE: LEFT GOLD DOOR vs RIGHT SLATE DOOR (0% Overlap)
+          // 16:9 LANDSCAPE: LEFT GOLD DOOR vs RIGHT SLATE DOOR (Full 100% Off-Screen Clearance)
           // ============================================================
-          const slideX = doorSplit * w * 0.58;
+          const slideX = doorSplit * w * 0.68;
 
           // 1. LEFT GOLD DOOR (Team A)
           ctx.save();
@@ -2445,15 +2947,17 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           renderTeamCenteredInBand(
             splicedMatchA,
             Math.round(w * 0.235 - drift * 0.4),
-            Math.round(h * 0.24),
-            Math.round(h * 0.78),
+            Math.round(h * 0.2),
+            Math.round(h * 0.8),
             Math.round(w * 0.37),
             Math.round(u * 0.088),
             Math.round(u * 0.052),
             Math.round(u * 0.036),
             enterP,
             '#0F172A',
-            '#78350F'
+            '#78350F',
+            undefined,
+            assets.teamALogo
           );
 
           ctx.strokeStyle = '#FFFFFF';
@@ -2491,8 +2995,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           renderTeamCenteredInBand(
             splicedMatchB,
             Math.round(w * 0.765 + drift * 0.4),
-            Math.round(h * 0.24),
-            Math.round(h * 0.78),
+            Math.round(h * 0.2),
+            Math.round(h * 0.8),
             Math.round(w * 0.37),
             Math.round(u * 0.088),
             Math.round(u * 0.052),
@@ -2500,7 +3004,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
             teamBP,
             '#FFFFFF',
             '#F9DC76',
-            '#FDE68A'
+            '#FDE68A',
+            assets.teamBLogo
           );
 
           ctx.strokeStyle = '#F5C538';
@@ -2623,10 +3128,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         }
 
         // ============================================================
-        // 9:16, 4:5, & 1:1: STRICT NON-OVERLAPPING BANDS AROUND VS
+        // 9:16, 4:5, & 1:1: STRICT NON-OVERLAPPING BANDS AROUND VS (Full 100% Off-Screen Clearance)
         // ============================================================
-        const splitShiftX = doorSplit * w * 0.42;
-        const splitShiftY = doorSplit * h * 0.66;
+        const splitShiftX = doorSplit * w * 0.58;
+        const splitShiftY = doorSplit * h * 0.82;
         const badgeW = Math.round(u * 0.56);
         const badgeH = Math.round(u * (isSquare ? 0.054 : 0.064));
         const topBadgeY = safeTop + Math.round(u * 0.008);
@@ -2678,15 +3183,17 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         renderTeamCenteredInBand(
           splicedMatchA,
           w / 2 - drift * 0.6,
-          topBadgeY + badgeH + Math.round(u * 0.018),
-          Math.round(h * 0.5 - vsOuterR - u * 0.02),
+          topBadgeY + badgeH + Math.round(u * 0.016),
+          Math.round(h * 0.5 - vsOuterR - u * 0.018),
           Math.round(w * 0.86),
-          Math.round(u * (isSquare ? 0.074 : isPost45 ? 0.088 : 0.1)),
+          Math.round(u * (isSquare ? 0.072 : isPost45 ? 0.086 : 0.098)),
           Math.round(u * 0.048),
           Math.round(u * (isSquare ? 0.03 : 0.038)),
           enterP,
           '#0F172A',
-          '#78350F'
+          '#78350F',
+          undefined,
+          assets.teamALogo
         );
 
         ctx.strokeStyle = '#FFFFFF';
@@ -2726,16 +3233,17 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         renderTeamCenteredInBand(
           splicedMatchB,
           w / 2 + drift * 0.6,
-          Math.round(h * 0.5 + vsOuterR + u * 0.022),
-          footerY - Math.round(u * 0.05),
+          Math.round(h * 0.5 + vsOuterR + u * 0.02),
+          footerY - Math.round(u * 0.046),
           Math.round(w * 0.86),
-          Math.round(u * (isSquare ? 0.074 : isPost45 ? 0.088 : 0.1)),
+          Math.round(u * (isSquare ? 0.072 : isPost45 ? 0.086 : 0.098)),
           Math.round(u * 0.048),
           Math.round(u * (isSquare ? 0.03 : 0.038)),
           teamBP,
           '#FFFFFF',
           '#F9DC76',
-          '#FDE68A'
+          '#FDE68A',
+          assets.teamBLogo
         );
 
         ctx.textAlign = 'center';
@@ -3273,14 +3781,14 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
         if (t >= 2.55) {
           if (t < 4.4) {
-            const wipeIn = clamp01((t - 2.55) / 0.8);
+            const wipeIn = clamp01((t - 2.55) / 0.78);
             const ribbons = [
-              { col: '#E09D17', delay: 0, span: 0.72 },
-              { col: '#1E293B', delay: 0.11, span: 0.72 },
-              { col: '#0B0F19', delay: 0.22, span: 0.78 },
+              { col: '#E09D17', delay: 0, span: 0.7 },
+              { col: '#1E293B', delay: 0.09, span: 0.72 },
+              { col: '#0B0F19', delay: 0.18, span: 0.78 },
             ];
             for (const rb of ribbons) {
-              const rp = easeInOutCubic(clamp01((wipeIn - rb.delay) / rb.span));
+              const rp = easeFluidCurtain(clamp01((wipeIn - rb.delay) / rb.span));
               if (rp <= 0) continue;
               const leadX = -w * 0.45 + rp * (w * 2.15);
               ctx.save();
@@ -3295,21 +3803,20 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
               ctx.restore();
             }
 
-            if (wipeIn > 0.55) {
-              drawAuroraAndBokeh(
-                ctx,
-                w,
-                h,
-                t,
-                clamp01((wipeIn - 0.55) / 0.45) * 0.85,
-                'dark'
-              );
+            if (wipeIn > 0.45) {
+              const stingerAmb = clamp01((wipeIn - 0.45) / 0.55);
+              drawAuroraAndBokeh(ctx, w, h, t, stingerAmb * 0.78, 'dark');
+              drawReactBitsLightRays(ctx, w, h, t, {
+                intensity: stingerAmb * 0.48,
+                palette: 'gold',
+                rayLengthRatio: 0.85,
+              });
             }
           } else {
-            // 4.40s..5.25s: Split dark stinger curtain along Scene 3's exact slash angle!
-            const openP = easeInOutCubic(clamp01((t - 4.4) / 0.85));
+            // 4.40s..5.25s: Split dark stinger curtain along Scene 3's exact slash angle (fluid zero-lag curve)!
+            const openP = easeFluidCurtain(clamp01((t - 4.4) / 0.82));
             if (isLandscape) {
-              const sx = openP * w * 0.6;
+              const sx = openP * w * 0.68;
               ctx.save();
               ctx.translate(-sx, 0);
               ctx.fillStyle = '#0B0F19';
@@ -3346,8 +3853,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
               ctx.stroke();
               ctx.restore();
             } else {
-              const sx = openP * w * 0.46;
-              const sy = openP * h * 0.7;
+              const sx = openP * w * 0.58;
+              const sy = openP * h * 0.82;
 
               ctx.save();
               ctx.translate(-sx, -sy);
@@ -3487,22 +3994,22 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         return;
       }
 
-      // 2. PURE SCENE 3 MATCHUP (5.25s - 7.65s)
-      if (t < 7.65) {
+      // 2. PURE SCENE 3 MATCHUP (5.25s - 7.60s)
+      if (t < 7.6) {
         drawScene3Matchup(t, 0);
         drawSafeZoneOverlay();
         return;
       }
 
-      // 3. OVERLAPPING SHUTTER-DOOR TRANSITION (7.65s - 8.90s) + ADAPTIVE SCENE 4 HOLD
+      // 3. FLUID SHUTTER-DOOR TRANSITION (7.60s - 8.85s) + ADAPTIVE SCENE 4 HOLD
       const shouldRunOutro = includeOutro && t >= timeline.outroStartSec;
       if (!shouldRunOutro) {
-        const elapsedInScene4 = Math.max(0, t - timeline.scene4StartSec);
-        const uiProgress = clamp01((t - 8.2) / 0.95);
+        const elapsedInScene4 = Math.max(0, t - 7.6);
+        const uiProgress = clamp01((t - 7.78) / 0.92);
         drawPhotoAndScoreboard(elapsedInScene4, uiProgress, true, t);
 
-        if (t < 8.95) {
-          const doorSplit = easeInOutCubic(clamp01((t - 7.65) / 1.25));
+        if (t < 8.88) {
+          const doorSplit = easeFluidCurtain(clamp01((t - 7.6) / 1.22));
           drawScene3Matchup(t, doorSplit);
         }
 
@@ -3512,10 +4019,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
       // 4. SMOOTH DIAGONAL GOLD WIPE FROM SCENE 4 -> SCENE 5 OUTRO
       if (t < timeline.outroWipeEndSec) {
-        const elapsedInScene4 = Math.max(0, t - timeline.scene4StartSec);
+        const elapsedInScene4 = Math.max(0, t - 7.6);
         drawPhotoAndScoreboard(elapsedInScene4, 1, true, t);
 
-        const wipeP = easeInOutCubic(
+        const wipeP = easeFluidCurtain(
           clamp01((t - timeline.outroStartSec) / 1.08)
         );
         const leadX = -w * 0.45 + wipeP * (w * 2.15);
@@ -3781,7 +4288,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         return;
       }
 
-      if (elapsedSec < 7.55) {
+      if (elapsedSec < 7.48) {
         if (!v.paused) v.pause();
         if (Math.abs(v.currentTime - videoClip.trimStart) > 0.15) {
           v.currentTime = videoClip.trimStart;
@@ -3794,7 +4301,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         return;
       }
 
-      const relSec = Math.max(0, elapsedSec - 7.65);
+      const relSec = Math.max(0, elapsedSec - 7.6);
       const targetSec = Math.min(videoClip.trimEnd, videoClip.trimStart + relSec);
       if (v.paused && targetSec < videoClip.trimEnd - 0.05) {
         v.play().catch(() => {});
@@ -3998,7 +4505,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
           const mediaNode = ctx.createMediaElementSource(clipAudioEl);
           const clipGain = ctx.createGain();
-          const clipStartCtx = startAt + 7.65;
+          const clipStartCtx = startAt + 7.6;
           const safeSpan = Math.max(0.3, timeline.scene4HoldSec);
 
           clipGain.gain.setValueAtTime(0.0001, ctx.currentTime);
@@ -4073,11 +4580,53 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     ]
   );
 
+  // Pre-upload all photo, video, crest, & sponsor textures to GPU VRAM before animation starts
+  // so Scene 3 -> Scene 4 (7.60s) never experiences a synchronous bitmap/VRAM upload stall!
+  const warmUpGpuTextures = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const a = loadedAssetsRef.current;
+    const allImgs: Array<HTMLImageElement | HTMLVideoElement | null | undefined> = [
+      ...a.photos,
+      videoCoverImg,
+      hiddenVideoRef.current && hiddenVideoRef.current.readyState >= 2
+        ? hiddenVideoRef.current
+        : null,
+      a.mainLogo,
+      a.coLogo,
+      a.organizerLogo,
+      a.spikerOfficial,
+      a.ballOfficial,
+      a.netOfficial,
+      a.teamALogo,
+      a.teamBLogo,
+      a.podium1Logo,
+      a.podium2Logo,
+      a.podium3Logo,
+      ...a.sponsors.map((s) => s.img),
+    ];
+    ctx.save();
+    ctx.globalAlpha = 0.001;
+    for (const item of allImgs) {
+      if (!item) continue;
+      try {
+        ctx.drawImage(item, 0, 0, 2, 2);
+      } catch {
+        // Ignore if not yet ready
+      }
+    }
+    ctx.restore();
+  }, [videoCoverImg]);
+
   const handlePlayPreview = async () => {
     if (previewPlaying || exportingVideo) return;
     setPreviewPlaying(true);
     await unlockHiddenVideoGesture();
     syncHiddenVideoAt(0, false);
+    warmUpGpuTextures();
+    renderFrame(0, true, showSafeZone);
     const totalDur = timeline.totalDurationSec;
     const session = await startBroadcastAudioSession('preview');
     const start = performance.now();
@@ -4117,6 +4666,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     setVideoProgress(0);
     await unlockHiddenVideoGesture();
     syncHiddenVideoAt(0, false);
+    warmUpGpuTextures();
+    renderFrame(0, true, false);
 
     try {
       const totalDur = timeline.totalDurationSec;

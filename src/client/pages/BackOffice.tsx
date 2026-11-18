@@ -1,7 +1,10 @@
 import {
   ArrowUpRight,
   BarChart3,
+  Building2,
+  CalendarClock,
   Camera,
+  ChevronDown,
   ExternalLink,
   FileText,
   GitBranch,
@@ -17,6 +20,11 @@ import {
   Users,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import {
+  getDefaultLandingSection,
+  hasAnyPermission,
+  type PermissionKey,
+} from '../../shared/rbac';
 import type { SupportedErrorCode } from '../../shared/routes';
 import { ChangePasswordModal } from '../components/ChangePasswordModal';
 import { ErrorPage } from '../components/ErrorPage';
@@ -27,11 +35,17 @@ import { syncDocumentBranding } from '../lib/seo';
 import type { AuthUser, OverviewData } from '../types';
 import { AdminDashboard } from './AdminDashboard';
 import { LiveOperator } from './LiveOperator';
+import { MasterTeamsManager } from './MasterTeamsManager';
 import { MediaStudio } from './MediaStudio';
 import { OfficialDocuments } from './OfficialDocuments';
+import { ScheduleCourtsManager } from './ScheduleCourtsManager';
+import { TvScreensManager } from './TvScreensManager';
 
 type BackOfficeSection =
   | 'overview'
+  | 'contingents'
+  | 'schedule'
+  | 'tv_screens'
   | 'operator'
   | 'tournaments'
   | 'documents'
@@ -41,6 +55,9 @@ type BackOfficeSection =
 
 const SECTION_TO_PATH: Record<BackOfficeSection, string> = {
   overview: '/back-office/beranda',
+  contingents: '/back-office/kontingen',
+  schedule: '/back-office/jadwal',
+  tv_screens: '/back-office/layar-tv',
   operator: '/back-office/operator',
   tournaments: '/back-office/bagan',
   documents: '/back-office/dokumen',
@@ -51,6 +68,9 @@ const SECTION_TO_PATH: Record<BackOfficeSection, string> = {
 
 const PATH_TO_SECTION: Record<string, BackOfficeSection> = {
   '/back-office/beranda': 'overview',
+  '/back-office/kontingen': 'contingents',
+  '/back-office/jadwal': 'schedule',
+  '/back-office/layar-tv': 'tv_screens',
   '/back-office/operator': 'operator',
   '/back-office/bagan': 'tournaments',
   '/back-office/dokumen': 'documents',
@@ -59,17 +79,15 @@ const PATH_TO_SECTION: Record<string, BackOfficeSection> = {
   '/back-office/akun': 'users',
 };
 
-const SECTION_ALLOWED_ROLES: Record<BackOfficeSection, Array<AuthUser['role']>> = {
-  overview: ['admin', 'panitia'],
-  operator: ['admin', 'panitia'],
-  tournaments: ['admin', 'panitia'],
-  documents: ['admin', 'panitia'],
-  media: ['admin', 'media'],
-  branding: ['admin'],
-  users: ['admin'],
-};
+function canUserAccessSection(
+  user: AuthUser | null | undefined,
+  section: BackOfficeSection
+): boolean {
+  if (!user) return false;
+  return hasAnyPermission(user.permissions, user.role, [section as PermissionKey]);
+}
 
-function getInitialSection(role?: AuthUser['role']): BackOfficeSection {
+function getInitialSection(user?: AuthUser): BackOfficeSection {
   if (typeof window !== 'undefined') {
     const cleanPath = window.location.pathname.replace(/\/+$/, '');
     const fromPath = PATH_TO_SECTION[cleanPath];
@@ -78,12 +96,18 @@ function getInitialSection(role?: AuthUser['role']): BackOfficeSection {
     }
     const saved = localStorage.getItem('ov_bo_section') as BackOfficeSection | null;
     if (saved && saved in SECTION_TO_PATH) {
-      if (!role || SECTION_ALLOWED_ROLES[saved].includes(role)) {
+      if (!user || canUserAccessSection(user, saved)) {
         return saved;
       }
     }
   }
-  return role === 'media' ? 'media' : 'overview';
+  if (user) {
+    return getDefaultLandingSection(
+      user.permissions,
+      user.role
+    ) as BackOfficeSection;
+  }
+  return 'overview';
 }
 
 export function BackOffice() {
@@ -91,8 +115,30 @@ export function BackOffice() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [data, setData] = useState<OverviewData | null>(null);
   const [loadError, setLoadError] = useState<SupportedErrorCode | null>(null);
+  const SECTION_TO_GROUP: Partial<Record<BackOfficeSection, string>> = {
+    contingents: 'master',
+    schedule: 'master',
+    tournaments: 'master',
+    operator: 'arena',
+    tv_screens: 'arena',
+    documents: 'media_pub',
+    media: 'media_pub',
+    branding: 'system',
+    users: 'system',
+  };
+
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [section, setSectionState] = useState<BackOfficeSection>(() => getInitialSection());
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
+    const initial = getInitialSection();
+    const grp = SECTION_TO_GROUP[initial];
+    return grp ? { [grp]: true } : {};
+  });
+
+  useEffect(() => {
+    const grp = SECTION_TO_GROUP[section];
+    setOpenGroups(grp ? { [grp]: true } : {});
+  }, [section]);
 
   const setSection = useCallback((next: BackOfficeSection) => {
     setSectionState(next);
@@ -120,9 +166,20 @@ export function BackOffice() {
   const loadData = useCallback(async (u: AuthUser) => {
     try {
       setLoadError(null);
-      const endpoint =
-        u.role === 'media' ? '/api/public/overview' : '/api/admin/overview';
-      const res = await apiFetch<OverviewData>(endpoint);
+      const canReadAdminOverview = hasAnyPermission(u.permissions, u.role, [
+        'overview',
+        'contingents',
+        'schedule',
+        'tournaments',
+        'operator',
+        'tv_screens',
+        'documents',
+        'branding',
+      ]);
+      const endpoint = canReadAdminOverview
+        ? `/api/admin/overview?_=${Date.now()}`
+        : `/api/public/overview?_=${Date.now()}`;
+      const res = await apiFetch<OverviewData>(endpoint, { cache: 'no-store' });
       setData(res);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -144,7 +201,7 @@ export function BackOffice() {
         setUser(res.user);
         const cleanPath = window.location.pathname.replace(/\/+$/, '');
         if (cleanPath === '/back-office') {
-          setSection(getInitialSection(res.user.role));
+          setSection(getInitialSection(res.user));
         } else if (cleanPath in PATH_TO_SECTION) {
           setSectionState(PATH_TO_SECTION[cleanPath]);
         }
@@ -156,11 +213,36 @@ export function BackOffice() {
           .catch(() => {});
       })
       .finally(() => setCheckingAuth(false));
-  }, [loadData]);
+  }, [loadData, setSection]);
 
   useEffect(() => {
     syncDocumentBranding(data?.settings, 'Back-Office');
   }, [data?.settings]);
+
+  // Keep Back-Office (Media Studio / Multi-Operator / Admin) live-synced via SSE
+  useEffect(() => {
+    if (!user) return;
+    const es = new EventSource('/api/public/stream');
+    for (const ev of [
+      'match_updated',
+      'bracket_updated',
+      'draw_slot_updated',
+      'master_teams_updated',
+      'courts_updated',
+      'tv_screen_updated',
+      'report_added',
+      'report_deleted',
+      'tournament_updated',
+      'settings_updated',
+    ]) {
+      es.addEventListener(ev, () => {
+        loadData(user);
+      });
+    }
+    return () => {
+      es.close();
+    };
+  }, [user, loadData]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -171,7 +253,7 @@ export function BackOffice() {
         body: JSON.stringify({ username, password }),
       });
       setUser(res.user);
-      setSection(getInitialSection(res.user.role));
+      setSection(getInitialSection(res.user));
       await loadData(res.user);
     } catch (err) {
       setLoginError((err as Error).message);
@@ -287,70 +369,82 @@ export function BackOffice() {
     label: string;
     shortLabel: string;
     icon: typeof Radio;
-    roles: AuthUser['role'][];
   }> = [
     {
       id: 'overview',
       label: 'Beranda',
       shortLabel: 'Beranda',
       icon: Home,
-      roles: ['admin', 'panitia'],
     },
     {
-      id: 'operator',
-      label: 'Live Operator',
-      shortLabel: 'Skor',
-      icon: Radio,
-      roles: ['admin', 'panitia'],
+      id: 'contingents',
+      label: 'Master Kontingen',
+      shortLabel: 'Kontingen',
+      icon: Building2,
     },
     {
       id: 'tournaments',
       label: 'Kategori & Bagan',
       shortLabel: 'Bagan',
       icon: GitBranch,
-      roles: ['admin', 'panitia'],
+    },
+    {
+      id: 'schedule',
+      label: 'Master Lapangan & Jadwal',
+      shortLabel: 'Jadwal',
+      icon: CalendarClock,
+    },
+    {
+      id: 'operator',
+      label: 'Live Operator',
+      shortLabel: 'Skor',
+      icon: Radio,
+    },
+    {
+      id: 'tv_screens',
+      label: 'Remote Layar TV',
+      shortLabel: 'TV',
+      icon: Monitor,
     },
     {
       id: 'documents',
       label: 'Dokumen Resmi',
       shortLabel: 'Dokumen',
       icon: FileText,
-      roles: ['admin', 'panitia'],
     },
     {
       id: 'media',
       label: 'Media Studio',
       shortLabel: 'Media',
       icon: Camera,
-      roles: ['admin', 'media'],
     },
     {
       id: 'branding',
       label: 'Branding & Logo',
       shortLabel: 'Brand',
       icon: Palette,
-      roles: ['admin'],
     },
     {
       id: 'users',
       label: 'Manajemen Akun',
       shortLabel: 'Akun',
       icon: Users,
-      roles: ['admin'],
     },
   ];
 
-  const allowedNav = navItems.filter((item) => item.roles.includes(user.role));
-  const defaultRoleSection: BackOfficeSection =
-    user.role === 'media' ? 'media' : 'overview';
+  const allowedNav = navItems.filter((item) => canUserAccessSection(user, item.id));
+  const defaultRoleSection: BackOfficeSection = getDefaultLandingSection(
+    user.permissions,
+    user.role
+  ) as BackOfficeSection;
 
-  // Enforce 403 Forbidden page if user navigates directly to a Back-Office URL outside their role
-  if (!SECTION_ALLOWED_ROLES[section].includes(user.role)) {
+  // Enforce 403 Forbidden page if user navigates directly to a Back-Office URL outside their permissions
+  if (!canUserAccessSection(user, section)) {
     return (
       <ErrorPage
         code={403}
-        customMessage={`Akun Anda (${user.role.toUpperCase()}) tidak memiliki izin untuk membuka halaman ini. Silakan kembali ke menu kerja yang sesuai dengan role Anda.`}
-        primaryActionLabel="Buka Menu Role Saya"
+        customMessage={`Akun Anda (${(user.roleName || user.role).toUpperCase()}) tidak memiliki izin untuk membuka halaman ini. Silakan kembali ke menu kerja yang diizinkan.`}
+        primaryActionLabel="Buka Menu Utama Saya"
         onPrimaryAction={() => setSection(defaultRoleSection)}
       />
     );
@@ -387,15 +481,39 @@ export function BackOffice() {
       icon: Radio,
       colorClass: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
       onClick: () => setSection('operator'),
-      visible: user.role !== 'media',
+      visible: canUserAccessSection(user, 'operator'),
+    },
+    {
+      title: 'Master Kontingen',
+      subtitle: `${(data?.masterTeams ?? []).length} tim terdaftar`,
+      icon: Building2,
+      colorClass: 'bg-sky-500/15 text-sky-600 dark:text-sky-400',
+      onClick: () => setSection('contingents'),
+      visible: canUserAccessSection(user, 'contingents'),
     },
     {
       title: 'Bagan & Undian',
-      subtitle: 'Atur 16 / 8 tim',
+      subtitle: 'TM Draw & Pool',
       icon: GitBranch,
       colorClass: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
       onClick: () => setSection('tournaments'),
-      visible: user.role !== 'media',
+      visible: canUserAccessSection(user, 'tournaments'),
+    },
+    {
+      title: 'Master Lapangan',
+      subtitle: `${(data?.masterCourts ?? []).length} lapangan • Tarik Jadwal`,
+      icon: CalendarClock,
+      colorClass: 'bg-orange-500/15 text-orange-600 dark:text-orange-400',
+      onClick: () => setSection('schedule'),
+      visible: canUserAccessSection(user, 'schedule'),
+    },
+    {
+      title: 'Remote Layar TV',
+      subtitle: `${(data?.tvScreens ?? []).length} profil layar & Banner`,
+      icon: Monitor,
+      colorClass: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400',
+      onClick: () => setSection('tv_screens'),
+      visible: canUserAccessSection(user, 'tv_screens'),
     },
     {
       title: 'Dokumen Resmi',
@@ -403,7 +521,7 @@ export function BackOffice() {
       icon: FileText,
       colorClass: 'bg-teal-500/15 text-teal-700 dark:text-teal-400',
       onClick: () => setSection('documents'),
-      visible: user.role !== 'media',
+      visible: canUserAccessSection(user, 'documents'),
     },
     {
       title: 'Media Studio',
@@ -411,7 +529,7 @@ export function BackOffice() {
       icon: Camera,
       colorClass: 'bg-rose-500/15 text-rose-700 dark:text-rose-400',
       onClick: () => setSection('media'),
-      visible: user.role === 'admin' || user.role === 'media',
+      visible: canUserAccessSection(user, 'media'),
     },
     {
       title: 'Branding SVC',
@@ -419,15 +537,15 @@ export function BackOffice() {
       icon: Palette,
       colorClass: 'bg-sky-500/15 text-sky-600 dark:text-sky-400',
       onClick: () => setSection('branding'),
-      visible: user.role === 'admin',
+      visible: canUserAccessSection(user, 'branding'),
     },
     {
       title: 'Kelola Akun',
-      subtitle: 'Panitia & media',
+      subtitle: 'Role & izin menu',
       icon: Users,
       colorClass: 'bg-violet-500/15 text-violet-600 dark:text-violet-400',
       onClick: () => setSection('users'),
-      visible: user.role === 'admin',
+      visible: canUserAccessSection(user, 'users'),
     },
     {
       title: 'Layar TV Arena',
@@ -437,7 +555,9 @@ export function BackOffice() {
       onClick: () => {
         window.open('/tv', '_blank', 'noopener,noreferrer');
       },
-      visible: true,
+      visible:
+        canUserAccessSection(user, 'tv_screens') ||
+        canUserAccessSection(user, 'branding'),
     },
     {
       title: 'Portal Publik',
@@ -452,11 +572,14 @@ export function BackOffice() {
   ].filter((q) => q.visible);
 
   const roleLabel =
-    user.role === 'admin'
+    user.roleName ||
+    (user.role === 'admin'
       ? 'Admin'
       : user.role === 'panitia'
         ? 'Panitia'
-        : 'Tim Media';
+        : user.role === 'media'
+          ? 'Tim Media'
+          : user.role);
   const currentNav = allowedNav.find((n) => n.id === section);
 
   return (
@@ -481,25 +604,126 @@ export function BackOffice() {
             </div>
           </div>
 
-          {/* Sidebar Navigation */}
-          <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-            {allowedNav.map((item) => {
-              const Icon = item.icon;
-              const isActive = section === item.id;
+          {/* Sidebar Navigation (Grouped Accordions) */}
+          <nav className="flex-1 space-y-2.5 overflow-y-auto p-3">
+            {/* Pinned Home Item */}
+            {allowedNav
+              .filter((item) => item.id === 'overview')
+              .map((item) => {
+                const Icon = item.icon;
+                const isActive = section === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setSection(item.id)}
+                    className={`flex min-h-10 w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left text-xs font-bold transition ${
+                      isActive
+                        ? 'bg-amber-500 text-slate-950 shadow-sm shadow-amber-500/20'
+                        : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/70'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+
+            {(
+              [
+                {
+                  key: 'master',
+                  title: 'Master & Bagan',
+                  ids: ['contingents', 'schedule', 'tournaments'] as BackOfficeSection[],
+                },
+                {
+                  key: 'arena',
+                  title: 'Arena & Layar TV',
+                  ids: ['operator', 'tv_screens'] as BackOfficeSection[],
+                },
+                {
+                  key: 'media_pub',
+                  title: 'Publikasi & Media',
+                  ids: ['documents', 'media'] as BackOfficeSection[],
+                },
+                {
+                  key: 'system',
+                  title: 'Sistem & Akses',
+                  ids: ['branding', 'users'] as BackOfficeSection[],
+                },
+              ] as const
+            ).map((grp) => {
+              const items = grp.ids
+                .map((id) => allowedNav.find((n) => n.id === id))
+                .filter((x): x is NonNullable<typeof x> => Boolean(x));
+              if (items.length === 0) return null;
+
+              const hasActiveChild = items.some((it) => it.id === section);
+              const isOpen = Boolean(openGroups[grp.key]);
+
               return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setSection(item.id)}
-                  className={`flex min-h-10 w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left text-xs font-bold transition ${
-                    isActive
-                      ? 'bg-amber-500 text-slate-950 shadow-sm shadow-amber-500/20'
-                      : 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/70'
-                  }`}
+                <div
+                  key={grp.key}
+                  className="rounded-xl border border-slate-100 bg-slate-50/60 p-1.5 dark:border-slate-800/70 dark:bg-slate-950/40"
                 >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span>{item.label}</span>
-                </button>
+                  <button
+                    type="button"
+                    aria-expanded={isOpen}
+                    onClick={() =>
+                      setOpenGroups((prev) => ({
+                        ...prev,
+                        [grp.key]: !prev[grp.key],
+                      }))
+                    }
+                    className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[11px] font-extrabold uppercase tracking-wider text-slate-500 transition-colors duration-200 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      {grp.title}
+                      {hasActiveChild && !isOpen && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                      )}
+                    </span>
+                    <ChevronDown
+                      className={`h-3.5 w-3.5 transition-transform duration-300 ease-out ${
+                        isOpen ? 'rotate-0' : '-rotate-90'
+                      }`}
+                    />
+                  </button>
+
+                  <div
+                    aria-hidden={!isOpen}
+                    className={`grid transition-[grid-template-rows,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                      isOpen
+                        ? 'grid-rows-[1fr] opacity-100'
+                        : 'pointer-events-none grid-rows-[0fr] opacity-0'
+                    }`}
+                  >
+                    <div className="overflow-hidden">
+                      <div className="mt-1 space-y-1">
+                        {items.map((item) => {
+                          const Icon = item.icon;
+                          const isActive = section === item.id;
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              tabIndex={isOpen ? 0 : -1}
+                              onClick={() => setSection(item.id)}
+                              className={`flex min-h-9 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-xs font-bold transition ${
+                                isActive
+                                  ? 'bg-amber-500 text-slate-950 shadow-sm shadow-amber-500/20'
+                                  : 'text-slate-700 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-800/80'
+                              }`}
+                            >
+                              <Icon className="h-4 w-4 shrink-0" />
+                              <span className="truncate">{item.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               );
             })}
           </nav>
@@ -822,6 +1046,21 @@ export function BackOffice() {
                 currentUser={user}
                 onRefresh={() => loadData(user)}
               />
+            </div>
+          )}
+          {data && section === 'contingents' && (
+            <div key="sec-contingents" className="animate-page-enter">
+              <MasterTeamsManager data={data} onRefresh={() => loadData(user)} />
+            </div>
+          )}
+          {data && section === 'schedule' && (
+            <div key="sec-schedule" className="animate-page-enter">
+              <ScheduleCourtsManager data={data} onRefresh={() => loadData(user)} />
+            </div>
+          )}
+          {data && section === 'tv_screens' && (
+            <div key="sec-tv-screens" className="animate-page-enter">
+              <TvScreensManager data={data} onRefresh={() => loadData(user)} />
             </div>
           )}
           {data &&

@@ -1,9 +1,28 @@
 import { Hono } from 'hono';
-import { eq, inArray } from 'drizzle-orm';
+import { asc, eq, inArray } from 'drizzle-orm';
+import {
+  inferTeamLevelFromName,
+  sanitizeMasterLevel,
+  type MasterTeamLevel,
+} from '../../shared/fivb-draw';
+import { hasAnyPermission } from '../../shared/rbac';
 import { sanitizeHexColor, sanitizePlainText } from '../../shared/sanitize';
 import { db } from '../db';
-import { matchReports, matches, siteSettings, teams, tournaments } from '../db/schema';
-import { type AuthUser, requireAuth } from '../middleware/auth';
+import {
+  masterCourts,
+  masterTeams,
+  matchReports,
+  matches,
+  siteSettings,
+  teams,
+  tournaments,
+  tvScreens,
+} from '../db/schema';
+import {
+  type AuthUser,
+  requireAuth,
+  requirePermission,
+} from '../middleware/auth';
 import {
   advancePoolsToKnockout,
   generateBracket,
@@ -17,6 +36,7 @@ import {
   adjustSetCounter,
   confirmCurrentSet,
   finishMatchManually,
+  getMatchWithSets,
   resetMatchScore,
   setServingTeam,
   startMatch,
@@ -31,7 +51,45 @@ import {
 
 export const adminRoutes = new Hono<{ Variables: { user: AuthUser } }>();
 
-adminRoutes.use('*', requireAuth(['admin', 'panitia']));
+adminRoutes.use('*', requireAuth());
+
+// Granular RBAC endpoint guards (Security Audit Hardening)
+adminRoutes.use(
+  '/overview',
+  requirePermission(
+    'overview',
+    'contingents',
+    'schedule',
+    'tournaments',
+    'operator',
+    'tv_screens',
+    'documents',
+    'branding'
+  )
+);
+adminRoutes.use('/tv-pin', requirePermission('branding', 'tv_screens'));
+adminRoutes.use('/settings/docs', requirePermission('documents', 'branding'));
+adminRoutes.use('/settings/doc-cover', requirePermission('documents', 'branding'));
+adminRoutes.use('/settings', requirePermission('branding'));
+adminRoutes.use('/settings/logo', requirePermission('branding'));
+adminRoutes.use('/settings/sponsors', requirePermission('branding'));
+adminRoutes.use('/settings/sponsors/*', requirePermission('branding'));
+adminRoutes.use('/master-teams', requirePermission('contingents', 'tournaments'));
+adminRoutes.use('/master-teams/*', requirePermission('contingents', 'tournaments'));
+adminRoutes.use('/tournaments', requirePermission('tournaments'));
+adminRoutes.use('/tournaments/*', requirePermission('tournaments'));
+adminRoutes.use('/teams', requirePermission('tournaments'));
+adminRoutes.use('/teams/*', requirePermission('tournaments'));
+adminRoutes.use('/master-courts', requirePermission('schedule', 'tournaments'));
+adminRoutes.use('/master-courts/*', requirePermission('schedule', 'tournaments'));
+adminRoutes.use(
+  '/matches/bulk-schedule-assign',
+  requirePermission('schedule', 'tournaments')
+);
+adminRoutes.use('/matches/:id/score', requirePermission('operator'));
+adminRoutes.use('/matches/:id', requirePermission('schedule', 'tournaments', 'operator'));
+adminRoutes.use('/tv-screens', requirePermission('tv_screens'));
+adminRoutes.use('/tv-screens/*', requirePermission('tv_screens'));
 
 function sanitizeDocSettingsJson(
   rawInput: unknown,
@@ -124,11 +182,20 @@ function sanitizePoolCode(raw: unknown): string | null {
 }
 
 adminRoutes.get('/overview', async (c) => {
+  const user = c.get('user');
   const data = await getFullOverview(true);
+  const canSeeTvPin = hasAnyPermission(user.permissions, user.role, [
+    'branding',
+    'tv_screens',
+  ]);
+  if (!canSeeTvPin && data.settings && 'tvPin' in data.settings) {
+    const { tvPin: _hiddenPin, ...safeSettings } = data.settings;
+    return c.json({ ...data, settings: safeSettings });
+  }
   return c.json(data);
 });
 
-// TV Display PIN (Accessible to both Admin & Panitia)
+// TV Display PIN
 adminRoutes.put('/tv-pin', async (c) => {
   const body = await c.req.json<{ tvPin?: string }>();
   const pin = (body.tvPin || '').trim();
@@ -139,8 +206,8 @@ adminRoutes.put('/tv-pin', async (c) => {
   return c.json({ ok: true, tvPin: pin });
 });
 
-// Site Settings & Branding (Admin only)
-adminRoutes.put('/settings', requireAuth(['admin']), async (c) => {
+// Site Settings & Branding
+adminRoutes.put('/settings', async (c) => {
   const body = await c.req.json<{
     eventName?: string;
     eventSubtitle?: string;
@@ -148,6 +215,7 @@ adminRoutes.put('/settings', requireAuth(['admin']), async (c) => {
     accentColor?: string;
     seoDescription?: string;
     publicDocsEnabled?: boolean;
+    publicTvEnabled?: boolean;
     docSettingsJson?: unknown;
     resetLogo?: boolean;
     resetSocialImage?: boolean;
@@ -174,6 +242,9 @@ adminRoutes.put('/settings', requireAuth(['admin']), async (c) => {
   }
   if (body.publicDocsEnabled !== undefined) {
     updateData.publicDocsEnabled = Boolean(body.publicDocsEnabled);
+  }
+  if (body.publicTvEnabled !== undefined) {
+    updateData.publicTvEnabled = Boolean(body.publicTvEnabled);
   }
   if (body.docSettingsJson !== undefined) {
     updateData.docSettingsJson = sanitizeDocSettingsJson(
@@ -247,7 +318,10 @@ adminRoutes.put('/settings/docs', async (c) => {
     }
   }
 
-  if (body.publicDocsEnabled !== undefined && user.role === 'admin') {
+  if (
+    body.publicDocsEnabled !== undefined &&
+    (user.role === 'admin' || user.permissions.includes('branding'))
+  ) {
     updateData.publicDocsEnabled = Boolean(body.publicDocsEnabled);
   }
 
@@ -281,7 +355,7 @@ adminRoutes.post('/settings/doc-cover', async (c) => {
   return c.json({ settings: updated });
 });
 
-adminRoutes.post('/settings/logo', requireAuth(['admin']), async (c) => {
+adminRoutes.post('/settings/logo', async (c) => {
   const form = await c.req.formData();
   const file = form.get('file');
   const rawTarget = form.get('target');
@@ -323,7 +397,7 @@ adminRoutes.post('/settings/logo', requireAuth(['admin']), async (c) => {
   return c.json({ settings: updated });
 });
 
-adminRoutes.post('/settings/sponsors', requireAuth(['admin']), async (c) => {
+adminRoutes.post('/settings/sponsors', async (c) => {
   const form = await c.req.formData();
   const file = form.get('file');
   const darkFile = form.get('darkFile');
@@ -376,7 +450,7 @@ adminRoutes.post('/settings/sponsors', requireAuth(['admin']), async (c) => {
   return c.json({ settings: updated }, 201);
 });
 
-adminRoutes.put('/settings/sponsors/reorder', requireAuth(['admin']), async (c) => {
+adminRoutes.put('/settings/sponsors/reorder', async (c) => {
   const body = await c.req.json<{ orderedIds?: string[] }>();
   if (!Array.isArray(body.orderedIds)) {
     return c.json({ error: 'orderedIds wajib berupa array' }, 400);
@@ -426,7 +500,7 @@ adminRoutes.put('/settings/sponsors/reorder', requireAuth(['admin']), async (c) 
   return c.json({ settings: updated });
 });
 
-adminRoutes.delete('/settings/sponsors/:id', requireAuth(['admin']), async (c) => {
+adminRoutes.delete('/settings/sponsors/:id', async (c) => {
   const sponsorId = c.req.param('id');
   const current = await db.query.siteSettings.findFirst();
   const list = (() => {
@@ -593,9 +667,9 @@ adminRoutes.delete('/tournaments/:id', async (c) => {
   // Delete tournament (cascades teams, matches, match_sets, and match_reports)
   await db.delete(tournaments).where(eq(tournaments.id, id));
 
-  // Best-effort cleanup of S3 / local disk assets
+  // Best-effort cleanup of S3 / local disk assets (preserving shared Master Team logos!)
   for (const t of catTeams) {
-    if (t.logoUrl) await deleteUploadedImage(t.logoUrl);
+    if (t.logoUrl) await safeDeleteTeamLogoIfUnreferenced(t.logoUrl);
   }
   for (const rep of catReports) {
     await deleteUploadedReportAssets(rep.imagePath, rep.mediaJson);
@@ -608,6 +682,337 @@ adminRoutes.delete('/tournaments/:id', async (c) => {
     deletedMatches: catMatches.length,
     deletedReports: catReports.length,
   });
+});
+
+async function safeDeleteTeamLogoIfUnreferenced(logoUrl: string | null | undefined) {
+  if (!logoUrl) return;
+  const stillInMaster = await db.query.masterTeams.findFirst({
+    where: eq(masterTeams.logoUrl, logoUrl),
+  });
+  if (stillInMaster) return;
+  const stillInTeams = await db.query.teams.findFirst({
+    where: eq(teams.logoUrl, logoUrl),
+  });
+  if (stillInTeams) return;
+  await deleteUploadedImage(logoUrl);
+}
+
+function deriveShortCode(name: string, rawShortCode?: string): string {
+  const cleanShort = sanitizePlainText(rawShortCode, 6).toUpperCase();
+  if (cleanShort) return cleanShort;
+  return (
+    name
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(0, 4)
+      .toUpperCase() || 'TIM'
+  );
+}
+
+function formatSquadEntryName(baseName: string, squadLabel?: string): string {
+  const sq = sanitizePlainText(squadLabel, 8).toUpperCase();
+  if (!sq) return baseName;
+  return `${baseName} (Tim ${sq})`;
+}
+
+function formatSquadShortCode(baseShortCode: string, squadLabel?: string): string {
+  const sq = sanitizePlainText(squadLabel, 3).toUpperCase();
+  if (!sq) return baseShortCode;
+  return `${baseShortCode.slice(0, Math.max(1, 6 - sq.length))}${sq}`;
+}
+
+// =========================================================================
+// MASTER TEAMS / CONTINGENTS REGISTRY (FIVB VIS Shared Federation/Club DB)
+// =========================================================================
+adminRoutes.post('/master-teams', async (c) => {
+  const body = await c.req.json<{
+    name: string;
+    shortCode?: string;
+    school?: string;
+    level?: string;
+    color?: string;
+    defaultCoachName?: string;
+    defaultManagerName?: string;
+    defaultJerseyColors?: unknown;
+  }>();
+
+  const name = sanitizePlainText(body.name, 80);
+  if (!name) {
+    return c.json({ error: 'Nama kontingen / sekolah wajib diisi' }, 400);
+  }
+  const school = sanitizePlainText(body.school, 80);
+  const dupExisting = await db.select().from(masterTeams);
+  const exactDup = dupExisting.find(
+    (mt) =>
+      mt.name.trim().toLowerCase() === name.toLowerCase() &&
+      (mt.school || '').trim().toLowerCase() === school.toLowerCase()
+  );
+  if (exactDup) {
+    return c.json(
+      { error: 'Kontingen / sekolah ini sudah terdaftar di Master Tim', masterTeam: exactDup },
+      409
+    );
+  }
+
+  const level: MasterTeamLevel = body.level
+    ? sanitizeMasterLevel(body.level)
+    : inferTeamLevelFromName(name, school);
+
+  const [created] = await db
+    .insert(masterTeams)
+    .values({
+      name,
+      shortCode: deriveShortCode(name, body.shortCode),
+      school,
+      level,
+      color: sanitizeHexColor(body.color, '#E09D17'),
+      defaultCoachName: sanitizePlainText(body.defaultCoachName, 80),
+      defaultManagerName: sanitizePlainText(body.defaultManagerName, 80),
+      defaultJerseyColors: sanitizeJerseyColorsJson(body.defaultJerseyColors),
+      createdAt: Date.now(),
+    })
+    .returning();
+
+  await broadcastEvent('master_teams_updated', { created });
+  return c.json({ masterTeam: created }, 201);
+});
+
+adminRoutes.post('/master-teams/bulk', async (c) => {
+  const body = await c.req.json<{ lines: string; defaultLevel?: string }>();
+  if (!body.lines?.trim()) {
+    return c.json({ error: 'Daftar kontingen / sekolah wajib diisi' }, 400);
+  }
+
+  const existingAll = await db.select().from(masterTeams);
+  const existingKeys = new Set(
+    existingAll.map(
+      (mt) => `${mt.name.trim().toLowerCase()}||${(mt.school || '').trim().toLowerCase()}`
+    )
+  );
+
+  const palette = ['#E09D17', '#3B82F6', '#EF4444', '#10B981', '#8B5CF6', '#EC4899'];
+  const rawLines = body.lines
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const inserted = [];
+  let skipped = 0;
+  let colorCursor = existingAll.length;
+  const now = Date.now();
+
+  for (const line of rawLines) {
+    // Support Google Sheets / Excel Tab-separated (`No \t Nama \t Kab/Kota`) OR Pipe-separated (`Nama | Kab/Kota`)
+    const cols = (line.includes('\t') ? line.split('\t') : line.split('|')).map((s) =>
+      s.trim()
+    );
+    if (cols.length === 0) continue;
+
+    // Auto-strip leading row number column from Excel/Sheets (e.g. "1 \t SMPN 2 Kota Mojokerto \t Kota Mojokerto")
+    let offset = 0;
+    if (cols.length >= 2 && /^\d+$/.test(cols[0]!)) {
+      offset = 1;
+    }
+
+    const rawName = cols[offset] || '';
+    // Skip spreadsheet header rows
+    if (
+      !rawName ||
+      /^(no|nama\s+(sekolah|tim|kontingen))$/i.test(rawName)
+    ) {
+      continue;
+    }
+
+    const namePart = sanitizePlainText(rawName, 80);
+    if (!namePart) continue;
+
+    const schoolPart = sanitizePlainText(cols[offset + 1] || '', 80);
+    const rawLevelCol = cols[offset + 2] || body.defaultLevel || '';
+    const rawCodeCol = cols[offset + 3] || '';
+
+    const dedupKey = `${namePart.toLowerCase()}||${schoolPart.toLowerCase()}`;
+    if (existingKeys.has(dedupKey)) {
+      skipped++;
+      continue;
+    }
+    existingKeys.add(dedupKey);
+
+    const level: MasterTeamLevel = rawLevelCol
+      ? sanitizeMasterLevel(rawLevelCol)
+      : inferTeamLevelFromName(namePart, schoolPart);
+
+    const [created] = await db
+      .insert(masterTeams)
+      .values({
+        name: namePart,
+        shortCode: deriveShortCode(namePart, rawCodeCol),
+        school: schoolPart,
+        level,
+        color: palette[colorCursor++ % palette.length]!,
+        createdAt: now,
+      })
+      .returning();
+
+    inserted.push(created);
+  }
+
+  await broadcastEvent('master_teams_updated', { count: inserted.length });
+  return c.json({ masterTeams: inserted, insertedCount: inserted.length, skippedCount: skipped }, 201);
+});
+
+adminRoutes.patch('/master-teams/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const prevMaster = await db.query.masterTeams.findFirst({
+    where: eq(masterTeams.id, id),
+  });
+  if (!prevMaster) {
+    return c.json({ error: 'Data Master Tim tidak ditemukan' }, 404);
+  }
+
+  const body = await c.req.json<{
+    name?: string;
+    shortCode?: string;
+    school?: string;
+    level?: string;
+    color?: string;
+    defaultCoachName?: string;
+    defaultManagerName?: string;
+    defaultJerseyColors?: unknown;
+  }>();
+
+  const patch: Partial<typeof masterTeams.$inferInsert> = {};
+  if (body.name !== undefined) {
+    const cleanName = sanitizePlainText(body.name, 80);
+    if (cleanName) {
+      patch.name = cleanName;
+      if (body.shortCode === undefined) {
+        patch.shortCode = deriveShortCode(cleanName);
+      }
+    }
+  }
+  if (body.shortCode !== undefined) {
+    patch.shortCode = deriveShortCode(patch.name || prevMaster.name, body.shortCode);
+  }
+  if (body.school !== undefined) {
+    patch.school = sanitizePlainText(body.school, 80);
+  }
+  if (body.level !== undefined) {
+    patch.level = sanitizeMasterLevel(body.level);
+  }
+  if (body.color !== undefined) {
+    patch.color = sanitizeHexColor(body.color, prevMaster.color);
+  }
+  if (body.defaultCoachName !== undefined) {
+    patch.defaultCoachName = sanitizePlainText(body.defaultCoachName, 80);
+  }
+  if (body.defaultManagerName !== undefined) {
+    patch.defaultManagerName = sanitizePlainText(body.defaultManagerName, 80);
+  }
+  if (body.defaultJerseyColors !== undefined) {
+    patch.defaultJerseyColors = sanitizeJerseyColorsJson(body.defaultJerseyColors);
+  }
+
+  const [updatedMaster] = await db
+    .update(masterTeams)
+    .set(patch)
+    .where(eq(masterTeams.id, id))
+    .returning();
+
+  // Propagate shared identity & un-overridden defaults to all category team entries!
+  const linkedEntries = await db
+    .select()
+    .from(teams)
+    .where(eq(teams.masterTeamId, id));
+
+  for (const entry of linkedEntries) {
+    const entryPatch: Partial<typeof teams.$inferInsert> = {
+      name: formatSquadEntryName(updatedMaster!.name, entry.squadLabel),
+      shortCode: formatSquadShortCode(updatedMaster!.shortCode, entry.squadLabel),
+      school: updatedMaster!.school,
+      color: updatedMaster!.color,
+    };
+
+    // Inherit default staff/jerseys only if the category entry had not customized them
+    if (
+      body.defaultCoachName !== undefined &&
+      (!entry.coachName || entry.coachName === prevMaster.defaultCoachName)
+    ) {
+      entryPatch.coachName = updatedMaster!.defaultCoachName;
+    }
+    if (
+      body.defaultManagerName !== undefined &&
+      (!entry.managerName || entry.managerName === prevMaster.defaultManagerName)
+    ) {
+      entryPatch.managerName = updatedMaster!.defaultManagerName;
+    }
+    if (
+      body.defaultJerseyColors !== undefined &&
+      (!entry.jerseyColors ||
+        entry.jerseyColors === '[]' ||
+        entry.jerseyColors === prevMaster.defaultJerseyColors)
+    ) {
+      entryPatch.jerseyColors = updatedMaster!.defaultJerseyColors;
+    }
+
+    await db.update(teams).set(entryPatch).where(eq(teams.id, entry.id));
+  }
+
+  await broadcastEvent('master_teams_updated', { masterTeam: updatedMaster });
+  if (linkedEntries.length > 0) {
+    await broadcastEvent('tournament_updated', { masterTeamSynced: id });
+  }
+  return c.json({ masterTeam: updatedMaster });
+});
+
+adminRoutes.post('/master-teams/:id/logo', async (c) => {
+  const id = Number(c.req.param('id'));
+  const prevMaster = await db.query.masterTeams.findFirst({
+    where: eq(masterTeams.id, id),
+  });
+  if (!prevMaster) {
+    return c.json({ error: 'Data Master Tim tidak ditemukan' }, 404);
+  }
+
+  const form = await c.req.formData();
+  const file = form.get('file');
+  if (!(file instanceof File)) {
+    return c.json({ error: 'File logo wajib diunggah' }, 400);
+  }
+
+  const url = await saveUploadedImage(file, 'logos');
+  const [updatedMaster] = await db
+    .update(masterTeams)
+    .set({ logoUrl: url })
+    .where(eq(masterTeams.id, id))
+    .returning();
+
+  // Propagate new logo automatically to all linked category entries!
+  await db
+    .update(teams)
+    .set({ logoUrl: url })
+    .where(eq(teams.masterTeamId, id));
+
+  if (prevMaster.logoUrl && prevMaster.logoUrl !== url) {
+    await safeDeleteTeamLogoIfUnreferenced(prevMaster.logoUrl);
+  }
+
+  await broadcastEvent('master_teams_updated', { masterTeam: updatedMaster });
+  await broadcastEvent('tournament_updated', { masterTeamSynced: id });
+  return c.json({ masterTeam: updatedMaster });
+});
+
+adminRoutes.delete('/master-teams/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const existing = await db.query.masterTeams.findFirst({
+    where: eq(masterTeams.id, id),
+  });
+  if (!existing) {
+    return c.json({ error: 'Data Master Tim tidak ditemukan' }, 404);
+  }
+
+  await db.delete(masterTeams).where(eq(masterTeams.id, id));
+  await safeDeleteTeamLogoIfUnreferenced(existing.logoUrl);
+  await broadcastEvent('master_teams_updated', { deletedId: id });
+  return c.json({ ok: true });
 });
 
 // Teams
@@ -736,6 +1141,7 @@ adminRoutes.patch('/teams/:id', async (c) => {
     school?: string;
     color?: string;
     poolName?: string | null;
+    isSeeded?: boolean;
     coachName?: string;
     managerName?: string;
     jerseyColors?: unknown;
@@ -767,6 +1173,9 @@ adminRoutes.patch('/teams/:id', async (c) => {
   if (body.poolName !== undefined) {
     updateData.poolName = sanitizePoolCode(body.poolName);
   }
+  if (body.isSeeded !== undefined) {
+    updateData.isSeeded = Boolean(body.isSeeded);
+  }
   if (body.coachName !== undefined) {
     updateData.coachName = sanitizePlainText(body.coachName, 80);
   }
@@ -789,16 +1198,215 @@ adminRoutes.patch('/teams/:id', async (c) => {
 
 adminRoutes.delete('/teams/:id', async (c) => {
   const id = Number(c.req.param('id'));
+  const prev = await db.query.teams.findFirst({ where: eq(teams.id, id) });
   await db.delete(teams).where(eq(teams.id, id));
+  if (prev?.logoUrl) {
+    await safeDeleteTeamLogoIfUnreferenced(prev.logoUrl);
+  }
   await broadcastEvent('tournament_updated', { teamDeleted: id });
   return c.json({ ok: true });
+});
+
+// =========================================================================
+// TECHNICAL MEETING (TM) DRAWING SLOTS & MASTER ENTRY ASSIGNMENT
+// =========================================================================
+adminRoutes.put('/tournaments/:id/draw-slot', async (c) => {
+  const tournamentId = Number(c.req.param('id'));
+  const body = await c.req.json<{
+    slotTeamId: number;
+    masterTeamId: number | null;
+    squadLabel?: string;
+    poolName?: string | null;
+    isSeeded?: boolean;
+  }>();
+
+  const slotRow = await db.query.teams.findFirst({
+    where: eq(teams.id, Number(body.slotTeamId)),
+  });
+  if (!slotRow || slotRow.tournamentId !== tournamentId) {
+    return c.json({ error: 'Slot undian tidak ditemukan pada kategori ini' }, 404);
+  }
+
+  // Case A: Clear slot back to empty `[ Undian XX ]`
+  if (body.masterTeamId === null) {
+    const slotNum = String(slotRow.seed || 1).padStart(2, '0');
+    const [cleared] = await db
+      .update(teams)
+      .set({
+        masterTeamId: null,
+        squadLabel: '',
+        isSeeded: false,
+        name: `[ Undian ${slotNum} ]`,
+        shortCode: `U${slotNum}`,
+        school: '',
+        logoUrl: null,
+        coachName: '',
+        managerName: '',
+        jerseyColors: '[]',
+      })
+      .where(eq(teams.id, slotRow.id))
+      .returning();
+
+    await broadcastEvent('draw_slot_updated', {
+      tournamentId,
+      teamId: cleared!.id,
+      masterTeamId: null,
+      slotNumber: cleared!.seed,
+      poolName: cleared!.poolName,
+      teamName: cleared!.name,
+      school: '',
+      logoUrl: null,
+      cleared: true,
+      timestamp: Date.now(),
+    });
+    await broadcastEvent('bracket_updated', { tournamentId });
+    return c.json({ team: cleared });
+  }
+
+  // Case B: Assign a Master Team (with optional Squad A/B) into this TM Draw Slot
+  const master = await db.query.masterTeams.findFirst({
+    where: eq(masterTeams.id, Number(body.masterTeamId)),
+  });
+  if (!master) {
+    return c.json({ error: 'Kontingen di Master Tim tidak ditemukan' }, 404);
+  }
+
+  const cleanSquad = sanitizePlainText(body.squadLabel || '', 8).toUpperCase();
+  const catTeams = await db
+    .select()
+    .from(teams)
+    .where(eq(teams.tournamentId, tournamentId));
+
+  const conflict = catTeams.find(
+    (t) =>
+      t.id !== slotRow.id &&
+      t.masterTeamId === master.id &&
+      (t.squadLabel || '').toUpperCase() === cleanSquad
+  );
+  if (conflict) {
+    return c.json(
+      {
+        error: `${master.name}${cleanSquad ? ` (Tim ${cleanSquad})` : ''} sudah terpasang di slot #${String(conflict.seed).padStart(2, '0')}. Gunakan opsi "+ Skuad B" bila mengirim tim kedua.`,
+      },
+      409
+    );
+  }
+
+  const entryName = formatSquadEntryName(master.name, cleanSquad);
+  const entryShort = formatSquadShortCode(master.shortCode, cleanSquad);
+
+  const [updatedSlot] = await db
+    .update(teams)
+    .set({
+      masterTeamId: master.id,
+      squadLabel: cleanSquad,
+      isSeeded: body.isSeeded !== undefined ? Boolean(body.isSeeded) : slotRow.isSeeded,
+      poolName:
+        body.poolName !== undefined
+          ? sanitizePoolCode(body.poolName)
+          : slotRow.poolName,
+      name: entryName,
+      shortCode: entryShort,
+      school: master.school,
+      logoUrl: master.logoUrl,
+      color: master.color,
+      coachName: master.defaultCoachName,
+      managerName: master.defaultManagerName,
+      jerseyColors: master.defaultJerseyColors,
+    })
+    .where(eq(teams.id, slotRow.id))
+    .returning();
+
+  await broadcastEvent('draw_slot_updated', {
+    tournamentId,
+    teamId: updatedSlot!.id,
+    masterTeamId: master.id,
+    slotNumber: updatedSlot!.seed,
+    poolName: updatedSlot!.poolName,
+    teamName: updatedSlot!.name,
+    school: updatedSlot!.school,
+    logoUrl: updatedSlot!.logoUrl,
+    cleared: false,
+    timestamp: Date.now(),
+  });
+  await broadcastEvent('bracket_updated', { tournamentId });
+  return c.json({ team: updatedSlot });
+});
+
+adminRoutes.post('/tournaments/:id/entries-from-master', async (c) => {
+  const tournamentId = Number(c.req.param('id'));
+  const body = await c.req.json<{
+    masterTeamIds: number[];
+    squadLabel?: string;
+    poolName?: string | null;
+  }>();
+
+  if (!Array.isArray(body.masterTeamIds) || body.masterTeamIds.length === 0) {
+    return c.json({ error: 'Pilih minimal 1 tim dari Master Kontingen' }, 400);
+  }
+
+  const existingTeams = await db
+    .select()
+    .from(teams)
+    .where(eq(teams.tournamentId, tournamentId));
+  let nextSeed = existingTeams.length + 1;
+  const cleanSquad = sanitizePlainText(body.squadLabel || '', 8).toUpperCase();
+  const cleanPool = sanitizePoolCode(body.poolName);
+
+  const masters = await db
+    .select()
+    .from(masterTeams)
+    .where(inArray(masterTeams.id, body.masterTeamIds.map(Number)));
+  const masterById = new Map(masters.map((m) => [m.id, m]));
+
+  const createdEntries = [];
+  for (const mId of body.masterTeamIds) {
+    const master = masterById.get(Number(mId));
+    if (!master) continue;
+
+    const alreadyInCat = existingTeams.some(
+      (t) =>
+        t.masterTeamId === master.id &&
+        (t.squadLabel || '').toUpperCase() === cleanSquad
+    );
+    if (alreadyInCat) continue;
+
+    const [inserted] = await db
+      .insert(teams)
+      .values({
+        tournamentId,
+        masterTeamId: master.id,
+        squadLabel: cleanSquad,
+        isSeeded: false,
+        name: formatSquadEntryName(master.name, cleanSquad),
+        shortCode: formatSquadShortCode(master.shortCode, cleanSquad),
+        school: master.school,
+        logoUrl: master.logoUrl,
+        color: master.color,
+        seed: nextSeed++,
+        poolName: cleanPool,
+        coachName: master.defaultCoachName,
+        managerName: master.defaultManagerName,
+        jerseyColors: master.defaultJerseyColors,
+      })
+      .returning();
+    createdEntries.push(inserted);
+  }
+
+  await broadcastEvent('tournament_updated', { tournamentId });
+  return c.json({ teams: createdEntries }, 201);
 });
 
 // Bracket Generation, Pool Stage, & Drawing Slots
 adminRoutes.post('/tournaments/:id/init-draw', async (c) => {
   const id = Number(c.req.param('id'));
-  const body = await c.req.json<{ slotCount?: 4 | 8 | 16 }>().catch(() => ({ slotCount: 16 as const }));
-  const count = body.slotCount === 4 || body.slotCount === 8 ? body.slotCount : 16;
+  const body = await c.req
+    .json<{ slotCount?: 4 | 8 | 16 | 32 }>()
+    .catch(() => ({ slotCount: 16 as const }));
+  const count =
+    body.slotCount === 4 || body.slotCount === 8 || body.slotCount === 32
+      ? body.slotCount
+      : 16;
   try {
     const generated = await initializeDrawBracket(id, count);
     await broadcastEvent('bracket_updated', { tournamentId: id });
@@ -810,13 +1418,17 @@ adminRoutes.post('/tournaments/:id/init-draw', async (c) => {
 
 adminRoutes.post('/tournaments/:id/generate-bracket', async (c) => {
   const id = Number(c.req.param('id'));
-  const body = await c.req.json<{ shuffle?: boolean }>().catch(() => ({ shuffle: false }));
+  const body = await c.req
+    .json<{ shuffle?: boolean; separateSameRegion?: boolean }>()
+    .catch(() => ({ shuffle: false, separateSameRegion: true }));
   try {
     await db
       .update(tournaments)
       .set({ format: 'knockout' })
       .where(eq(tournaments.id, id));
-    const generated = await generateBracket(id, Boolean(body.shuffle));
+    const generated = await generateBracket(id, Boolean(body.shuffle), {
+      separateSameRegion: body.separateSameRegion ?? true,
+    });
     await broadcastEvent('bracket_updated', { tournamentId: id });
     return c.json({ matches: generated });
   } catch (err) {
@@ -827,13 +1439,27 @@ adminRoutes.post('/tournaments/:id/generate-bracket', async (c) => {
 adminRoutes.post('/tournaments/:id/generate-pools', async (c) => {
   const id = Number(c.req.param('id'));
   const body = await c.req
-    .json<{ poolCount?: number; advancePerPool?: number; shuffle?: boolean }>()
-    .catch(() => ({} as { poolCount?: number; advancePerPool?: number; shuffle?: boolean }));
+    .json<{
+      poolCount?: number;
+      advancePerPool?: number;
+      shuffle?: boolean;
+      separateSameRegion?: boolean;
+    }>()
+    .catch(
+      () =>
+        ({} as {
+          poolCount?: number;
+          advancePerPool?: number;
+          shuffle?: boolean;
+          separateSameRegion?: boolean;
+        })
+    );
   try {
     const generated = await generatePoolStageBracket(id, {
       poolCount: body.poolCount,
       advancePerPool: body.advancePerPool,
       shuffle: Boolean(body.shuffle),
+      separateSameRegion: body.separateSameRegion ?? true,
     });
     await broadcastEvent('bracket_updated', { tournamentId: id });
     return c.json({ matches: generated });
@@ -959,12 +1585,365 @@ adminRoutes.patch('/matches/:id', async (c) => {
     updateData.stageLabel = sanitizePlainText(body.stageLabel, 80) || null;
   }
 
-  const [updated] = await db
+  await db
     .update(matches)
     .set(updateData)
-    .where(eq(matches.id, id))
+    .where(eq(matches.id, id));
+
+  const fullUpdated = await getMatchWithSets(id);
+  await broadcastEvent('match_updated', fullUpdated);
+  return c.json({ match: fullUpdated });
+});
+
+// =========================================================================
+// MASTER COURTS REGISTRY & CROSS-COURT SCHEDULE ALLOCATOR
+// =========================================================================
+adminRoutes.get('/master-courts', async (c) => {
+  const list = await db
+    .select()
+    .from(masterCourts)
+    .orderBy(asc(masterCourts.sortOrder), asc(masterCourts.id));
+  return c.json({ courts: list });
+});
+
+adminRoutes.post('/master-courts', async (c) => {
+  const body = await c.req.json<{ name?: string; shortCode?: string }>();
+  const name = sanitizePlainText(body.name, 60);
+  if (!name) {
+    return c.json({ error: 'Nama lapangan wajib diisi' }, 400);
+  }
+  const existing = await db.select().from(masterCourts);
+  if (existing.some((ct) => ct.name.trim().toLowerCase() === name.toLowerCase())) {
+    return c.json({ error: `Lapangan "${name}" sudah terdaftar` }, 409);
+  }
+
+  const shortCode =
+    sanitizePlainText(body.shortCode, 12).toUpperCase() ||
+    name.slice(0, 8).toUpperCase();
+
+  const [created] = await db
+    .insert(masterCourts)
+    .values({
+      name,
+      shortCode,
+      sortOrder: existing.length + 1,
+      isEnabled: true,
+      createdAt: Date.now(),
+    })
     .returning();
 
-  await broadcastEvent('match_updated', updated);
-  return c.json({ match: updated });
+  await broadcastEvent('courts_updated', { created });
+  return c.json({ court: created }, 201);
+});
+
+adminRoutes.patch('/master-courts/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const prev = await db.query.masterCourts.findFirst({
+    where: eq(masterCourts.id, id),
+  });
+  if (!prev) {
+    return c.json({ error: 'Data lapangan tidak ditemukan' }, 404);
+  }
+
+  const body = await c.req.json<{
+    name?: string;
+    shortCode?: string;
+    isEnabled?: boolean;
+    sortOrder?: number;
+  }>();
+
+  const patch: Partial<typeof masterCourts.$inferInsert> = {};
+  if (body.name !== undefined) {
+    const cleanName = sanitizePlainText(body.name, 60);
+    if (cleanName) patch.name = cleanName;
+  }
+  if (body.shortCode !== undefined) {
+    const cleanCode = sanitizePlainText(body.shortCode, 12).toUpperCase();
+    if (cleanCode) patch.shortCode = cleanCode;
+  }
+  if (body.isEnabled !== undefined) patch.isEnabled = Boolean(body.isEnabled);
+  if (body.sortOrder !== undefined) patch.sortOrder = Number(body.sortOrder) || 0;
+
+  const [updated] = await db
+    .update(masterCourts)
+    .set(patch)
+    .where(eq(masterCourts.id, id))
+    .returning();
+
+  // Propagate renamed courtName cleanly to matches currently assigned to prev.name
+  if (patch.name && patch.name !== prev.name) {
+    await db
+      .update(matches)
+      .set({ courtName: patch.name })
+      .where(eq(matches.courtName, prev.name));
+  }
+
+  await broadcastEvent('courts_updated', { updated });
+  return c.json({ court: updated });
+});
+
+adminRoutes.delete('/master-courts/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const existing = await db.query.masterCourts.findFirst({
+    where: eq(masterCourts.id, id),
+  });
+  if (!existing) {
+    return c.json({ error: 'Data lapangan tidak ditemukan' }, 404);
+  }
+  const allCourts = await db.select().from(masterCourts);
+  if (allCourts.length <= 1) {
+    return c.json({ error: 'Minimal harus tersisa 1 lapangan aktif' }, 400);
+  }
+
+  await db.delete(masterCourts).where(eq(masterCourts.id, id));
+  await broadcastEvent('courts_updated', { deletedId: id });
+  return c.json({ ok: true });
+});
+
+adminRoutes.post('/matches/bulk-schedule-assign', async (c) => {
+  const body = await c.req.json<{
+    updates: Array<{ matchId: number; courtName?: string; scheduledAt?: string }>;
+  }>();
+
+  if (!Array.isArray(body.updates) || body.updates.length === 0) {
+    return c.json({ error: 'Daftar perubahan jadwal wajib diisi' }, 400);
+  }
+
+  const updatedMatches = [];
+  for (const item of body.updates.slice(0, 120)) {
+    const mId = Number(item.matchId);
+    if (!Number.isFinite(mId)) continue;
+
+    const patch: Partial<typeof matches.$inferInsert> = {};
+    if (item.courtName !== undefined) {
+      patch.courtName = sanitizePlainText(item.courtName, 60) || 'Lapangan 1';
+    }
+    if (item.scheduledAt !== undefined) {
+      patch.scheduledAt = sanitizePlainText(item.scheduledAt, 60);
+    }
+    if (Object.keys(patch).length === 0) continue;
+
+    await db.update(matches).set(patch).where(eq(matches.id, mId));
+    const mFull = await getMatchWithSets(mId);
+    if (mFull) updatedMatches.push(mFull);
+  }
+
+  if (updatedMatches.length > 0) {
+    await broadcastEvent('bracket_updated', { bulkScheduleCount: updatedMatches.length });
+    for (const m of updatedMatches.slice(0, 12)) {
+      await broadcastEvent('match_updated', m);
+    }
+  }
+
+  return c.json({ ok: true, count: updatedMatches.length, matches: updatedMatches });
+});
+
+// =========================================================================
+// MULTI-TV SCREENS REMOTE CONTROLLER & DYNAMIC STANDBY BANNER
+// =========================================================================
+function slugifyTvScreen(raw: string): string {
+  return (
+    raw
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40) || `tv-${Date.now().toString(36)}`
+  );
+}
+
+adminRoutes.get('/tv-screens', async (c) => {
+  const list = await db
+    .select()
+    .from(tvScreens)
+    .orderBy(asc(tvScreens.sortOrder), asc(tvScreens.id));
+  return c.json({ screens: list });
+});
+
+adminRoutes.post('/tv-screens', async (c) => {
+  const body = await c.req.json<{
+    name?: string;
+    slug?: string;
+    mode?: 'single' | 'split' | 'bracket' | 'standby' | 'auto_rotate';
+    courtId?: number | null;
+    bannerPreset?: 'tm' | 'warmup' | 'break' | 'upcoming' | 'custom';
+    bannerTitle?: string;
+    bannerSubtitle?: string;
+    bannerBadge?: string;
+    bannerNoticeText?: string;
+  }>();
+
+  const name = sanitizePlainText(body.name, 60);
+  if (!name) {
+    return c.json({ error: 'Nama profil Layar TV wajib diisi' }, 400);
+  }
+
+  let slug = slugifyTvScreen(body.slug || name);
+  const existing = await db.select().from(tvScreens);
+  if (existing.some((s) => s.slug === slug)) {
+    slug = `${slug}-${(existing.length + 1).toString(36)}`;
+  }
+
+  const now = Date.now();
+  const validModes = ['single', 'split', 'bracket', 'standby', 'auto_rotate'] as const;
+  const mode =
+    body.mode && (validModes as readonly string[]).includes(body.mode)
+      ? body.mode
+      : 'single';
+  const validPresets = ['tm', 'warmup', 'break', 'upcoming', 'custom'] as const;
+  const bannerPreset =
+    body.bannerPreset && (validPresets as readonly string[]).includes(body.bannerPreset)
+      ? body.bannerPreset
+      : 'tm';
+
+  const [created] = await db
+    .insert(tvScreens)
+    .values({
+      name,
+      slug,
+      mode,
+      courtId: body.courtId ? Number(body.courtId) : null,
+      bannerPreset,
+      bannerTitle:
+        sanitizePlainText(body.bannerTitle, 100) || 'TECHNICAL MEETING & DRAWING',
+      bannerSubtitle:
+        sanitizePlainText(body.bannerSubtitle, 140) ||
+        'SMANSAGE VOLLEYBALL COMPETITION 2026',
+      bannerBadge: sanitizePlainText(body.bannerBadge, 40) || 'LIVE DISPLAY',
+      bannerNoticeText: sanitizePlainText(body.bannerNoticeText, 240) || '',
+      showClock: true,
+      showSponsors: true,
+      sortOrder: existing.length + 1,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+
+  await broadcastEvent('tv_screen_updated', created);
+  return c.json({ screen: created }, 201);
+});
+
+adminRoutes.patch('/tv-screens/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const prev = await db.query.tvScreens.findFirst({ where: eq(tvScreens.id, id) });
+  if (!prev) {
+    return c.json({ error: 'Profil Layar TV tidak ditemukan' }, 404);
+  }
+
+  const body = await c.req.json<{
+    name?: string;
+    mode?: 'single' | 'split' | 'bracket' | 'standby' | 'auto_rotate';
+    courtId?: number | null;
+    targetMatchId?: number | null;
+    secondaryMatchId?: number | null;
+    bracketTournamentId?: number | null;
+    bannerPreset?: 'tm' | 'warmup' | 'break' | 'upcoming' | 'custom';
+    bannerTitle?: string;
+    bannerSubtitle?: string;
+    bannerBadge?: string;
+    bannerNoticeText?: string;
+    showClock?: boolean;
+    showSponsors?: boolean;
+    resetCustomBanner?: boolean;
+  }>();
+
+  const patch: Partial<typeof tvScreens.$inferInsert> = { updatedAt: Date.now() };
+  if (body.name !== undefined) {
+    const clean = sanitizePlainText(body.name, 60);
+    if (clean) patch.name = clean;
+  }
+  if (body.mode !== undefined) {
+    const validModes = ['single', 'split', 'bracket', 'standby', 'auto_rotate'] as const;
+    if ((validModes as readonly string[]).includes(body.mode)) patch.mode = body.mode;
+  }
+  if (body.courtId !== undefined) {
+    patch.courtId = body.courtId === null ? null : Number(body.courtId) || null;
+  }
+  if (body.targetMatchId !== undefined) {
+    patch.targetMatchId =
+      body.targetMatchId === null ? null : Number(body.targetMatchId) || null;
+  }
+  if (body.secondaryMatchId !== undefined) {
+    patch.secondaryMatchId =
+      body.secondaryMatchId === null ? null : Number(body.secondaryMatchId) || null;
+  }
+  if (body.bracketTournamentId !== undefined) {
+    patch.bracketTournamentId =
+      body.bracketTournamentId === null
+        ? null
+        : Number(body.bracketTournamentId) || null;
+  }
+  if (body.bannerPreset !== undefined) {
+    const validPresets = ['tm', 'warmup', 'break', 'upcoming', 'custom'] as const;
+    if ((validPresets as readonly string[]).includes(body.bannerPreset)) {
+      patch.bannerPreset = body.bannerPreset;
+    }
+  }
+  if (body.bannerTitle !== undefined) {
+    patch.bannerTitle = sanitizePlainText(body.bannerTitle, 100);
+  }
+  if (body.bannerSubtitle !== undefined) {
+    patch.bannerSubtitle = sanitizePlainText(body.bannerSubtitle, 140);
+  }
+  if (body.bannerBadge !== undefined) {
+    patch.bannerBadge = sanitizePlainText(body.bannerBadge, 40);
+  }
+  if (body.bannerNoticeText !== undefined) {
+    patch.bannerNoticeText = sanitizePlainText(body.bannerNoticeText, 240);
+  }
+  if (body.showClock !== undefined) patch.showClock = Boolean(body.showClock);
+  if (body.showSponsors !== undefined) patch.showSponsors = Boolean(body.showSponsors);
+  if (body.resetCustomBanner) {
+    if (prev.customBannerUrl) await deleteUploadedImage(prev.customBannerUrl);
+    patch.customBannerUrl = null;
+  }
+
+  const [updated] = await db
+    .update(tvScreens)
+    .set(patch)
+    .where(eq(tvScreens.id, id))
+    .returning();
+
+  await broadcastEvent('tv_screen_updated', updated);
+  return c.json({ screen: updated });
+});
+
+adminRoutes.post('/tv-screens/:id/banner', async (c) => {
+  const id = Number(c.req.param('id'));
+  const prev = await db.query.tvScreens.findFirst({ where: eq(tvScreens.id, id) });
+  if (!prev) {
+    return c.json({ error: 'Profil Layar TV tidak ditemukan' }, 404);
+  }
+  const form = await c.req.formData();
+  const file = form.get('file');
+  if (!(file instanceof File)) {
+    return c.json({ error: 'File gambar banner wajib diunggah' }, 400);
+  }
+
+  const url = await saveUploadedImage(file, 'logos');
+  const [updated] = await db
+    .update(tvScreens)
+    .set({ customBannerUrl: url, updatedAt: Date.now() })
+    .where(eq(tvScreens.id, id))
+    .returning();
+
+  if (prev.customBannerUrl && prev.customBannerUrl !== url) {
+    await deleteUploadedImage(prev.customBannerUrl);
+  }
+
+  await broadcastEvent('tv_screen_updated', updated);
+  return c.json({ screen: updated });
+});
+
+adminRoutes.delete('/tv-screens/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const existing = await db.query.tvScreens.findFirst({ where: eq(tvScreens.id, id) });
+  if (!existing) {
+    return c.json({ error: 'Profil Layar TV tidak ditemukan' }, 404);
+  }
+  if (existing.customBannerUrl) {
+    await deleteUploadedImage(existing.customBannerUrl);
+  }
+  await db.delete(tvScreens).where(eq(tvScreens.id, id));
+  await broadcastEvent('tv_screen_updated', { deletedId: id, slug: existing.slug });
+  return c.json({ ok: true });
 });

@@ -9,10 +9,10 @@ OpenVolley maintains a layered automated test suite executed via Bun's native te
 | Command | Scope | Files Covered |
 | :--- | :--- | :--- |
 | `bun run typecheck` | Strict TypeScript static verification across client, server, and shared modules. | `tsconfig.json` |
-| `bun run test:unit` | Pure algorithmic & domain unit tests: bracket seeding/draw math, rally/deuce/undo engine, anti-XSS sanitizers, SPA route registry, iPhone `.HEIC`/`.MOV` magic-byte detection, adaptive video timeline math, S3 audio selector, 3-state theme cycle, and multi-slide gallery parser. | `src/shared/*.test.ts`, `src/server/services/*.test.ts` |
-| `bun run test:feature` | Multi-step feature workflows: 3-role RBAC enforcement (`admin` vs `panitia` vs `media`), 8-team bracket lifecycle with deuce rally confirmation, and conditional `ETag` (`304`) caching. | `src/server/features.test.ts` |
+| `bun run test:unit` | Pure algorithmic & domain unit tests: bracket seeding/draw math, FIVB smart seeding & region separation (`fivb-draw.test.ts`), per-day schedule parser (`schedule.test.ts`), rally/deuce/undo engine, anti-XSS sanitizers, SPA route registry, iPhone `.HEIC`/`.MOV` magic-byte detection, adaptive video timeline math, S3 audio selector, 3-state theme cycle, and multi-slide gallery parser. | `src/shared/*.test.ts`, `src/server/services/*.test.ts` |
+| `bun run test:feature` | Multi-step feature workflows (`Feature 1`–`11`): granular RBAC matrix & custom roles, per-user overrides, immediate session revocation & Host guard, 8-team deuce lifecycle, `ETag` (`304`) caching, password self-service, timeout/sub counters, Pool → Knockout advancement, dynamic OG/SEO + anti-SSRF asset proxy, real-time VIP TV SSE final-set transition, Master Contingents Tab import & TM Draw SSE, and Master Courts + Remote Multi-TV SSE + public TV visibility gate. | `src/server/features.test.ts` |
 | `bun run test:e2e` | Full HTTP & security integration suite: 16-team Technical Meeting draw, live rally auto-advancement to Finals & 3rd Place, spoofed SVG/HTML/fake-MP4 upload rejection, strict zero-`unsafe-inline` CSP headers, Cloudflare Real-IP extraction, TV PIN rate limiting (`429`), `MAINTENANCE_MODE` (`503`), and multi-slide + video gallery lifecycle. | `src/server/e2e.test.ts` |
-| `bun test` | Runs every test file in a single pass (`42+` tests). | `**/*.test.ts` |
+| `bun test` | Runs every test file in a single pass (`63` tests across `14` files). | `**/*.test.ts` |
 
 ---
 

@@ -1,6 +1,11 @@
 import { Database } from 'bun:sqlite';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
 import { mkdirSync } from 'node:fs';
+import {
+  inferTeamLevelFromName,
+  isPlaceholderDrawSlotName,
+} from '../../shared/fivb-draw';
+import { DEFAULT_SYSTEM_ROLES } from '../../shared/rbac';
 import * as schema from './schema';
 
 const isTest = process.env.NODE_ENV === 'test';
@@ -37,7 +42,18 @@ export function initDatabase() {
       seo_description TEXT NOT NULL DEFAULT '',
       social_image_url TEXT NOT NULL DEFAULT '',
       public_docs_enabled INTEGER NOT NULL DEFAULT 1,
+      public_tv_enabled INTEGER NOT NULL DEFAULT 0,
       doc_settings_json TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS roles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      permissions_json TEXT NOT NULL DEFAULT '[]',
+      is_system INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS users (
@@ -46,6 +62,7 @@ export function initDatabase() {
       name TEXT NOT NULL,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'panitia',
+      permissions_json TEXT,
       created_at INTEGER NOT NULL
     );
 
@@ -67,9 +84,26 @@ export function initDatabase() {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS master_teams (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      short_code TEXT NOT NULL,
+      school TEXT NOT NULL DEFAULT '',
+      level TEXT NOT NULL DEFAULT 'umum',
+      logo_url TEXT,
+      color TEXT NOT NULL DEFAULT '#E09D17',
+      default_coach_name TEXT NOT NULL DEFAULT '',
+      default_manager_name TEXT NOT NULL DEFAULT '',
+      default_jersey_colors TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS teams (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tournament_id INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+      master_team_id INTEGER REFERENCES master_teams(id) ON DELETE SET NULL,
+      squad_label TEXT NOT NULL DEFAULT '',
+      is_seeded INTEGER NOT NULL DEFAULT 0,
       name TEXT NOT NULL,
       short_code TEXT NOT NULL,
       school TEXT NOT NULL DEFAULT '',
@@ -134,6 +168,37 @@ export function initDatabase() {
       score_snapshot TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS master_courts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      short_code TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_enabled INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS tv_screens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      mode TEXT NOT NULL DEFAULT 'single',
+      court_id INTEGER REFERENCES master_courts(id) ON DELETE SET NULL,
+      target_match_id INTEGER REFERENCES matches(id) ON DELETE SET NULL,
+      secondary_match_id INTEGER REFERENCES matches(id) ON DELETE SET NULL,
+      bracket_tournament_id INTEGER REFERENCES tournaments(id) ON DELETE SET NULL,
+      banner_preset TEXT NOT NULL DEFAULT 'tm',
+      banner_title TEXT NOT NULL DEFAULT 'TECHNICAL MEETING & DRAWING',
+      banner_subtitle TEXT NOT NULL DEFAULT 'SMANSAGE VOLLEYBALL COMPETITION 2026',
+      banner_badge TEXT NOT NULL DEFAULT 'LIVE DRAWING',
+      banner_notice_text TEXT NOT NULL DEFAULT '',
+      show_clock INTEGER NOT NULL DEFAULT 1,
+      show_sponsors INTEGER NOT NULL DEFAULT 1,
+      custom_banner_url TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
 
   // Safe idempotent column migrations for existing databases
@@ -155,6 +220,9 @@ export function initDatabase() {
   }
   if (!settingColNames.has('public_docs_enabled')) {
     sqlite.exec('ALTER TABLE site_settings ADD COLUMN public_docs_enabled INTEGER NOT NULL DEFAULT 1;');
+  }
+  if (!settingColNames.has('public_tv_enabled')) {
+    sqlite.exec('ALTER TABLE site_settings ADD COLUMN public_tv_enabled INTEGER NOT NULL DEFAULT 0;');
   }
   if (!settingColNames.has('doc_settings_json')) {
     sqlite.exec("ALTER TABLE site_settings ADD COLUMN doc_settings_json TEXT NOT NULL DEFAULT '{}';");
@@ -184,6 +252,17 @@ export function initDatabase() {
   if (!teamColNames.has('jersey_colors')) {
     sqlite.exec("ALTER TABLE teams ADD COLUMN jersey_colors TEXT NOT NULL DEFAULT '[]';");
   }
+  if (!teamColNames.has('master_team_id')) {
+    sqlite.exec(
+      'ALTER TABLE teams ADD COLUMN master_team_id INTEGER REFERENCES master_teams(id) ON DELETE SET NULL;'
+    );
+  }
+  if (!teamColNames.has('squad_label')) {
+    sqlite.exec("ALTER TABLE teams ADD COLUMN squad_label TEXT NOT NULL DEFAULT '';");
+  }
+  if (!teamColNames.has('is_seeded')) {
+    sqlite.exec('ALTER TABLE teams ADD COLUMN is_seeded INTEGER NOT NULL DEFAULT 0;');
+  }
 
   const matchColNames = getColumnSet('matches');
   if (!matchColNames.has('best_of')) sqlite.exec('ALTER TABLE matches ADD COLUMN best_of INTEGER;');
@@ -202,6 +281,192 @@ export function initDatabase() {
   const reportColNames = getColumnSet('match_reports');
   if (!reportColNames.has('media_json')) {
     sqlite.exec("ALTER TABLE match_reports ADD COLUMN media_json TEXT NOT NULL DEFAULT '[]';");
+  }
+
+  const userColNames = getColumnSet('users');
+  if (!userColNames.has('permissions_json')) {
+    sqlite.exec('ALTER TABLE users ADD COLUMN permissions_json TEXT;');
+  }
+
+  seedDefaultRoles();
+  backfillMasterTeamsFromExisting();
+  backfillMasterCourtsAndTvScreens();
+}
+
+function seedDefaultRoles() {
+  const now = Date.now();
+  const stmt = sqlite.prepare(
+    `INSERT OR IGNORE INTO roles (slug, name, description, permissions_json, is_system, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  );
+  for (const r of DEFAULT_SYSTEM_ROLES) {
+    stmt.run(
+      r.slug,
+      r.name,
+      r.description,
+      JSON.stringify(r.permissions),
+      r.isSystem ? 1 : 0,
+      now
+    );
+  }
+}
+
+function backfillMasterCourtsAndTvScreens() {
+  const now = Date.now();
+
+  // Ensure any court_name already used by matches exists in master_courts
+  const usedCourts = sqlite
+    .query("SELECT DISTINCT TRIM(court_name) AS name FROM matches WHERE TRIM(court_name) != ''")
+    .all() as Array<{ name: string }>;
+
+  const existingCourts = sqlite
+    .query('SELECT id, name FROM master_courts ORDER BY sort_order ASC, id ASC')
+    .all() as Array<{ id: number; name: string }>;
+  const existingNames = new Set(existingCourts.map((c) => c.name.trim().toLowerCase()));
+
+  const insertCourt = sqlite.prepare(
+    'INSERT OR IGNORE INTO master_courts (name, short_code, sort_order, is_enabled, created_at) VALUES (?, ?, ?, 1, ?)'
+  );
+
+  let nextOrder = existingCourts.length + 1;
+  if (existingCourts.length === 0 && usedCourts.length === 0) {
+    insertCourt.run('Lapangan 1', 'LAP 1', 1, now);
+    insertCourt.run('Lapangan 2', 'LAP 2', 2, now);
+    existingNames.add('lapangan 1');
+    existingNames.add('lapangan 2');
+    nextOrder = 3;
+  } else {
+    for (const row of usedCourts) {
+      const clean = row.name.trim();
+      if (!clean || existingNames.has(clean.toLowerCase())) continue;
+      const code = clean.slice(0, 8).toUpperCase();
+      insertCourt.run(clean, code, nextOrder++, now);
+      existingNames.add(clean.toLowerCase());
+    }
+    // Always guarantee at least Lapangan 2 exists if only 1 court was created
+    if (existingNames.size === 1 && !existingNames.has('lapangan 2') && !existingNames.has('court 2')) {
+      insertCourt.run('Lapangan 2', 'LAP 2', nextOrder++, now);
+    }
+  }
+
+  // Ensure default TV screen profiles exist when tv_screens is empty
+  const existingTv = sqlite.query('SELECT COUNT(*) AS cnt FROM tv_screens').get() as {
+    cnt: number;
+  };
+  if (existingTv.cnt === 0) {
+    const firstCourt = sqlite
+      .query('SELECT id FROM master_courts ORDER BY sort_order ASC, id ASC LIMIT 1')
+      .get() as { id: number } | null;
+
+    const insertTv = sqlite.prepare(
+      `INSERT OR IGNORE INTO tv_screens (
+        name, slug, mode, court_id, banner_preset, banner_title, banner_subtitle,
+        banner_badge, banner_notice_text, show_clock, show_sponsors, sort_order, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`
+    );
+
+    insertTv.run(
+      'TV Lapangan 1',
+      'lapangan-1',
+      'single',
+      firstCourt?.id ?? null,
+      'upcoming',
+      'PERTANDINGAN SEGERA DIMULAI',
+      'SMANSAGE VOLLEYBALL COMPETITION 2026',
+      'LAPANGAN 1',
+      'Selamat datang di Arena Pertandingan • Junjung Tinggi Sportivitas',
+      1,
+      now,
+      now
+    );
+
+    insertTv.run(
+      'Proyektor Bagan TM & Lobby',
+      'lobby-tm',
+      'standby',
+      null,
+      'tm',
+      'TECHNICAL MEETING & DRAWING',
+      'SMANSAGE VOLLEYBALL COMPETITION 2026',
+      'STANDBY TM',
+      'Mohon para Manajer & Pelatih tim peserta bersiap di Ruang Technical Meeting',
+      2,
+      now,
+      now
+    );
+  }
+}
+
+function backfillMasterTeamsFromExisting() {
+  const unlinkedRows = sqlite
+    .query(
+      `SELECT id, name, short_code, school, logo_url, color, coach_name, manager_name, jersey_colors
+       FROM teams
+       WHERE master_team_id IS NULL
+       ORDER BY id ASC`
+    )
+    .all() as Array<{
+    id: number;
+    name: string;
+    short_code: string;
+    school: string;
+    logo_url: string | null;
+    color: string;
+    coach_name: string;
+    manager_name: string;
+    jersey_colors: string;
+  }>;
+
+  if (unlinkedRows.length === 0) return;
+
+  const findMasterStmt = sqlite.prepare(
+    `SELECT id, logo_url FROM master_teams
+     WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) AND LOWER(TRIM(school)) = LOWER(TRIM(?))
+     LIMIT 1`
+  );
+  const insertMasterStmt = sqlite.prepare(
+    `INSERT INTO master_teams (
+      name, short_code, school, level, logo_url, color,
+      default_coach_name, default_manager_name, default_jersey_colors, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const updateMasterLogoStmt = sqlite.prepare(
+    'UPDATE master_teams SET logo_url = ? WHERE id = ? AND (logo_url IS NULL OR logo_url = "")'
+  );
+  const linkTeamStmt = sqlite.prepare('UPDATE teams SET master_team_id = ? WHERE id = ?');
+
+  const now = Date.now();
+  for (const row of unlinkedRows) {
+    if (isPlaceholderDrawSlotName(row.name)) continue;
+    const existing = findMasterStmt.get(row.name, row.school || '') as {
+      id: number;
+      logo_url: string | null;
+    } | null;
+
+    let masterId: number;
+    if (existing) {
+      masterId = existing.id;
+      if (!existing.logo_url && row.logo_url) {
+        updateMasterLogoStmt.run(row.logo_url, masterId);
+      }
+    } else {
+      const inferredLevel = inferTeamLevelFromName(row.name, row.school);
+      const res = insertMasterStmt.run(
+        row.name.trim(),
+        row.short_code || 'TIM',
+        (row.school || '').trim(),
+        inferredLevel,
+        row.logo_url,
+        row.color || '#E09D17',
+        row.coach_name || '',
+        row.manager_name || '',
+        row.jersey_colors || '[]',
+        now
+      );
+      masterId = Number(res.lastInsertRowid);
+    }
+
+    linkTeamStmt.run(masterId, row.id);
   }
 }
 
@@ -225,6 +490,7 @@ export async function seedDefaults() {
         'Portal Resmi Live Score, Bagan Turnamen, Buletin Resmi, dan Galeri Pertandingan Smansage Volleyball Competition (AVERSA • Dies Natalis 44 SMA Negeri 1 Gedeg).',
       socialImageUrl: '',
       publicDocsEnabled: true,
+      publicTvEnabled: false,
       docSettingsJson: '{}',
     });
   } else if (existingSettings.logoUrl === '/brand/svc-standalone-color.svg') {

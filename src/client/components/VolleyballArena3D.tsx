@@ -19,6 +19,7 @@ interface VolleyballArena3DProps {
   featuredMatch?: Match | null;
   featuredTeamA?: Team | null;
   featuredTeamB?: Team | null;
+  showTvButton?: boolean;
   onOpenBracket?: () => void;
   onSelectMatch?: (matchId: number) => void;
 }
@@ -35,6 +36,7 @@ export function VolleyballArena3D({
   featuredMatch,
   featuredTeamA,
   featuredTeamB,
+  showTvButton = false,
   onOpenBracket,
   onSelectMatch,
 }: VolleyballArena3DProps) {
@@ -474,13 +476,15 @@ export function VolleyballArena3D({
               </button>
             )}
 
-            <a
-              href="/tv"
-              className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/85 px-4 py-2.5 text-xs font-bold text-slate-100 backdrop-blur-xs transition hover:border-amber-400/60 hover:text-amber-300"
-            >
-              <Monitor className="h-4 w-4 text-amber-400" />
-              Layar Skor TV
-            </a>
+            {showTvButton && (
+              <a
+                href="/tv"
+                className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/85 px-4 py-2.5 text-xs font-bold text-slate-100 backdrop-blur-xs transition hover:border-amber-400/60 hover:text-amber-300"
+              >
+                <Monitor className="h-4 w-4 text-amber-400" />
+                Layar Skor TV
+              </a>
+            )}
 
             {teamCount > 0 && (
               <div className="flex items-center gap-2 rounded-xl border border-slate-800/90 bg-slate-950/70 px-3.5 py-2 text-xs text-slate-300 backdrop-blur-xs">

@@ -1,30 +1,59 @@
 import {
   ArrowLeft,
   ArrowLeftRight,
-  Columns2,
+  Clock,
   Lock,
   Maximize,
   Minimize,
-  Monitor,
   Radio,
-  RefreshCw,
   Timer,
   Trophy,
 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { isPlaceholderDrawSlotName } from '../../shared/fivb-draw';
+import { BracketView } from '../components/BracketView';
 import { PartnersFooter } from '../components/PartnersFooter';
+import { PoolStandingsView } from '../components/PoolStandingsView';
 import { TeamAvatar } from '../components/TeamAvatar';
 import { VolleyballIcon } from '../components/VolleyballIcon';
 import { apiFetch } from '../lib/api';
 import { syncDocumentBranding } from '../lib/seo';
-import type { Match, OverviewData, Team, Tournament } from '../types';
+import type {
+  DrawSlotBroadcastPayload,
+  Match,
+  OverviewData,
+  Team,
+  Tournament,
+  TvScreen,
+  TvScreenMode,
+} from '../types';
 
-type TvDisplayMode = 'single' | 'split' | 'rotate';
+type TvDisplayMode = 'single' | 'split' | 'rotate' | 'bracket' | 'standby';
+
+function mapScreenModeToDisplay(mode: TvScreenMode): TvDisplayMode {
+  return mode === 'auto_rotate' ? 'rotate' : mode;
+}
 
 function getInitialTvMode(): TvDisplayMode {
   if (typeof window === 'undefined') return 'single';
+  const paramMode = new URLSearchParams(window.location.search).get('mode');
+  if (
+    paramMode === 'split' ||
+    paramMode === 'rotate' ||
+    paramMode === 'bracket' ||
+    paramMode === 'standby'
+  ) {
+    return paramMode;
+  }
   const saved = localStorage.getItem('ov_tv_mode');
-  if (saved === 'split' || saved === 'rotate') return saved;
+  if (
+    saved === 'split' ||
+    saved === 'rotate' ||
+    saved === 'bracket' ||
+    saved === 'standby'
+  ) {
+    return saved;
+  }
   return 'single';
 }
 
@@ -82,8 +111,11 @@ function SplitCourtPanel({
   const teamB = match.teamBId ? teamMap.get(match.teamBId) : null;
   const category = tournamentMap.get(match.tournamentId);
   const activeSet = match.sets.find((s) => s.setNumber === match.currentSet);
+  const lastSet = match.sets.length > 0 ? match.sets[match.sets.length - 1] : undefined;
   const isLive = match.status === 'live';
   const isFinished = match.status === 'finished';
+  const isWinnerA = Boolean(isFinished && match.winnerId && match.winnerId === match.teamAId);
+  const isWinnerB = Boolean(isFinished && match.winnerId && match.winnerId === match.teamBId);
 
   return (
     <div className="flex flex-col justify-between overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/90 p-5 shadow-2xl">
@@ -145,7 +177,9 @@ function SplitCourtPanel({
           <div className="flex items-center gap-2 font-display text-6xl font-extrabold tabular-nums xl:text-7xl">
             <span
               className={
-                isLive && match.servingTeam === 'A' ? 'text-amber-400' : 'text-white'
+                (isLive && match.servingTeam === 'A') || isWinnerA
+                  ? 'text-amber-400'
+                  : 'text-white'
               }
             >
               {isLive && activeSet ? activeSet.scoreA : match.setsWonA}
@@ -153,7 +187,9 @@ function SplitCourtPanel({
             <span className="text-3xl text-slate-600">:</span>
             <span
               className={
-                isLive && match.servingTeam === 'B' ? 'text-amber-400' : 'text-white'
+                (isLive && match.servingTeam === 'B') || isWinnerB
+                  ? 'text-amber-400'
+                  : 'text-white'
               }
             >
               {isLive && activeSet ? activeSet.scoreB : match.setsWonB}
@@ -161,7 +197,9 @@ function SplitCourtPanel({
           </div>
 
           <div className="mt-2 rounded-full bg-slate-950 px-3.5 py-1 text-xs font-extrabold uppercase tracking-wider text-amber-400 ring-1 ring-slate-800">
-            SET {match.setsWonA} - {match.setsWonB}
+            {isFinished && lastSet
+              ? `SET TERAKHIR (S${lastSet.setNumber}): ${lastSet.scoreA}-${lastSet.scoreB}`
+              : `SET ${match.setsWonA} - ${match.setsWonB}`}
           </div>
         </div>
 
@@ -195,18 +233,23 @@ function SplitCourtPanel({
         {match.sets.length === 0 ? (
           <span className="text-xs text-slate-500">Menunggu set dimulai</span>
         ) : (
-          match.sets.map((s) => (
-            <span
-              key={s.id}
-              className={`rounded-lg px-2.5 py-1 text-xs font-bold tabular-nums ${
-                s.setNumber === match.currentSet && isLive
-                  ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/40'
-                  : 'bg-slate-950 text-slate-300'
-              }`}
-            >
-              S{s.setNumber}: {s.scoreA}-{s.scoreB}
-            </span>
-          ))
+          match.sets.map((s) => {
+            const isCurrentOrFinalSet =
+              (isLive && s.setNumber === match.currentSet) ||
+              (isFinished && lastSet && s.setNumber === lastSet.setNumber);
+            return (
+              <span
+                key={s.id}
+                className={`rounded-lg px-2.5 py-1 text-xs font-bold tabular-nums ${
+                  isCurrentOrFinalSet
+                    ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/40'
+                    : 'bg-slate-950 text-slate-300'
+                }`}
+              >
+                S{s.setNumber}: {s.scoreA}-{s.scoreB}
+              </span>
+            );
+          })
         )}
       </div>
     </div>
@@ -214,97 +257,383 @@ function SplitCourtPanel({
 }
 
 export function ArenaTvDisplay() {
+  const [screenSlug, setScreenSlug] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const raw = new URLSearchParams(window.location.search).get('screen');
+    return raw ? raw.trim().toLowerCase() : null;
+  });
+  const [hasExplicitMatchParam] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return Boolean(new URLSearchParams(window.location.search).get('match'));
+  });
+  const [activeScreen, setActiveScreen] = useState<TvScreen | null>(null);
   const [unlocked, setUnlocked] = useState<boolean | null>(null);
+  const [vipAuthorized, setVipAuthorized] = useState<boolean>(false);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState<string | null>(null);
   const [data, setData] = useState<OverviewData | null>(null);
   const [tvMode, setTvModeState] = useState<TvDisplayMode>(getInitialTvMode);
+  const [nowClock, setNowClock] = useState<Date>(() => new Date());
   const [selectedMatchId, setSelectedMatchId] = useState<number | null>(() => {
     if (typeof window === 'undefined') return null;
     const param = new URLSearchParams(window.location.search).get('match');
     return param ? Number(param) : null;
   });
   const [secondaryMatchId, setSecondaryMatchId] = useState<number | null>(null);
+  const [selectedTournamentId, setSelectedTournamentId] = useState<number | null>(null);
+  const [recentDrawEvent, setRecentDrawEvent] =
+    useState<DrawSlotBroadcastPayload | null>(null);
   const [rotateIndex, setRotateIndex] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [controlsIdle, setControlsIdle] = useState(false);
   const [connected, setConnected] = useState(false);
+  const latestVersionRef = useRef<number>(0);
+  const fetchSeqRef = useRef<number>(0);
 
-  const setTvMode = (next: TvDisplayMode) => {
-    setTvModeState(next);
-    localStorage.setItem('ov_tv_mode', next);
-  };
+  const applyRemoteScreenConfig = useCallback(
+    (scr: TvScreen, allMatches?: Match[], allCourts?: OverviewData['masterCourts']) => {
+      setActiveScreen(scr);
+      setTvModeState(mapScreenModeToDisplay(scr.mode));
+      if (scr.targetMatchId) {
+        setSelectedMatchId(scr.targetMatchId);
+      } else if (scr.courtId && allMatches && allCourts) {
+        const boundCourt = allCourts.find((c) => c.id === scr.courtId);
+        if (boundCourt) {
+          const courtLive =
+            allMatches.find(
+              (m) => m.status === 'live' && m.courtName === boundCourt.name
+            ) ??
+            allMatches.find(
+              (m) =>
+                m.status !== 'bye' &&
+                (m.teamAId || m.teamBId) &&
+                m.courtName === boundCourt.name
+            );
+          if (courtLive) setSelectedMatchId(courtLive.id);
+        }
+      }
+      if (scr.secondaryMatchId) {
+        setSecondaryMatchId(scr.secondaryMatchId);
+      }
+      if (scr.bracketTournamentId) {
+        setSelectedTournamentId(scr.bracketTournamentId);
+      }
+    },
+    []
+  );
 
-  const loadOverview = useCallback(async () => {
-    try {
-      const res = await fetch('/api/public/overview', { cache: 'no-store' }).then((r) =>
-        r.json()
-      );
-      const ov = res as OverviewData;
-      setData(ov);
-      setSelectedMatchId((prev) => {
-        const list = ov.matches ?? [];
-        if (prev && list.some((m) => m.id === prev)) return prev;
-        const firstLive = list.find((m) => m.status === 'live');
-        if (firstLive) return firstLive.id;
-        const firstPlayable = list.find(
-          (m) => m.status !== 'bye' && (m.teamAId || m.teamBId)
-        );
-        return firstPlayable?.id ?? null;
+  const loadOverview = useCallback(
+    async (force = false) => {
+      const seq = ++fetchSeqRef.current;
+      try {
+        const resp = await fetch(`/api/public/overview?_=${Date.now()}`, {
+          cache: 'no-store',
+          credentials: 'include',
+        });
+        if (!resp.ok) return;
+
+        const etagHeader = resp.headers.get('etag') || '';
+        const verMatch = etagHeader.match(/v(\d+)/);
+        const incomingVer = verMatch ? Number(verMatch[1]) : 0;
+
+        // Prevent slower older HTTP responses from overwriting a newer SSE direct patch
+        if (!force && incomingVer > 0 && incomingVer < latestVersionRef.current) {
+          return;
+        }
+        if (seq < fetchSeqRef.current && incomingVer <= latestVersionRef.current) {
+          return;
+        }
+        if (incomingVer > latestVersionRef.current) {
+          latestVersionRef.current = incomingVer;
+        }
+
+        const ov = (await resp.json()) as OverviewData;
+        setData(ov);
+
+        const matchedScreen = screenSlug
+          ? (ov.tvScreens ?? []).find((s) => s.slug === screenSlug)
+          : !hasExplicitMatchParam
+            ? (ov.tvScreens ?? [])[0]
+            : undefined;
+        if (matchedScreen) {
+          applyRemoteScreenConfig(matchedScreen, ov.matches, ov.masterCourts);
+          return;
+        }
+
+        setSelectedTournamentId((prev) => {
+          if (prev && (ov.tournaments ?? []).some((t) => t.id === prev)) return prev;
+          return ov.tournaments?.[0]?.id ?? null;
+        });
+        setSelectedMatchId((prev) => {
+          const list = ov.matches ?? [];
+          if (prev && list.some((m) => m.id === prev)) return prev;
+          const firstLive = list.find((m) => m.status === 'live');
+          if (firstLive) return firstLive.id;
+          const firstPlayable = list.find(
+            (m) => m.status !== 'bye' && (m.teamAId || m.teamBId)
+          );
+          return firstPlayable?.id ?? null;
+        });
+        setSecondaryMatchId((prev) => {
+          const list = (ov.matches ?? []).filter(
+            (m) => m.status !== 'bye' && (m.teamAId || m.teamBId)
+          );
+          if (prev && list.some((m) => m.id === prev)) return prev;
+          const liveList = list.filter((m) => m.status === 'live');
+          if (liveList.length >= 2) return liveList[1]!.id;
+          return list[1]?.id ?? null;
+        });
+      } catch {
+        // ignore transient network glitches on TV display
+      }
+    },
+    [screenSlug, hasExplicitMatchParam, applyRemoteScreenConfig]
+  );
+
+  // Zero-latency in-memory patch when `match_updated` arrives over SSE
+  const applyIncomingMatch = useCallback(
+    (rawData: string, lastEventId?: string) => {
+      try {
+        const incoming = JSON.parse(rawData) as Match;
+        if (!incoming || typeof incoming.id !== 'number') {
+          loadOverview(true);
+          return;
+        }
+        const evVer = lastEventId ? Number(lastEventId) : 0;
+        if (Number.isFinite(evVer) && evVer > latestVersionRef.current) {
+          latestVersionRef.current = evVer;
+        }
+
+        setData((prev) => {
+          if (!prev) return prev;
+          const idx = prev.matches.findIndex((m) => m.id === incoming.id);
+          if (idx === -1) return prev;
+          const nextMatches = [...prev.matches];
+          const existing = nextMatches[idx]!;
+          nextMatches[idx] = {
+            ...existing,
+            ...incoming,
+            sets: Array.isArray(incoming.sets) ? incoming.sets : existing.sets,
+          };
+          return { ...prev, matches: nextMatches };
+        });
+
+        // When a match finishes or resets, also pull full overview so bracket advancements sync immediately
+        if (incoming.status === 'finished' || incoming.status === 'scheduled') {
+          loadOverview(true);
+        }
+      } catch {
+        loadOverview(true);
+      }
+    },
+    [loadOverview]
+  );
+
+  useEffect(() => {
+    syncDocumentBranding(
+      data?.settings,
+      activeScreen ? `Layar TV • ${activeScreen.name}` : 'Layar TV Arena'
+    );
+  }, [data?.settings, activeScreen]);
+
+  useEffect(() => {
+    apiFetch<{ unlocked: boolean; publicTvEnabled?: boolean }>('/api/public/tv-check')
+      .then((res) => {
+        setVipAuthorized(res.unlocked);
+        setUnlocked(Boolean(res.unlocked || res.publicTvEnabled));
+      })
+      .catch(() => {
+        setVipAuthorized(false);
+        setUnlocked(false);
       });
-    } catch {
-      // ignore transient network glitches on TV display
-    }
-  }, []);
-
-  useEffect(() => {
-    syncDocumentBranding(data?.settings, 'Layar TV Arena');
-  }, [data?.settings]);
-
-  useEffect(() => {
-    apiFetch<{ unlocked: boolean }>('/api/public/tv-check')
-      .then((res) => setUnlocked(res.unlocked))
-      .catch(() => setUnlocked(false));
-    loadOverview();
+    loadOverview(true);
   }, [loadOverview]);
 
   useEffect(() => {
-    if (!unlocked) return;
-    loadOverview();
+    if (tvMode !== 'standby') return;
+    const t = window.setInterval(() => setNowClock(new Date()), 1000);
+    return () => window.clearInterval(t);
+  }, [tvMode]);
 
-    let fallbackEs: EventSource | null = null;
-    const bindEvents = (source: EventSource) => {
-      source.addEventListener('connected', () => setConnected(true));
+  useEffect(() => {
+    if (!unlocked) return;
+    loadOverview(true);
+
+    let disposed = false;
+    let activeEs: EventSource | null = null;
+    let reconnectTimer: number | null = null;
+    let usePublicStreamFallback = !vipAuthorized;
+
+    const clearReconnect = () => {
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const scheduleReconnect = (delayMs = 2000) => {
+      if (disposed || reconnectTimer !== null) return;
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        openStream();
+      }, delayMs);
+    };
+
+    const openStream = () => {
+      if (disposed) return;
+      activeEs?.close();
+
+      const streamUrl = usePublicStreamFallback
+        ? '/api/public/stream'
+        : '/api/public/tv-stream';
+      const source = new EventSource(streamUrl);
+      activeEs = source;
+
+      source.addEventListener('connected', (e) => {
+        if (disposed) return;
+        setConnected(true);
+        try {
+          const info = JSON.parse((e as MessageEvent).data) as { version?: number };
+          if (info.version && info.version !== latestVersionRef.current) {
+            loadOverview(true);
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      source.addEventListener('ping', (e) => {
+        if (disposed) return;
+        setConnected(true);
+        try {
+          const info = JSON.parse((e as MessageEvent).data) as { version?: number };
+          if (info.version && info.version > latestVersionRef.current) {
+            loadOverview(true);
+          }
+        } catch {
+          // ignore legacy numeric ping
+        }
+      });
+
+      source.addEventListener('match_updated', (e) => {
+        const me = e as MessageEvent;
+        applyIncomingMatch(me.data, me.lastEventId);
+      });
+
+      source.addEventListener('draw_slot_updated', (e) => {
+        try {
+          const payload = JSON.parse(
+            (e as MessageEvent).data
+          ) as DrawSlotBroadcastPayload;
+          if (payload && payload.tournamentId) {
+            setSelectedTournamentId(payload.tournamentId);
+            if (!payload.cleared) {
+              setRecentDrawEvent(payload);
+              window.setTimeout(() => {
+                setRecentDrawEvent((cur) =>
+                  cur?.timestamp === payload.timestamp ? null : cur
+                );
+              }, 6500);
+            }
+          }
+        } catch {
+          // ignore
+        }
+        loadOverview(true);
+      });
+
+      source.addEventListener('tv_screen_updated', (e) => {
+        try {
+          const payload = JSON.parse((e as MessageEvent).data) as TvScreen;
+          const targetSlug = screenSlug || activeScreen?.slug;
+          if (targetSlug && payload && payload.slug === targetSlug) {
+            applyRemoteScreenConfig(payload, data?.matches, data?.masterCourts);
+          }
+        } catch {
+          // ignore
+        }
+        loadOverview(true);
+      });
+
       for (const ev of [
-        'match_updated',
         'bracket_updated',
+        'master_teams_updated',
+        'courts_updated',
         'tournament_updated',
         'settings_updated',
       ]) {
-        source.addEventListener(ev, () => loadOverview());
+        source.addEventListener(ev, () => {
+          loadOverview(true);
+        });
+      }
+
+      source.onerror = () => {
+        if (disposed) return;
+        setConnected(false);
+        source.close();
+        activeEs = null;
+
+        // Verify whether VIP cookie is still valid or should fall back to public stream, then reconnect
+        apiFetch<{ unlocked: boolean }>('/api/public/tv-check')
+          .then((chk) => {
+            usePublicStreamFallback = !chk.unlocked;
+          })
+          .catch(() => {
+            usePublicStreamFallback = true;
+          })
+          .finally(() => {
+            loadOverview(true);
+            scheduleReconnect(2000);
+          });
+      };
+    };
+
+    openStream();
+
+    // Safety-net sync loop: fast 2.5s sync if SSE is reconnecting, gentle 8s check while connected
+    const syncInterval = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      loadOverview(false);
+    }, 3000);
+
+    const onWake = () => {
+      if (document.visibilityState === 'visible') {
+        loadOverview(true);
+        if (!activeEs || activeEs.readyState === EventSource.CLOSED) {
+          clearReconnect();
+          openStream();
+        }
       }
     };
 
-    const es = new EventSource('/api/public/tv-stream');
-    bindEvents(es);
-    es.onerror = () => {
-      es.close();
-      if (!fallbackEs) {
-        fallbackEs = new EventSource('/api/public/stream');
-        bindEvents(fallbackEs);
-        fallbackEs.onerror = () => setConnected(false);
-      }
+    const onOnline = () => {
+      loadOverview(true);
+      clearReconnect();
+      openStream();
     };
 
     const onFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('visibilitychange', onWake);
+    window.addEventListener('online', onOnline);
     document.addEventListener('fullscreenchange', onFsChange);
 
     return () => {
-      es.close();
-      fallbackEs?.close();
+      disposed = true;
+      clearReconnect();
+      window.clearInterval(syncInterval);
+      activeEs?.close();
+      document.removeEventListener('visibilitychange', onWake);
+      window.removeEventListener('online', onOnline);
       document.removeEventListener('fullscreenchange', onFsChange);
     };
-  }, [unlocked, loadOverview]);
+  }, [
+    unlocked,
+    vipAuthorized,
+    screenSlug,
+    loadOverview,
+    applyIncomingMatch,
+    applyRemoteScreenConfig,
+  ]);
 
   // Auto-hide header controls when idle for 4.5s in fullscreen
   useEffect(() => {
@@ -350,6 +679,7 @@ export function ArenaTvDisplay() {
         method: 'POST',
         body: JSON.stringify({ pin: pinInput }),
       });
+      setVipAuthorized(true);
       setUnlocked(true);
     } catch (err) {
       setPinError((err as Error).message);
@@ -381,14 +711,37 @@ export function ArenaTvDisplay() {
     (data?.tournaments ?? []).map((t) => [t.id, t])
   );
 
+  const activeBracketTournament: Tournament | undefined =
+    (data?.tournaments ?? []).find((t) => t.id === selectedTournamentId) ??
+    data?.tournaments?.[0];
+  const bracketCategoryTeams = (data?.teams ?? []).filter(
+    (t) => t.tournamentId === activeBracketTournament?.id
+  );
+  const bracketCategoryMatches = (data?.matches ?? []).filter(
+    (m) => m.tournamentId === activeBracketTournament?.id
+  );
+  const filledDrawSlots = bracketCategoryTeams.filter(
+    (t) => !isPlaceholderDrawSlotName(t.name)
+  ).length;
+
   const teamA = primaryMatch?.teamAId ? teamMap.get(primaryMatch.teamAId) : null;
   const teamB = primaryMatch?.teamBId ? teamMap.get(primaryMatch.teamBId) : null;
   const category = primaryMatch ? tournamentMap.get(primaryMatch.tournamentId) : null;
   const activeSet = primaryMatch?.sets.find(
     (s) => s.setNumber === primaryMatch.currentSet
   );
+  const lastPlayedSet =
+    primaryMatch && primaryMatch.sets.length > 0
+      ? primaryMatch.sets[primaryMatch.sets.length - 1]
+      : undefined;
   const isLive = primaryMatch?.status === 'live';
   const isFinished = primaryMatch?.status === 'finished';
+  const isWinnerA = Boolean(
+    isFinished && primaryMatch?.winnerId && primaryMatch.winnerId === primaryMatch.teamAId
+  );
+  const isWinnerB = Boolean(
+    isFinished && primaryMatch?.winnerId && primaryMatch.winnerId === primaryMatch.teamBId
+  );
 
   if (unlocked === false) {
     return (
@@ -466,11 +819,15 @@ export function ArenaTvDisplay() {
               {data?.settings?.eventName || 'Smansage Volleyball Competition'}
             </h1>
             <p className="text-xs font-semibold text-amber-400">
-              {tvMode === 'split'
-                ? 'Mode Multi-Lapangan (Split 2 Layar)'
-                : tvMode === 'rotate'
-                  ? `Auto-Rotate (${(rotateIndex % Math.max(1, rotationPool.length)) + 1}/${Math.max(1, rotationPool.length)}) • ${primaryMatch?.courtName || 'Arena'}`
-                  : `${category?.name || 'SVC'} • ${primaryMatch?.courtName || 'Arena Utama'}`}
+              {tvMode === 'standby'
+                ? `${activeScreen?.bannerBadge || 'STANDBY ARENA'} • ${data?.settings?.eventSubtitle || 'SVC Arena'}`
+                : tvMode === 'bracket'
+                  ? `Live Bagan & Technical Meeting • ${activeBracketTournament?.name || 'SVC'} (${filledDrawSlots}/${bracketCategoryTeams.length} Slot Terisi)`
+                  : tvMode === 'split'
+                    ? 'Mode Multi-Lapangan (Split 2 Layar)'
+                    : tvMode === 'rotate'
+                      ? `Auto-Rotate (${(rotateIndex % Math.max(1, rotationPool.length)) + 1}/${Math.max(1, rotationPool.length)}) • ${primaryMatch?.courtName || 'Arena'}`
+                      : `${category?.name || 'SVC'} • ${primaryMatch?.courtName || 'Arena Utama'}`}
             </p>
           </div>
         </div>
@@ -480,93 +837,28 @@ export function ArenaTvDisplay() {
             controlsIdle ? 'opacity-20 hover:opacity-100' : 'opacity-100'
           }`}
         >
-          {/* Multi-Court Display Mode Switcher */}
-          <div className="flex items-center rounded-xl border border-slate-800 bg-slate-900 p-1">
-            <button
-              type="button"
-              onClick={() => setTvMode('single')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold transition ${
-                tvMode === 'single'
-                  ? 'bg-amber-500 text-slate-950'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              <Monitor className="h-3.5 w-3.5" />
-              <span className="hidden md:inline">1 Lapangan</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setTvMode('split')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold transition ${
-                tvMode === 'split'
-                  ? 'bg-amber-500 text-slate-950'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              <Columns2 className="h-3.5 w-3.5" />
-              <span className="hidden md:inline">Split 2</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setTvMode('rotate')}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-bold transition ${
-                tvMode === 'rotate'
-                  ? 'bg-amber-500 text-slate-950'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              <span className="hidden md:inline">Auto 12d</span>
-            </button>
-          </div>
-
-          {tvMode !== 'rotate' && (
+          {/* Screen Profile Picker only when browsing bare /tv without ?screen= or ?match= */}
+          {!screenSlug && !hasExplicitMatchParam && (data?.tvScreens ?? []).length > 1 && (
             <select
-              value={primaryMatch?.id ?? ''}
+              value={activeScreen?.slug ?? ''}
               onChange={(e) => {
-                const id = Number(e.target.value);
-                setSelectedMatchId(id);
-                window.history.replaceState(null, '', `/tv?match=${id}`);
+                const nextSlug = e.target.value;
+                if (!nextSlug) return;
+                setScreenSlug(nextSlug);
+                window.history.replaceState(null, '', `/tv?screen=${nextSlug}`);
+                const matched = (data?.tvScreens ?? []).find((s) => s.slug === nextSlug);
+                if (matched) {
+                  applyRemoteScreenConfig(matched, data?.matches, data?.masterCourts);
+                }
               }}
-              aria-label="Pilih Pertandingan Layar TV"
+              aria-label="Pilih Profil Layar TV"
               className="min-h-10 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-bold text-slate-200 focus:border-amber-400"
             >
-              {playableMatches.map((m) => {
-                const tA = m.teamAId ? teamMap.get(m.teamAId)?.shortCode : 'TBD';
-                const tB = m.teamBId ? teamMap.get(m.teamBId)?.shortCode : 'TBD';
-                const statusTag =
-                  m.status === 'live'
-                    ? 'LIVE'
-                    : m.status === 'finished'
-                      ? 'SELESAI'
-                      : 'JADWAL';
-                return (
-                  <option key={m.id} value={m.id}>
-                    [{statusTag}] {m.courtName}: {tA} vs {tB}
-                  </option>
-                );
-              })}
-            </select>
-          )}
-
-          {tvMode === 'split' && playableMatches.length > 1 && (
-            <select
-              value={secondMatchCandidate?.id ?? ''}
-              onChange={(e) => setSecondaryMatchId(Number(e.target.value))}
-              aria-label="Pilih Pertandingan Kedua Layar TV"
-              className="min-h-10 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-bold text-slate-200 focus:border-amber-400"
-            >
-              {playableMatches
-                .filter((m) => m.id !== primaryMatch?.id)
-                .map((m) => {
-                  const tA = m.teamAId ? teamMap.get(m.teamAId)?.shortCode : 'TBD';
-                  const tB = m.teamBId ? teamMap.get(m.teamBId)?.shortCode : 'TBD';
-                  return (
-                    <option key={m.id} value={m.id}>
-                      Layar 2 • {m.courtName}: {tA} vs {tB}
-                    </option>
-                  );
-                })}
+              {(data?.tvScreens ?? []).map((scr) => (
+                <option key={scr.id} value={scr.slug}>
+                  Layar: {scr.name}
+                </option>
+              ))}
             </select>
           )}
 
@@ -603,9 +895,197 @@ export function ArenaTvDisplay() {
         </div>
       </header>
 
-      {/* Main Giant Arena Scoreboard */}
-      <main className="relative z-10 mx-auto flex w-full max-w-7xl flex-1 flex-col justify-center px-4 py-6 sm:px-8">
-        {!primaryMatch ? (
+      {/* Main Giant Arena Scoreboard, Standby Banner, or Live TM Drawing Bracket */}
+      <main
+        className={`relative z-10 mx-auto flex w-full flex-1 flex-col justify-center px-4 py-6 sm:px-8 ${
+          tvMode === 'bracket' ? 'max-w-[1680px]' : 'max-w-7xl'
+        }`}
+      >
+        {tvMode === 'standby' ? (
+          <div className="animate-page-enter relative flex min-h-[60vh] flex-col items-center justify-center overflow-hidden rounded-3xl border border-amber-500/35 bg-slate-900/75 px-6 py-10 text-center shadow-2xl">
+            {activeScreen?.customBannerUrl && (
+              <>
+                <img
+                  src={activeScreen.customBannerUrl}
+                  alt="Standby Arena Banner"
+                  className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-35"
+                />
+                <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-slate-950/75 via-slate-950/60 to-slate-950/90" />
+              </>
+            )}
+
+            <div className="relative z-10 flex w-full max-w-4xl flex-col items-center space-y-5">
+              {/* Co-Branding & Event Crests */}
+              <div className="flex flex-wrap items-center justify-center gap-4">
+                <img
+                  src={data?.settings?.logoUrl || '/brand/svc-crest-color.svg'}
+                  alt="SVC Crest"
+                  className="h-20 w-20 object-contain drop-shadow-[0_0_25px_rgba(245,197,56,0.3)] sm:h-24 sm:w-24"
+                />
+                {data?.settings?.coBrandLogoUrl && (
+                  <div className="rounded-2xl border border-amber-400/25 bg-slate-950/85 px-4 py-2.5 shadow-lg">
+                    <img
+                      src={data.settings.coBrandLogoUrl}
+                      alt="AVERSA"
+                      className="h-10 w-auto max-w-[140px] object-contain sm:h-12"
+                    />
+                  </div>
+                )}
+                {data?.settings?.organizerLogoUrl && (
+                  <img
+                    src={data.settings.organizerLogoUrl}
+                    alt="Penyelenggara"
+                    className="h-14 w-14 object-contain sm:h-16 sm:w-16"
+                  />
+                )}
+              </div>
+
+              {/* Pulsing Status Badge */}
+              <span className="sport-skew inline-flex items-center gap-2 rounded-lg bg-amber-500 px-5 py-1.5 text-sm font-extrabold uppercase tracking-widest text-slate-950 shadow-lg shadow-amber-500/30">
+                <span className="sport-unskew inline-flex items-center gap-2">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-slate-950" />
+                  {activeScreen?.bannerBadge || 'STANDBY ARENA'}
+                </span>
+              </span>
+
+              {/* Main Display Title & Subtitle */}
+              <div className="space-y-2">
+                <h2 className="font-display text-4xl font-extrabold uppercase tracking-wider text-white drop-shadow sm:text-6xl lg:text-7xl">
+                  {activeScreen?.bannerTitle || 'TECHNICAL MEETING & DRAWING'}
+                </h2>
+                <p className="mx-auto max-w-3xl text-base font-semibold text-amber-300/90 sm:text-xl">
+                  {activeScreen?.bannerSubtitle ||
+                    data?.settings?.eventSubtitle ||
+                    'Smansage Volleyball Competition'}
+                </p>
+              </div>
+
+              {/* Live WIB Digital Clock */}
+              {(activeScreen?.showClock ?? true) && (
+                <div className="inline-flex items-center gap-3 rounded-2xl border border-slate-700/80 bg-slate-950/90 px-6 py-3 shadow-inner">
+                  <Clock className="h-6 w-6 text-amber-400" />
+                  <span className="font-display text-3xl font-extrabold tracking-widest text-white tabular-nums sm:text-4xl">
+                    {nowClock.toLocaleTimeString('id-ID', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                      hour12: false,
+                    })}{' '}
+                    <span className="text-lg text-amber-400">WIB</span>
+                  </span>
+                </div>
+              )}
+
+              {/* Upcoming Match Card inside Standby if preset is 'upcoming' */}
+              {activeScreen?.bannerPreset === 'upcoming' && primaryMatch && (
+                <div className="mt-2 grid w-full max-w-2xl grid-cols-[1fr_auto_1fr] items-center gap-4 rounded-2xl border border-amber-400/35 bg-slate-950/85 px-5 py-4">
+                  <div className="flex min-w-0 items-center justify-end gap-3 text-right">
+                    <div className="min-w-0">
+                      <p className="truncate font-display text-lg font-extrabold uppercase text-white sm:text-2xl">
+                        {teamA?.name || 'TIM A'}
+                      </p>
+                      <p className="truncate text-xs text-slate-400">
+                        {teamA?.school}
+                      </p>
+                    </div>
+                    <TeamAvatar team={teamA} size="md" />
+                  </div>
+                  <div className="text-center">
+                    <span className="block rounded-lg bg-amber-500/20 px-3 py-1 font-display text-xl font-extrabold text-amber-400">
+                      VS
+                    </span>
+                    <span className="mt-1 block text-[11px] font-bold text-slate-400">
+                      {primaryMatch.courtName}
+                    </span>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-3 text-left">
+                    <TeamAvatar team={teamB} size="md" />
+                    <div className="min-w-0">
+                      <p className="truncate font-display text-lg font-extrabold uppercase text-white sm:text-2xl">
+                        {teamB?.name || 'TIM B'}
+                      </p>
+                      <p className="truncate text-xs text-slate-400">
+                        {teamB?.school}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Dynamic Marquee Running Text */}
+            {activeScreen?.bannerNoticeText?.trim() && (
+              <div className="relative z-10 mt-8 w-full overflow-hidden rounded-xl border border-amber-500/30 bg-slate-950/90 py-2.5">
+                <div className="animate-tv-marquee text-sm font-bold uppercase tracking-wide text-amber-300 sm:text-base">
+                  {activeScreen.bannerNoticeText}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : tvMode === 'bracket' ? (
+          <div className="animate-page-enter space-y-5">
+            {/* Live TM Drawing Spotlight Reveal Banner */}
+            {recentDrawEvent &&
+              recentDrawEvent.tournamentId === activeBracketTournament?.id && (
+                <div className="mx-auto flex max-w-4xl items-center justify-between gap-4 rounded-3xl border-2 border-amber-400 bg-slate-900/95 px-6 py-4 shadow-2xl shadow-amber-500/20">
+                  <div className="flex min-w-0 items-center gap-4">
+                    <TeamAvatar
+                      team={{
+                        name: recentDrawEvent.teamName,
+                        shortCode: recentDrawEvent.teamName.slice(0, 4),
+                        logoUrl: recentDrawEvent.logoUrl,
+                        color: '#E09D17',
+                      }}
+                      size="lg"
+                    />
+                    <div className="min-w-0">
+                      <span className="sport-skew inline-block rounded bg-amber-500 px-3 py-0.5 text-xs font-extrabold uppercase tracking-wider text-slate-950">
+                        <span className="sport-unskew">HASIL UNDIAN MASUK</span>
+                      </span>
+                      <h2 className="mt-1 truncate font-display text-2xl font-extrabold uppercase tracking-wide text-white sm:text-4xl">
+                        {recentDrawEvent.teamName}
+                      </h2>
+                      {recentDrawEvent.school && (
+                        <p className="truncate text-sm font-semibold text-amber-300">
+                          {recentDrawEvent.school}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="shrink-0 rounded-2xl border border-amber-400/50 bg-slate-950 px-5 py-3 text-center">
+                    <span className="block text-[11px] font-bold uppercase tracking-widest text-slate-400">
+                      POSISI SLOT
+                    </span>
+                    <span className="font-display text-2xl font-extrabold uppercase text-amber-400 sm:text-3xl">
+                      {recentDrawEvent.poolName
+                        ? `POOL ${recentDrawEvent.poolName}`
+                        : `UNDIAN #${String(recentDrawEvent.slotNumber).padStart(2, '0')}`}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+            {activeBracketTournament?.format === 'pool_knockout' && (
+              <PoolStandingsView
+                tournament={activeBracketTournament}
+                teams={bracketCategoryTeams}
+                matches={bracketCategoryMatches}
+              />
+            )}
+
+            <BracketView
+              matches={bracketCategoryMatches}
+              teams={bracketCategoryTeams}
+              highlightedTeamId={
+                recentDrawEvent &&
+                recentDrawEvent.tournamentId === activeBracketTournament?.id
+                  ? recentDrawEvent.teamId
+                  : null
+              }
+            />
+          </div>
+        ) : !primaryMatch ? (
           <div className="text-center text-slate-400">
             Menunggu jadwal pertandingan aktif...
           </div>
@@ -639,7 +1119,7 @@ export function ArenaTvDisplay() {
               ) : isFinished ? (
                 <span className="sport-skew inline-flex items-center gap-1.5 rounded bg-slate-800 px-4 py-1 text-sm font-extrabold uppercase tracking-wider text-amber-400 ring-1 ring-amber-500/40">
                   <span className="sport-unskew inline-flex items-center gap-1.5">
-                    <Trophy className="h-4 w-4" /> PERTANDINGAN SELESAI
+                    <Trophy className="h-4 w-4" /> PERTANDINGAN SELESAI • SKOR AKHIR
                   </span>
                 </span>
               ) : (
@@ -654,7 +1134,7 @@ export function ArenaTvDisplay() {
               {/* TEAM A PANEL */}
               <div
                 className={`relative flex flex-col justify-between overflow-hidden rounded-3xl border bg-slate-900/90 p-6 shadow-2xl transition-all sm:p-8 ${
-                  primaryMatch.servingTeam === 'A' && isLive
+                  (primaryMatch.servingTeam === 'A' && isLive) || isWinnerA
                     ? 'border-amber-400 ring-2 ring-amber-400/40'
                     : 'border-slate-800'
                 }`}
@@ -682,12 +1162,18 @@ export function ArenaTvDisplay() {
                       SERVIS
                     </span>
                   )}
+                  {isWinnerA && (
+                    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-400 px-3.5 py-1.5 text-xs font-extrabold uppercase text-slate-950 shadow-lg shadow-amber-400/30">
+                      <Trophy className="h-4 w-4" />
+                      PEMENANG
+                    </span>
+                  )}
                 </div>
 
                 <div className="my-4 text-center font-display text-8xl font-extrabold leading-none tabular-nums tracking-tight sm:text-[9.5rem] xl:text-[11.5rem]">
                   <span
                     className={
-                      primaryMatch.servingTeam === 'A' && isLive
+                      (primaryMatch.servingTeam === 'A' && isLive) || isWinnerA
                         ? 'text-amber-400 drop-shadow-[0_0_25px_rgba(245,197,56,0.25)]'
                         : 'text-white'
                     }
@@ -696,7 +1182,7 @@ export function ArenaTvDisplay() {
                   </span>
                 </div>
 
-                {isLive && activeSet && (
+                {isLive && activeSet ? (
                   <div className="pl-2">
                     <TvCounterBadgeRow
                       timeoutsUsed={activeSet.timeoutsA ?? 0}
@@ -704,13 +1190,24 @@ export function ArenaTvDisplay() {
                       align="left"
                     />
                   </div>
-                )}
+                ) : isFinished && lastPlayedSet ? (
+                  <div className="flex justify-start pl-2">
+                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-950/85 px-3.5 py-1 text-xs font-extrabold uppercase tracking-wider text-slate-300">
+                      <span className="text-slate-400">
+                        SET TERAKHIR (SET {lastPlayedSet.setNumber}):
+                      </span>
+                      <span className="tabular-nums text-amber-400">
+                        {lastPlayedSet.scoreA} Poin
+                      </span>
+                    </span>
+                  </div>
+                ) : null}
               </div>
 
               {/* CENTER SETS & HISTORY */}
               <div className="flex flex-col items-center justify-center gap-4 rounded-3xl border border-slate-800 bg-slate-950/90 p-5 text-center">
                 <span className="text-xs font-extrabold uppercase tracking-widest text-slate-400">
-                  SKOR SET
+                  {isFinished ? 'SKOR AKHIR SET' : 'SKOR SET'}
                 </span>
                 <div className="flex items-center gap-3 font-display text-6xl font-extrabold tabular-nums text-amber-400">
                   <span>{primaryMatch.setsWonA}</span>
@@ -720,21 +1217,30 @@ export function ArenaTvDisplay() {
 
                 {primaryMatch.sets.length > 0 && (
                   <div className="mt-2 w-full space-y-1.5 border-t border-slate-800 pt-3">
-                    {primaryMatch.sets.map((s) => (
-                      <div
-                        key={s.id}
-                        className={`flex items-center justify-between rounded-lg px-3 py-1 text-xs font-bold tabular-nums ${
-                          s.setNumber === primaryMatch.currentSet && isLive
-                            ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/40'
-                            : 'bg-slate-900 text-slate-300'
-                        }`}
-                      >
-                        <span className="text-slate-500">SET {s.setNumber}</span>
-                        <span>
-                          {s.scoreA} - {s.scoreB}
-                        </span>
-                      </div>
-                    ))}
+                    {primaryMatch.sets.map((s) => {
+                      const isHighlightedSet =
+                        (isLive && s.setNumber === primaryMatch.currentSet) ||
+                        (isFinished &&
+                          lastPlayedSet &&
+                          s.setNumber === lastPlayedSet.setNumber);
+                      return (
+                        <div
+                          key={s.id}
+                          className={`flex items-center justify-between rounded-lg px-3 py-1 text-xs font-bold tabular-nums ${
+                            isHighlightedSet
+                              ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/40'
+                              : 'bg-slate-900 text-slate-300'
+                          }`}
+                        >
+                          <span className={isHighlightedSet ? 'text-amber-300' : 'text-slate-500'}>
+                            SET {s.setNumber}
+                          </span>
+                          <span>
+                            {s.scoreA} - {s.scoreB}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -742,7 +1248,7 @@ export function ArenaTvDisplay() {
               {/* TEAM B PANEL */}
               <div
                 className={`relative flex flex-col justify-between overflow-hidden rounded-3xl border bg-slate-900/90 p-6 shadow-2xl transition-all sm:p-8 ${
-                  primaryMatch.servingTeam === 'B' && isLive
+                  (primaryMatch.servingTeam === 'B' && isLive) || isWinnerB
                     ? 'border-amber-400 ring-2 ring-amber-400/40'
                     : 'border-slate-800'
                 }`}
@@ -770,12 +1276,18 @@ export function ArenaTvDisplay() {
                       SERVIS
                     </span>
                   )}
+                  {isWinnerB && (
+                    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-amber-400 px-3.5 py-1.5 text-xs font-extrabold uppercase text-slate-950 shadow-lg shadow-amber-400/30">
+                      <Trophy className="h-4 w-4" />
+                      PEMENANG
+                    </span>
+                  )}
                 </div>
 
                 <div className="my-4 text-center font-display text-8xl font-extrabold leading-none tabular-nums tracking-tight sm:text-[9.5rem] xl:text-[11.5rem]">
                   <span
                     className={
-                      primaryMatch.servingTeam === 'B' && isLive
+                      (primaryMatch.servingTeam === 'B' && isLive) || isWinnerB
                         ? 'text-amber-400 drop-shadow-[0_0_25px_rgba(245,197,56,0.25)]'
                         : 'text-white'
                     }
@@ -784,7 +1296,7 @@ export function ArenaTvDisplay() {
                   </span>
                 </div>
 
-                {isLive && activeSet && (
+                {isLive && activeSet ? (
                   <div className="pr-2">
                     <TvCounterBadgeRow
                       timeoutsUsed={activeSet.timeoutsB ?? 0}
@@ -792,7 +1304,18 @@ export function ArenaTvDisplay() {
                       align="right"
                     />
                   </div>
-                )}
+                ) : isFinished && lastPlayedSet ? (
+                  <div className="flex justify-end pr-2">
+                    <span className="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-950/85 px-3.5 py-1 text-xs font-extrabold uppercase tracking-wider text-slate-300">
+                      <span className="text-slate-400">
+                        SET TERAKHIR (SET {lastPlayedSet.setNumber}):
+                      </span>
+                      <span className="tabular-nums text-amber-400">
+                        {lastPlayedSet.scoreB} Poin
+                      </span>
+                    </span>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
@@ -800,7 +1323,9 @@ export function ArenaTvDisplay() {
       </main>
 
       {/* Bottom Organizer & Sponsors Strip */}
-      <PartnersFooter settings={data?.settings} compact />
+      {(tvMode !== 'standby' || activeScreen?.showSponsors !== false) && (
+        <PartnersFooter settings={data?.settings} compact />
+      )}
     </div>
   );
 }

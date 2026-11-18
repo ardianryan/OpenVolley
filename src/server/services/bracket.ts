@@ -1,4 +1,8 @@
 import { asc, eq, inArray } from 'drizzle-orm';
+import {
+  computeFivbKnockoutSeedAssignment,
+  computeFivbPoolSnakeAssignment,
+} from '../../shared/fivb-draw';
 import { computePoolStandings, generateRoundRobinPairs } from '../../shared/pool';
 import { db } from '../db';
 import { matchSets, matches, teams, tournaments } from '../db/schema';
@@ -21,7 +25,11 @@ export function buildSeedOrder(bracketSize: number): number[] {
   return order;
 }
 
-export async function generateBracket(tournamentId: number, shuffle = false) {
+export async function generateBracket(
+  tournamentId: number,
+  shuffle = false,
+  options?: { separateSameRegion?: boolean }
+) {
   const tournament = await db.query.tournaments.findFirst({
     where: eq(tournaments.id, tournamentId),
   });
@@ -40,10 +48,18 @@ export async function generateBracket(tournamentId: number, shuffle = false) {
   }
 
   if (shuffle) {
-    teamList = [...teamList].sort(() => Math.random() - 0.5);
-    for (let i = 0; i < teamList.length; i++) {
-      await db.update(teams).set({ seed: i + 1 }).where(eq(teams.id, teamList[i]!.id));
+    const fivbAssigned = computeFivbKnockoutSeedAssignment(teamList, {
+      separateSameRegion: options?.separateSameRegion ?? true,
+    });
+    const reordered: typeof teamList = [];
+    for (const item of fivbAssigned) {
+      await db
+        .update(teams)
+        .set({ seed: item.assignedSeed })
+        .where(eq(teams.id, item.entry.id));
+      reordered.push({ ...item.entry, seed: item.assignedSeed });
     }
+    teamList = reordered;
   }
 
   // Clear existing matches (cascades to match_sets and match_reports)
@@ -155,7 +171,7 @@ export async function generateBracket(tournamentId: number, shuffle = false) {
 
 export async function initializeDrawBracket(
   tournamentId: number,
-  slotCount: 4 | 8 | 16 = 16
+  slotCount: 4 | 8 | 16 | 32 = 16
 ) {
   const tournament = await db.query.tournaments.findFirst({
     where: eq(tournaments.id, tournamentId),
@@ -276,7 +292,12 @@ export async function initializeDrawBracket(
  */
 export async function generatePoolStageBracket(
   tournamentId: number,
-  options?: { poolCount?: number; advancePerPool?: number; shuffle?: boolean }
+  options?: {
+    poolCount?: number;
+    advancePerPool?: number;
+    shuffle?: boolean;
+    separateSameRegion?: boolean;
+  }
 ) {
   const tournament = await db.query.tournaments.findFirst({
     where: eq(tournaments.id, tournamentId),
@@ -307,15 +328,11 @@ export async function generatePoolStageBracket(
     .set({ format: 'pool_knockout', poolCount, advancePerPool })
     .where(eq(tournaments.id, tournamentId));
 
-  if (options?.shuffle) {
-    teamList = [...teamList].sort(() => Math.random() - 0.5);
-  }
-
   const poolLetters = Array.from({ length: poolCount }, (_, i) =>
     String.fromCharCode(65 + i)
   );
 
-  // Snake-distribute teams across pools unless all teams already have valid pool letters
+  // Snake-distribute teams across pools unless all teams already have valid pool letters and !shuffle
   const allHaveValidPools = teamList.every(
     (t) => t.poolName && poolLetters.includes(t.poolName.toUpperCase())
   );
@@ -329,17 +346,19 @@ export async function generatePoolStageBracket(
       grouped.get(letter)!.push(t);
     }
   } else {
-    for (let idx = 0; idx < teamList.length; idx++) {
-      const row = Math.floor(idx / poolCount);
-      const col = idx % poolCount;
-      const poolIdx = row % 2 === 0 ? col : poolCount - 1 - col;
-      const letter = poolLetters[poolIdx]!;
-      const t = teamList[idx]!;
+    const snakeAssigned = computeFivbPoolSnakeAssignment(teamList, poolCount, {
+      separateSameRegion: options?.separateSameRegion ?? true,
+    });
+    for (const item of snakeAssigned) {
       await db
         .update(teams)
-        .set({ poolName: letter, seed: idx + 1 })
-        .where(eq(teams.id, t.id));
-      grouped.get(letter)!.push({ ...t, poolName: letter, seed: idx + 1 });
+        .set({ poolName: item.poolName, seed: item.assignedSeed })
+        .where(eq(teams.id, item.entry.id));
+      grouped.get(item.poolName)!.push({
+        ...item.entry,
+        poolName: item.poolName,
+        seed: item.assignedSeed,
+      });
     }
   }
 

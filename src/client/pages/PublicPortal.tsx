@@ -23,7 +23,12 @@ import { VolleyballArena3D } from '../components/VolleyballArena3D';
 import { VolleyballIcon } from '../components/VolleyballIcon';
 import { ApiError, apiFetch } from '../lib/api';
 import { syncDocumentBranding } from '../lib/seo';
-import type { Match, OverviewData, Team } from '../types';
+import type {
+  DrawSlotBroadcastPayload,
+  Match,
+  OverviewData,
+  Team,
+} from '../types';
 
 type PublicTab = 'live' | 'bracket' | 'reports';
 type MatchFilter = 'all' | 'live' | 'scheduled' | 'finished';
@@ -51,6 +56,8 @@ export function PublicPortal() {
   const [activeTab, setActiveTabState] = useState<PublicTab>(getInitialPublicTab);
   const [matchFilter, setMatchFilter] = useState<MatchFilter>('all');
   const [highlightedMatchId, setHighlightedMatchId] = useState<number | null>(null);
+  const [recentDrawEvent, setRecentDrawEvent] =
+    useState<DrawSlotBroadcastPayload | null>(null);
   const [detailMatchId, setDetailMatchId] = useState<number | null>(null);
   const [downloadingBulletin, setDownloadingBulletin] = useState(false);
   const [syncMode, setSyncMode] = useState<'sse' | 'polling' | 'connecting'>('connecting');
@@ -82,7 +89,9 @@ export function PublicPortal() {
 
   const loadOverview = useCallback(async () => {
     try {
-      const res = await apiFetch<OverviewData>('/api/public/overview');
+      const res = await apiFetch<OverviewData>(`/api/public/overview?_=${Date.now()}`, {
+        cache: 'no-store',
+      });
       setPortalError(null);
       setData(res);
       setSelectedTournamentId((prev) => {
@@ -118,49 +127,141 @@ export function PublicPortal() {
   useEffect(() => {
     loadOverview();
 
+    let disposed = false;
+    let activeEs: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
-    const startPollingFallback = (intervalMs = 5000) => {
-      if (pollTimer) return;
+
+    const startPollingFallback = (intervalMs = 4000) => {
+      if (pollTimer || disposed) return;
       setSyncMode('polling');
       pollTimer = setInterval(() => {
-        loadOverview();
+        if (document.visibilityState !== 'hidden') {
+          loadOverview();
+        }
       }, intervalMs);
     };
 
-    const es = new EventSource('/api/public/stream');
-    es.addEventListener('connected', () => setSyncMode('sse'));
-    es.addEventListener('fallback', (e) => {
-      es.close();
-      try {
-        const parsed = JSON.parse((e as MessageEvent).data) as { intervalMs?: number };
-        startPollingFallback(parsed.intervalMs || 5000);
-      } catch {
-        startPollingFallback(5000);
+    const stopPollingFallback = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
       }
-    });
-    es.onerror = () => {
-      // Gracefully fall back to async ETag polling instead of hammering SSE reconnects
-      es.close();
-      startPollingFallback(5000);
     };
 
-    const events = [
-      'match_updated',
-      'bracket_updated',
-      'report_added',
-      'report_deleted',
-      'tournament_updated',
-      'settings_updated',
-    ];
-    for (const ev of events) {
-      es.addEventListener(ev, () => {
+    const connectSse = () => {
+      if (disposed) return;
+      activeEs?.close();
+      const es = new EventSource('/api/public/stream');
+      activeEs = es;
+
+      es.addEventListener('connected', () => {
+        if (disposed) return;
+        stopPollingFallback();
+        setSyncMode('sse');
+      });
+
+      es.addEventListener('fallback', (e) => {
+        es.close();
+        activeEs = null;
+        try {
+          const parsed = JSON.parse((e as MessageEvent).data) as { intervalMs?: number };
+          startPollingFallback(parsed.intervalMs || 5000);
+        } catch {
+          startPollingFallback(5000);
+        }
+      });
+
+      es.addEventListener('match_updated', (e) => {
+        try {
+          const incoming = JSON.parse((e as MessageEvent).data) as Match;
+          if (incoming && typeof incoming.id === 'number') {
+            setData((prev) => {
+              if (!prev) return prev;
+              const idx = prev.matches.findIndex((m) => m.id === incoming.id);
+              if (idx === -1) return prev;
+              const copy = [...prev.matches];
+              const cur = copy[idx]!;
+              copy[idx] = {
+                ...cur,
+                ...incoming,
+                sets: Array.isArray(incoming.sets) ? incoming.sets : cur.sets,
+              };
+              return { ...prev, matches: copy };
+            });
+            if (incoming.status === 'finished' || incoming.status === 'scheduled') {
+              loadOverview();
+            }
+            return;
+          }
+        } catch {
+          // fall through
+        }
         loadOverview();
       });
-    }
+
+      es.addEventListener('draw_slot_updated', (e) => {
+        try {
+          const payload = JSON.parse(
+            (e as MessageEvent).data
+          ) as DrawSlotBroadcastPayload;
+          if (payload && !payload.cleared) {
+            setRecentDrawEvent(payload);
+            window.setTimeout(() => {
+              setRecentDrawEvent((cur) =>
+                cur?.timestamp === payload.timestamp ? null : cur
+              );
+            }, 6500);
+          }
+        } catch {
+          // ignore
+        }
+        loadOverview();
+      });
+
+      const events = [
+        'bracket_updated',
+        'master_teams_updated',
+        'report_added',
+        'report_deleted',
+        'tournament_updated',
+        'settings_updated',
+      ];
+      for (const ev of events) {
+        es.addEventListener(ev, () => {
+          loadOverview();
+        });
+      }
+
+      es.onerror = () => {
+        if (disposed) return;
+        es.close();
+        activeEs = null;
+        startPollingFallback(4000);
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connectSse();
+          }, 8000);
+        }
+      };
+    };
+
+    connectSse();
+
+    const onWake = () => {
+      if (document.visibilityState === 'visible') {
+        loadOverview();
+      }
+    };
+    document.addEventListener('visibilitychange', onWake);
 
     return () => {
-      es.close();
-      if (pollTimer) clearInterval(pollTimer);
+      disposed = true;
+      activeEs?.close();
+      stopPollingFallback();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      document.removeEventListener('visibilitychange', onWake);
     };
   }, [loadOverview]);
 
@@ -688,6 +789,7 @@ export function PublicPortal() {
               featuredMatch={featuredMatch}
               featuredTeamA={featuredTeamA}
               featuredTeamB={featuredTeamB}
+              showTvButton={Boolean(settings?.publicTvEnabled)}
               onOpenBracket={() => setActiveTab('bracket')}
               onSelectMatch={(id) => setDetailMatchId(id)}
             />
@@ -783,6 +885,41 @@ export function PublicPortal() {
 
         {activeTab === 'bracket' && (
           <div key="tab-bracket" className="animate-page-enter space-y-5">
+            {recentDrawEvent &&
+              recentDrawEvent.tournamentId === activeTournament?.id && (
+                <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-400 bg-amber-500/15 px-4 py-3 shadow-lg shadow-amber-500/15">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <TeamAvatar
+                      team={{
+                        name: recentDrawEvent.teamName,
+                        shortCode: recentDrawEvent.teamName.slice(0, 4),
+                        logoUrl: recentDrawEvent.logoUrl,
+                        color: '#E09D17',
+                      }}
+                      size="md"
+                    />
+                    <div className="min-w-0">
+                      <span className="inline-block rounded bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-slate-950">
+                        LIVE TM DRAWING
+                      </span>
+                      <p className="mt-0.5 truncate font-display text-base font-extrabold uppercase text-slate-900 dark:text-white sm:text-lg">
+                        {recentDrawEvent.teamName}
+                      </p>
+                      {recentDrawEvent.school && (
+                        <p className="truncate text-xs font-semibold text-slate-600 dark:text-slate-300">
+                          {recentDrawEvent.school}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <span className="shrink-0 rounded-xl bg-slate-900 px-3 py-1.5 font-display text-sm font-extrabold uppercase text-amber-400">
+                    {recentDrawEvent.poolName
+                      ? `POOL ${recentDrawEvent.poolName}`
+                      : `UNDIAN #${String(recentDrawEvent.slotNumber).padStart(2, '0')}`}
+                  </span>
+                </div>
+              )}
+
             {settings?.publicDocsEnabled !== false && data && (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-xs dark:border-slate-800 dark:bg-slate-900">
                 <div>
@@ -831,6 +968,11 @@ export function PublicPortal() {
               matches={categoryMatches}
               teams={categoryTeams}
               highlightedMatchId={highlightedMatchId}
+              highlightedTeamId={
+                recentDrawEvent?.tournamentId === activeTournament?.id
+                  ? recentDrawEvent.teamId
+                  : null
+              }
               onSelectMatch={(m) => setDetailMatchId(m.id)}
             />
           </div>

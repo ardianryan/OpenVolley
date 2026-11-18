@@ -1,16 +1,20 @@
 import {
+  ArrowLeft,
   ArrowLeftRight,
+  CalendarClock,
   CheckCircle2,
+  ChevronRight,
   FileText,
+  MapPin,
   Minus,
-  Monitor,
   Play,
   Plus,
   RotateCcw,
   Timer,
   Undo2,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { groupMatchesByScheduleDay } from '../../shared/schedule';
 import { formatInternationalStageLabel } from '../../shared/stages';
 import { TeamAvatar } from '../components/TeamAvatar';
 import { VolleyballIcon } from '../components/VolleyballIcon';
@@ -23,14 +27,11 @@ interface LiveOperatorProps {
 }
 
 export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
-  const [selectedMatchId, setSelectedMatchId] = useState<number | null>(() => {
-    const firstLive = data.matches.find((m) => m.status === 'live');
-    if (firstLive) return firstLive.id;
-    const firstReady = data.matches.find(
-      (m) => m.status === 'scheduled' && m.teamAId && m.teamBId
-    );
-    return firstReady?.id ?? null;
-  });
+  const [selectedCourtName, setSelectedCourtName] = useState<string | null>(null);
+  const [selectedMatchId, setSelectedMatchId] = useState<number | null>(null);
+  const [scheduleFilter, setScheduleFilter] = useState<'active' | 'finished' | 'all'>(
+    'active'
+  );
 
   const [busy, setBusy] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
@@ -47,14 +48,74 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
     winnerSide?: 'A' | 'B';
   } | null>(null);
 
-  const playableMatches = data.matches.filter(
-    (m) => m.status !== 'bye' && m.teamAId && m.teamBId
-  );
-  const activeMatch: Match | undefined =
-    playableMatches.find((m) => m.id === selectedMatchId) ?? playableMatches[0];
+  useEffect(() => {
+    if (!confirmModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) setConfirmModal(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [confirmModal, busy]);
 
-  const teamMap = new Map<number, Team>(data.teams.map((t) => [t.id, t]));
-  const tournamentMap = new Map(data.tournaments.map((t) => [t.id, t]));
+  const playableMatches = useMemo(
+    () =>
+      data.matches.filter((m) => m.status !== 'bye' && m.teamAId && m.teamBId),
+    [data.matches]
+  );
+
+  // Build unified court cards list from Master Courts + any legacy courtName present in playable matches
+  const courtCards = useMemo(() => {
+    const map = new Map<
+      string,
+      { name: string; shortCode: string; matches: Match[] }
+    >();
+    for (const c of data.masterCourts ?? []) {
+      map.set(c.name, { name: c.name, shortCode: c.shortCode, matches: [] });
+    }
+    for (const m of playableMatches) {
+      const cName = m.courtName || 'Lapangan 1';
+      if (!map.has(cName)) {
+        map.set(cName, {
+          name: cName,
+          shortCode: cName.slice(0, 8).toUpperCase(),
+          matches: [],
+        });
+      }
+      map.get(cName)!.matches.push(m);
+    }
+    return Array.from(map.values());
+  }, [data.masterCourts, playableMatches]);
+
+  const courtMatches = useMemo(() => {
+    if (!selectedCourtName) return [];
+    const onCourt = playableMatches.filter((m) => m.courtName === selectedCourtName);
+    const filtered = onCourt.filter((m) => {
+      if (scheduleFilter === 'active') return m.status !== 'finished';
+      if (scheduleFilter === 'finished') return m.status === 'finished';
+      return true;
+    });
+    const ordered = groupMatchesByScheduleDay(filtered).orderedMatches;
+    // Always float currently LIVE matches to top for fast selection
+    return [...ordered].sort((a, b) => {
+      if (a.status === 'live' && b.status !== 'live') return -1;
+      if (b.status === 'live' && a.status !== 'live') return 1;
+      return 0;
+    });
+  }, [selectedCourtName, playableMatches, scheduleFilter]);
+
+  const activeMatch: Match | undefined =
+    selectedMatchId !== null
+      ? playableMatches.find((m) => m.id === selectedMatchId)
+      : undefined;
+
+  const teamMap = useMemo(
+    () => new Map<number, Team>(data.teams.map((t) => [t.id, t])),
+    [data.teams]
+  );
+  const tournamentMap = useMemo(
+    () => new Map(data.tournaments.map((t) => [t.id, t])),
+    [data.tournaments]
+  );
 
   const teamA = activeMatch?.teamAId ? teamMap.get(activeMatch.teamAId) : null;
   const teamB = activeMatch?.teamBId ? teamMap.get(activeMatch.teamBId) : null;
@@ -70,25 +131,6 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
   const [matchRegPts, setMatchRegPts] = useState<number>(25);
   const [matchDecPts, setMatchDecPts] = useState<number>(15);
   const [matchDeuce, setMatchDeuce] = useState<boolean>(true);
-  const [tvPinValue, setTvPinValue] = useState<string>(
-    data.settings?.tvPin || '4426'
-  );
-  const [tvPinSaved, setTvPinSaved] = useState(false);
-
-  const handleSaveTvPin = async () => {
-    setError(null);
-    try {
-      await apiFetch('/api/admin/tv-pin', {
-        method: 'PUT',
-        body: JSON.stringify({ tvPin: tvPinValue }),
-      });
-      setTvPinSaved(true);
-      setTimeout(() => setTvPinSaved(false), 2500);
-      await onRefresh();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
 
   useEffect(() => {
     if (!activeMatch || !activeTournament) return;
@@ -172,91 +214,104 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
       method: 'PATCH',
       body: JSON.stringify({ courtName }),
     });
+    setSelectedCourtName(courtName);
     await onRefresh();
   };
 
+  const currentStep: 1 | 2 | 3 = !selectedCourtName ? 1 : !activeMatch ? 2 : 3;
+
   return (
     <div className="space-y-5">
-      {/* Match Selector Bar */}
-      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-            Pilih Pertandingan (Multi-Lapangan)
-          </label>
-          <select
-            value={activeMatch?.id ?? ''}
-            onChange={(e) => setSelectedMatchId(Number(e.target.value))}
-            className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold text-slate-900 focus:border-amber-500 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+      {/* Guided 3-Step Operator Breadcrumb Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedCourtName(null);
+              setSelectedMatchId(null);
+            }}
+            className={`inline-flex min-h-10 items-center gap-1.5 rounded-xl px-3 py-1.5 transition sm:min-h-8 ${
+              currentStep === 1
+                ? 'bg-amber-500 text-slate-950'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200'
+            }`}
           >
-            {playableMatches.length === 0 && (
-              <option value="">Belum ada pertandingan siap dimainkan</option>
-            )}
-            {playableMatches.map((m) => {
-              const tA = m.teamAId ? teamMap.get(m.teamAId)?.name : 'TBD';
-              const tB = m.teamBId ? teamMap.get(m.teamBId)?.name : 'TBD';
-              const cat = tournamentMap.get(m.tournamentId)?.name || '';
-              const statusLabel =
-                m.status === 'live'
-                  ? 'LIVE'
-                  : m.status === 'finished'
-                    ? 'SELESAI'
-                    : 'JADWAL';
-              return (
-                <option key={m.id} value={m.id}>
-                  [{statusLabel}] {cat} • {m.courtName} • {tA} vs {tB}
-                </option>
-              );
-            })}
-          </select>
+            <span className="font-mono font-extrabold">1.</span>
+            <span>Pilih Lapangan</span>
+          </button>
+
+          <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+
+          <button
+            type="button"
+            disabled={!selectedCourtName}
+            onClick={() => setSelectedMatchId(null)}
+            className={`inline-flex min-h-10 items-center gap-1.5 rounded-xl px-3 py-1.5 transition disabled:opacity-45 sm:min-h-8 ${
+              currentStep === 2
+                ? 'bg-amber-500 text-slate-950'
+                : currentStep === 3
+                  ? 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200'
+                  : 'text-slate-400'
+            }`}
+          >
+            <span className="font-mono font-extrabold">2.</span>
+            <span>
+              {selectedCourtName ? `Jadwal (${selectedCourtName})` : 'Pilih Jadwal'}
+            </span>
+          </button>
+
+          <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+
+          <span
+            className={`inline-flex min-h-10 items-center gap-1.5 rounded-xl px-3 py-1.5 sm:min-h-8 ${
+              currentStep === 3
+                ? 'bg-amber-500 text-slate-950'
+                : 'text-slate-400'
+            }`}
+          >
+            <span className="font-mono font-extrabold">3.</span>
+            <span>Konsol Skor Live</span>
+          </span>
         </div>
 
-        {activeMatch && (
-          <div className="flex flex-wrap items-end gap-2">
-            <div>
-              <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                Lapangan
-              </label>
-              <select
-                value={activeMatch.courtName}
-                onChange={(e) => updateCourt(e.target.value)}
-                className="min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
-              >
-                <option value="Court 1">Court 1</option>
-                <option value="Court 2">Court 2</option>
-                <option value="Court 3">Court 3</option>
-                <option value="Main Arena">Main Arena</option>
-              </select>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                PIN TV
-              </label>
-              <div className="flex items-center gap-1">
-                <input
-                  type="text"
-                  value={tvPinValue}
-                  onChange={(e) => setTvPinValue(e.target.value)}
-                  className="min-h-11 w-20 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-center font-mono text-sm font-bold dark:border-slate-700 dark:bg-slate-950"
-                />
-                <button
-                  type="button"
-                  onClick={handleSaveTvPin}
-                  className="min-h-11 rounded-xl border border-slate-300 px-3 text-xs font-bold hover:border-amber-600 dark:border-slate-700"
-                >
-                  {tvPinSaved ? 'Tersimpan' : 'Set'}
-                </button>
-              </div>
-            </div>
-            <a
-              href={`/tv?match=${activeMatch.id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Buka Layar Skor TV / Proyektor"
-              className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 text-xs font-bold text-amber-400 transition hover:bg-slate-800 dark:bg-amber-500 dark:text-slate-950 dark:hover:bg-amber-400"
+        {currentStep === 3 && activeMatch && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedMatchId(null)}
+              className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:border-amber-500 sm:min-h-8 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
             >
-              <Monitor className="h-4 w-4" />
-              Layar TV ↗
-            </a>
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Ganti Jadwal
+            </button>
+
+            <select
+              value={activeMatch.courtName}
+              onChange={(e) => updateCourt(e.target.value)}
+              aria-label="Pindah Lapangan Pertandingan"
+              className="min-h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-900 sm:min-h-8 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+            >
+              {(data.masterCourts && data.masterCourts.length > 0
+                ? data.masterCourts
+                : [
+                    { id: -1, name: 'Lapangan 1' },
+                    { id: -2, name: 'Lapangan 2' },
+                  ]
+              ).map((c) => (
+                <option key={c.id} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+              {activeMatch.courtName &&
+                !(data.masterCourts ?? []).some(
+                  (c) => c.name === activeMatch.courtName
+                ) && (
+                  <option value={activeMatch.courtName}>
+                    {activeMatch.courtName}
+                  </option>
+                )}
+            </select>
           </div>
         )}
       </div>
@@ -267,7 +322,246 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
         </div>
       )}
 
-      {activeMatch ? (
+      {/* STEP 1: PILIH LAPANGAN */}
+      {currentStep === 1 && (
+        <div className="animate-page-enter space-y-4">
+          <div className="rounded-2xl border border-amber-500/25 bg-amber-500/5 p-4 dark:bg-amber-500/10">
+            <h2 className="font-display text-lg font-extrabold uppercase tracking-wide text-slate-900 dark:text-white">
+              Langkah 1: Pilih Lapangan Bertanding
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">
+              Pilih lapangan tempat Anda bertugas untuk melihat jadwal pertandingan yang
+              siap dipimpin.
+            </p>
+          </div>
+
+          {courtCards.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">
+              Belum ada lapangan terdaftar. Tambahkan lapangan di menu{' '}
+              <strong>Master Lapangan &amp; Jadwal</strong>.
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {courtCards.map((court) => {
+                const liveCount = court.matches.filter(
+                  (m) => m.status === 'live'
+                ).length;
+                const scheduledCount = court.matches.filter(
+                  (m) => m.status === 'scheduled'
+                ).length;
+                const finishedCount = court.matches.filter(
+                  (m) => m.status === 'finished'
+                ).length;
+                return (
+                  <button
+                    key={court.name}
+                    type="button"
+                    onClick={() => {
+                      setSelectedCourtName(court.name);
+                      setSelectedMatchId(null);
+                    }}
+                    className="group flex min-h-36 flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-xs transition hover:-translate-y-0.5 hover:border-amber-500 hover:shadow-md dark:border-slate-800 dark:bg-slate-900"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-amber-500/15 text-amber-700 transition group-hover:bg-amber-500 group-hover:text-slate-950 dark:text-amber-400">
+                          <MapPin className="h-5 w-5" />
+                        </div>
+                        <div>
+                          <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-extrabold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                            {court.shortCode}
+                          </span>
+                          <h3 className="mt-1 font-display text-xl font-extrabold uppercase tracking-wide text-slate-900 dark:text-white">
+                            {court.name}
+                          </h3>
+                        </div>
+                      </div>
+                      <ChevronRight className="h-5 w-5 text-slate-400 transition group-hover:translate-x-0.5 group-hover:text-amber-500" />
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 text-xs font-bold dark:border-slate-800">
+                      {liveCount > 0 && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2.5 py-0.5 text-red-600 dark:text-red-400">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
+                          {liveCount} LIVE
+                        </span>
+                      )}
+                      <span className="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-amber-800 dark:text-amber-300">
+                        {scheduledCount} Siap Main
+                      </span>
+                      <span className="text-slate-500 dark:text-slate-400">
+                        {finishedCount} Selesai
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* STEP 2: PILIH JADWAL AKTIF DI LAPANGAN TERPILIH */}
+      {currentStep === 2 && (
+        <div className="animate-page-enter space-y-4">
+          <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedCourtName(null)}
+                className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 hover:border-amber-500 sm:min-h-9 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                Ganti Lapangan
+              </button>
+              <div>
+                <h2 className="font-display text-lg font-extrabold uppercase tracking-wide text-slate-900 dark:text-white">
+                  Jadwal Aktif • {selectedCourtName}
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Klik salah satu pertandingan di bawah untuk membuka tombol skor.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {(
+                [
+                  ['active', 'Aktif & Akan Main'],
+                  ['finished', 'Sudah Selesai'],
+                  ['all', 'Semua'],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setScheduleFilter(key)}
+                  className={`min-h-11 rounded-full px-3.5 py-1.5 text-xs font-bold transition sm:min-h-8 ${
+                    scheduleFilter === key
+                      ? 'bg-amber-500 text-slate-950'
+                      : 'border border-slate-200 bg-slate-50 text-slate-600 hover:border-amber-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {courtMatches.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">
+              Belum ada pertandingan siap dimainkan pada filter ini di{' '}
+              <strong>{selectedCourtName}</strong>. Pastikan kedua tim sudah masuk bagan
+              atau cek filter <em>Sudah Selesai</em>.
+            </div>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2">
+              {courtMatches.map((m) => {
+                const mA = m.teamAId ? teamMap.get(m.teamAId) : null;
+                const mB = m.teamBId ? teamMap.get(m.teamBId) : null;
+                const cat = tournamentMap.get(m.tournamentId);
+                const mainRounds = data.matches
+                  .filter(
+                    (x) =>
+                      x.tournamentId === m.tournamentId && x.bracketType === 'main'
+                  )
+                  .map((x) => x.round);
+                const tr = mainRounds.length > 0 ? Math.max(...mainRounds) : 3;
+                const stageLbl = formatInternationalStageLabel(m, tr);
+                const curSet = m.sets.find((s) => s.setNumber === m.currentSet);
+
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setSelectedMatchId(m.id)}
+                    className={`group flex flex-col justify-between gap-3 rounded-2xl border bg-white p-4 text-left shadow-xs transition hover:-translate-y-0.5 hover:border-amber-500 hover:shadow-md dark:bg-slate-900 ${
+                      m.status === 'live'
+                        ? 'border-red-500/60 ring-1 ring-red-500/20'
+                        : 'border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-extrabold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                        {cat?.name} • {stageLbl}
+                      </span>
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase ${
+                          m.status === 'live'
+                            ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                            : m.status === 'finished'
+                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+                              : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                        }`}
+                      >
+                        {m.status === 'live'
+                          ? `LIVE • SET ${m.currentSet}`
+                          : m.status === 'finished'
+                            ? `SELESAI (${m.setsWonA}-${m.setsWonB})`
+                            : 'SIAP MAIN'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <TeamAvatar team={mA} size="sm" />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-extrabold text-slate-900 dark:text-white">
+                            {mA?.name || 'TBD'}
+                          </p>
+                          {mA?.school && (
+                            <p className="truncate text-[11px] text-slate-500">
+                              {mA.school}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl bg-slate-100 px-3 py-1.5 text-center font-display text-base font-extrabold tabular-nums text-slate-900 dark:bg-slate-950 dark:text-amber-400">
+                        {m.status === 'live' && curSet
+                          ? `${curSet.scoreA} : ${curSet.scoreB}`
+                          : m.status === 'finished'
+                            ? `${m.setsWonA} : ${m.setsWonB}`
+                            : 'VS'}
+                      </div>
+
+                      <div className="flex min-w-0 items-center justify-end gap-2.5 text-right">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-extrabold text-slate-900 dark:text-white">
+                            {mB?.name || 'TBD'}
+                          </p>
+                          {mB?.school && (
+                            <p className="truncate text-[11px] text-slate-500">
+                              {mB.school}
+                            </p>
+                          )}
+                        </div>
+                        <TeamAvatar team={mB} size="sm" />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-slate-100 pt-2.5 text-[11px] text-slate-500 dark:border-slate-800">
+                      <span className="inline-flex items-center gap-1 font-semibold">
+                        <CalendarClock className="h-3.5 w-3.5 text-amber-500" />
+                        {m.scheduledAt || 'Jadwal belum diisi'}
+                      </span>
+                      <span className="inline-flex items-center gap-1 font-bold text-amber-700 group-hover:underline dark:text-amber-400">
+                        {m.status === 'finished'
+                          ? 'Lihat / Edit Skor'
+                          : 'Buka Konsol Skor'}
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* STEP 3: KONSOL SKOR LIVE */}
+      {currentStep === 3 && activeMatch && (
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-6">
           {/* Status & Rules Info */}
           <div className="mb-5 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-4 dark:border-slate-800">
@@ -722,10 +1016,6 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
               </button>
             </div>
           )}
-        </div>
-      ) : (
-        <div className="rounded-2xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500 dark:border-slate-800">
-          Buat bagan turnamen terlebih dahulu di menu <strong>Kategori &amp; Bagan</strong>.
         </div>
       )}
 

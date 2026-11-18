@@ -19,6 +19,7 @@ interface BracketViewProps {
   matches: Match[];
   teams: Team[];
   highlightedMatchId?: number | null;
+  highlightedTeamId?: number | null;
   onSelectMatch?: (match: Match) => void;
 }
 
@@ -78,6 +79,7 @@ export function BracketView({
   matches,
   teams,
   highlightedMatchId,
+  highlightedTeamId,
   onSelectMatch,
 }: BracketViewProps) {
   const [wingFilter, setWingFilter] = useState<WingFilter>('all');
@@ -276,6 +278,13 @@ export function BracketView({
     const activeSet = match.sets.find((s) => s.setNumber === match.currentSet);
 
     const isHighlighted = highlightedMatchId === match.id;
+    const isDrawnA = Boolean(
+      highlightedTeamId && match.teamAId && match.teamAId === highlightedTeamId
+    );
+    const isDrawnB = Boolean(
+      highlightedTeamId && match.teamBId && match.teamBId === highlightedTeamId
+    );
+    const hasDrawnHighlight = isDrawnA || isDrawnB;
 
     const isInteractive = !isBye && Boolean(onSelectMatch);
 
@@ -303,19 +312,26 @@ export function BracketView({
         className={`animate-bracket-card ${cardWidth} shrink-0 overflow-hidden rounded-xl border transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg ${
           isInteractive ? 'cursor-pointer' : ''
         } ${
-          isHighlighted
-            ? 'border-sky-500 bg-white shadow-lg shadow-sky-500/20 ring-2 ring-sky-500 dark:bg-slate-900'
-            : isLive
-              ? 'border-amber-500 bg-white shadow-md shadow-amber-500/15 ring-1 ring-amber-500/40 dark:border-amber-400 dark:bg-slate-900'
-              : isFinished
-                ? 'border-amber-600/35 bg-white dark:border-amber-500/30 dark:bg-slate-900/95'
-                : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/90'
+          hasDrawnHighlight
+            ? 'border-amber-400 bg-white shadow-xl shadow-amber-500/25 ring-2 ring-amber-400 dark:bg-slate-900'
+            : isHighlighted
+              ? 'border-sky-500 bg-white shadow-lg shadow-sky-500/20 ring-2 ring-sky-500 dark:bg-slate-900'
+              : isLive
+                ? 'border-amber-500 bg-white shadow-md shadow-amber-500/15 ring-1 ring-amber-500/40 dark:border-amber-400 dark:bg-slate-900'
+                : isFinished
+                  ? 'border-amber-600/35 bg-white dark:border-amber-500/30 dark:bg-slate-900/95'
+                  : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/90'
         }`}
       >
         <div className="flex items-center justify-between gap-1 border-b border-slate-100 bg-slate-50/90 px-2.5 py-1 text-[11px] font-bold dark:border-slate-800/80 dark:bg-slate-950/70">
           <span className="truncate text-slate-600 dark:text-slate-400">
             {badgeLabel || match.courtName}
           </span>
+          {hasDrawnHighlight && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500 px-1.5 py-0.5 text-[9px] font-extrabold uppercase text-slate-950">
+              BARU
+            </span>
+          )}
           {isLive && (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold text-red-700 dark:text-red-400">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
@@ -337,9 +353,11 @@ export function BracketView({
         {/* Team A */}
         <div
           className={`flex items-center justify-between gap-1.5 px-2.5 py-1.5 transition-colors ${
-            match.winnerId && match.winnerId === match.teamAId
-              ? 'bg-amber-500/12 font-bold dark:bg-amber-500/15'
-              : ''
+            isDrawnA
+              ? 'bg-amber-400/25 font-extrabold dark:bg-amber-400/20'
+              : match.winnerId && match.winnerId === match.teamAId
+                ? 'bg-amber-500/12 font-bold dark:bg-amber-500/15'
+                : ''
           }`}
         >
           <div className="flex min-w-0 items-center gap-1.5">
@@ -347,7 +365,7 @@ export function BracketView({
               className="h-3.5 w-1 shrink-0 rounded-full"
               style={{ backgroundColor: teamA?.color || '#64748B' }}
             />
-            {!compact && <TeamAvatar team={teamA} size="sm" />}
+            {(!compact || isDrawnA) && <TeamAvatar team={teamA} size="sm" />}
             <p
               title={teamA?.name || placeholderA}
               className={`truncate text-xs font-semibold ${
@@ -382,9 +400,11 @@ export function BracketView({
         {/* Team B */}
         <div
           className={`flex items-center justify-between gap-1.5 px-2.5 py-1.5 transition-colors ${
-            match.winnerId && match.winnerId === match.teamBId
-              ? 'bg-amber-500/12 font-bold dark:bg-amber-500/15'
-              : ''
+            isDrawnB
+              ? 'bg-amber-400/25 font-extrabold dark:bg-amber-400/20'
+              : match.winnerId && match.winnerId === match.teamBId
+                ? 'bg-amber-500/12 font-bold dark:bg-amber-500/15'
+                : ''
           }`}
         >
           <div className="flex min-w-0 items-center gap-1.5">
@@ -392,7 +412,7 @@ export function BracketView({
               className="h-3.5 w-1 shrink-0 rounded-full"
               style={{ backgroundColor: teamB?.color || '#64748B' }}
             />
-            {!compact && <TeamAvatar team={teamB} size="sm" />}
+            {(!compact || isDrawnB) && <TeamAvatar team={teamB} size="sm" />}
             <p
               title={teamB?.name || placeholderB}
               className={`truncate text-xs font-semibold ${

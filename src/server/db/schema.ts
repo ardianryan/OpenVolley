@@ -14,7 +14,27 @@ export const siteSettings = sqliteTable('site_settings', {
   seoDescription: text('seo_description').notNull().default(''),
   socialImageUrl: text('social_image_url').notNull().default(''),
   publicDocsEnabled: integer('public_docs_enabled', { mode: 'boolean' }).notNull().default(true),
+  publicTvEnabled: integer('public_tv_enabled', { mode: 'boolean' }).notNull().default(false),
   docSettingsJson: text('doc_settings_json').notNull().default('{}'),
+});
+
+export const masterCourts = sqliteTable('master_courts', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull().unique(),
+  shortCode: text('short_code').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+  isEnabled: integer('is_enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: integer('created_at').notNull(),
+});
+
+export const roles = sqliteTable('roles', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  slug: text('slug').notNull().unique(),
+  name: text('name').notNull(),
+  description: text('description').notNull().default(''),
+  permissionsJson: text('permissions_json').notNull().default('[]'),
+  isSystem: integer('is_system', { mode: 'boolean' }).notNull().default(false),
+  createdAt: integer('created_at').notNull(),
 });
 
 export const users = sqliteTable('users', {
@@ -22,7 +42,8 @@ export const users = sqliteTable('users', {
   username: text('username').notNull().unique(),
   name: text('name').notNull(),
   passwordHash: text('password_hash').notNull(),
-  role: text('role', { enum: ['admin', 'panitia', 'media'] }).notNull().default('panitia'),
+  role: text('role').notNull().default('panitia'),
+  permissionsJson: text('permissions_json'),
   createdAt: integer('created_at').notNull(),
 });
 
@@ -44,11 +65,32 @@ export const tournaments = sqliteTable('tournaments', {
   createdAt: integer('created_at').notNull(),
 });
 
+export const masterTeams = sqliteTable('master_teams', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  shortCode: text('short_code').notNull(),
+  school: text('school').notNull().default(''),
+  level: text('level', { enum: ['smp', 'sma', 'kab_kota', 'umum'] })
+    .notNull()
+    .default('umum'),
+  logoUrl: text('logo_url'),
+  color: text('color').notNull().default('#E09D17'),
+  defaultCoachName: text('default_coach_name').notNull().default(''),
+  defaultManagerName: text('default_manager_name').notNull().default(''),
+  defaultJerseyColors: text('default_jersey_colors').notNull().default('[]'),
+  createdAt: integer('created_at').notNull(),
+});
+
 export const teams = sqliteTable('teams', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   tournamentId: integer('tournament_id')
     .notNull()
     .references(() => tournaments.id, { onDelete: 'cascade' }),
+  masterTeamId: integer('master_team_id').references(() => masterTeams.id, {
+    onDelete: 'set null',
+  }),
+  squadLabel: text('squad_label').notNull().default(''),
+  isSeeded: integer('is_seeded', { mode: 'boolean' }).notNull().default(false),
   name: text('name').notNull(),
   shortCode: text('short_code').notNull(),
   school: text('school').notNull().default(''),
@@ -120,4 +162,42 @@ export const matchReports = sqliteTable('match_reports', {
   caption: text('caption').notNull().default(''),
   scoreSnapshot: text('score_snapshot').notNull(),
   createdAt: integer('created_at').notNull(),
+});
+
+export const tvScreens = sqliteTable('tv_screens', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  slug: text('slug').notNull().unique(),
+  mode: text('mode', {
+    enum: ['single', 'split', 'bracket', 'standby', 'auto_rotate'],
+  })
+    .notNull()
+    .default('single'),
+  courtId: integer('court_id').references(() => masterCourts.id, { onDelete: 'set null' }),
+  targetMatchId: integer('target_match_id').references(() => matches.id, {
+    onDelete: 'set null',
+  }),
+  secondaryMatchId: integer('secondary_match_id').references(() => matches.id, {
+    onDelete: 'set null',
+  }),
+  bracketTournamentId: integer('bracket_tournament_id').references(() => tournaments.id, {
+    onDelete: 'set null',
+  }),
+  bannerPreset: text('banner_preset', {
+    enum: ['tm', 'warmup', 'break', 'upcoming', 'custom'],
+  })
+    .notNull()
+    .default('tm'),
+  bannerTitle: text('banner_title').notNull().default('TECHNICAL MEETING & DRAWING'),
+  bannerSubtitle: text('banner_subtitle')
+    .notNull()
+    .default('SMANSAGE VOLLEYBALL COMPETITION 2026'),
+  bannerBadge: text('banner_badge').notNull().default('LIVE DRAWING'),
+  bannerNoticeText: text('banner_notice_text').notNull().default(''),
+  showClock: integer('show_clock', { mode: 'boolean' }).notNull().default(true),
+  showSponsors: integer('show_sponsors', { mode: 'boolean' }).notNull().default(true),
+  customBannerUrl: text('custom_banner_url'),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
 });

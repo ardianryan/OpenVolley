@@ -395,9 +395,43 @@ export async function finishMatchManually(matchId: number, winnerSide: 'A' | 'B'
 
   await pushUndoSnapshot(matchId);
 
+  // Close any active unfinished set with points so the final set tally is always complete
+  const existingSets = await db
+    .select()
+    .from(matchSets)
+    .where(eq(matchSets.matchId, matchId))
+    .orderBy(asc(matchSets.setNumber));
+
+  let computedWonA = 0;
+  let computedWonB = 0;
+
+  for (const s of existingSets) {
+    if (!s.isFinished && (s.scoreA > 0 || s.scoreB > 0)) {
+      const setWinSide: 'A' | 'B' =
+        s.scoreA > s.scoreB ? 'A' : s.scoreB > s.scoreA ? 'B' : winnerSide;
+      const setWinId = setWinSide === 'A' ? match.teamAId : match.teamBId;
+      await db
+        .update(matchSets)
+        .set({ isFinished: true, winnerId: setWinId })
+        .where(eq(matchSets.id, s.id));
+      if (setWinSide === 'A') computedWonA += 1;
+      else computedWonB += 1;
+    } else if (s.isFinished) {
+      if (s.winnerId && s.winnerId === match.teamAId) computedWonA += 1;
+      else if (s.winnerId && s.winnerId === match.teamBId) computedWonB += 1;
+      else if (s.scoreA > s.scoreB) computedWonA += 1;
+      else if (s.scoreB > s.scoreA) computedWonB += 1;
+    }
+  }
+
+  const nextSetsWonA = Math.max(match.setsWonA, computedWonA);
+  const nextSetsWonB = Math.max(match.setsWonB, computedWonB);
+
   await db
     .update(matches)
     .set({
+      setsWonA: nextSetsWonA,
+      setsWonB: nextSetsWonB,
       status: 'finished',
       winnerId,
     })

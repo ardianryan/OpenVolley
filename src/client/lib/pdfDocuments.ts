@@ -1,5 +1,9 @@
 import { jsPDF } from 'jspdf';
 import { computePoolStandings } from '../../shared/pool';
+import {
+  groupMatchesByScheduleDay,
+  parseScheduleDayAndTime,
+} from '../../shared/schedule';
 import { formatInternationalStageLabel } from '../../shared/stages';
 import type {
   Match,
@@ -14,7 +18,15 @@ import { toCorsSafeAssetUrl } from './assetUrl';
 
 type RgbTuple = [number, number, number];
 
-const rasterCache = new Map<string, string | null>();
+interface RasterAsset {
+  dataUrl: string;
+  width: number;
+  height: number;
+  aspect: number;
+  isVeryDark: boolean;
+}
+
+const rasterCache = new Map<string, RasterAsset | null>();
 
 function hexToRgb(hex: string | undefined, fallback: RgbTuple = [224, 157, 23]): RgbTuple {
   if (!hex) return fallback;
@@ -53,17 +65,24 @@ function truncatePdfText(doc: jsPDF, text: string, maxWidthMm: number): string {
   return `${sliced.trimEnd()}...`;
 }
 
-async function loadRasterPngDataUrl(
+async function loadRasterAsset(
   url?: string | null,
-  options?: { maxDim?: number; opacity?: number; mode?: 'contain' | 'cover'; aspect?: number }
-): Promise<string | null> {
+  options?: {
+    maxDim?: number;
+    opacity?: number;
+    mode?: 'contain' | 'cover';
+    aspect?: number;
+    trimAlpha?: boolean;
+  }
+): Promise<RasterAsset | null> {
   const safeUrl = toCorsSafeAssetUrl(url);
   if (!safeUrl || typeof document === 'undefined') return null;
-  const maxDim = options?.maxDim ?? 320;
+  const maxDim = options?.maxDim ?? 360;
   const opacity = options?.opacity ?? 1;
   const mode = options?.mode ?? 'contain';
   const aspect = options?.aspect ?? 1;
-  const cacheKey = `${safeUrl}|${maxDim}|${opacity}|${mode}|${aspect}`;
+  const trimAlpha = options?.trimAlpha ?? mode === 'contain';
+  const cacheKey = `${safeUrl}|${maxDim}|${opacity}|${mode}|${aspect}|${trimAlpha ? 1 : 0}`;
 
   if (rasterCache.has(cacheKey)) {
     return rasterCache.get(cacheKey) ?? null;
@@ -112,10 +131,71 @@ async function loadRasterPngDataUrl(
           ctx.drawImage(img, 0, 0, canvasW, canvasH);
         }
 
-        const dataUrl = canvas.toDataURL('image/png');
+        let finalCanvas = canvas;
+        let finalW = canvasW;
+        let finalH = canvasH;
+        let isVeryDark = false;
+
+        if (mode === 'contain') {
+          const imgData = ctx.getImageData(0, 0, canvasW, canvasH);
+          const px = imgData.data;
+          let minX = canvasW;
+          let minY = canvasH;
+          let maxX = -1;
+          let maxY = -1;
+          let lumSum = 0;
+          let lumCount = 0;
+
+          for (let y = 0; y < canvasH; y++) {
+            const rowOff = y * canvasW * 4;
+            for (let x = 0; x < canvasW; x++) {
+              const i = rowOff + x * 4;
+              const a = px[i + 3]!;
+              if (a > 8) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+              }
+              if (a > 40) {
+                lumSum += 0.299 * px[i]! + 0.587 * px[i + 1]! + 0.114 * px[i + 2]!;
+                lumCount++;
+              }
+            }
+          }
+
+          if (lumCount > 0) {
+            isVeryDark = lumSum / lumCount < 48;
+          }
+
+          if (trimAlpha && maxX >= minX && maxY >= minY) {
+            const cropW = Math.max(8, maxX - minX + 1);
+            const cropH = Math.max(8, maxY - minY + 1);
+            if (cropW < canvasW - 2 || cropH < canvasH - 2) {
+              const trimmed = document.createElement('canvas');
+              trimmed.width = cropW;
+              trimmed.height = cropH;
+              const tCtx = trimmed.getContext('2d');
+              if (tCtx) {
+                tCtx.drawImage(canvas, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
+                finalCanvas = trimmed;
+                finalW = cropW;
+                finalH = cropH;
+              }
+            }
+          }
+        }
+
+        const asset: RasterAsset = {
+          dataUrl: finalCanvas.toDataURL('image/png'),
+          width: finalW,
+          height: finalH,
+          aspect: finalW / Math.max(1, finalH),
+          isVeryDark,
+        };
         if (rasterCache.size > 120) rasterCache.clear();
-        rasterCache.set(cacheKey, dataUrl);
-        resolve(dataUrl);
+        rasterCache.set(cacheKey, asset);
+        resolve(asset);
       } catch {
         rasterCache.set(cacheKey, null);
         resolve(null);
@@ -130,6 +210,22 @@ async function loadRasterPngDataUrl(
 
     img.src = safeUrl;
   });
+}
+
+function addContainedImage(
+  doc: jsPDF,
+  asset: RasterAsset,
+  boxX: number,
+  boxY: number,
+  boxW: number,
+  boxH: number
+) {
+  const scale = Math.min(boxW / Math.max(1, asset.width), boxH / Math.max(1, asset.height));
+  const drawW = asset.width * scale;
+  const drawH = asset.height * scale;
+  const drawX = boxX + (boxW - drawW) / 2;
+  const drawY = boxY + (boxH - drawH) / 2;
+  doc.addImage(asset.dataUrl, 'PNG', drawX, drawY, drawW, drawH, undefined, 'FAST');
 }
 
 function getRoundStageLabel(
@@ -162,10 +258,10 @@ function slugifyFilename(text: string): string {
 }
 
 interface LoadedBrandLogos {
-  mainLogo: string | null;
-  coBrandLogo: string | null;
-  organizerLogo: string | null;
-  watermarkLogo: string | null;
+  mainLogo: RasterAsset | null;
+  coBrandLogo: RasterAsset | null;
+  organizerLogo: RasterAsset | null;
+  watermarkLogo: RasterAsset | null;
 }
 
 function drawInteriorPageShell(
@@ -177,23 +273,25 @@ function drawInteriorPageShell(
   logos: LoadedBrandLogos,
   accentRgb: RgbTuple
 ) {
-  // Subtle center watermark
+  // Subtle center watermark (aspect-preserved)
   if (logos.watermarkLogo) {
-    doc.addImage(logos.watermarkLogo, 'PNG', 55, 98, 100, 100, undefined, 'FAST');
+    addContainedImage(doc, logos.watermarkLogo, 55, 98, 100, 100);
   }
 
   // Top accent bar
   doc.setFillColor(accentRgb[0], accentRgb[1], accentRgb[2]);
   doc.rect(0, 0, 210, 2.4, 'F');
 
-  // Header brand logos & title
+  // Header brand logos & title (aspect-preserved, adaptive width for horizontal wordmarks)
   let textLeftX = 14;
   if (logos.organizerLogo) {
-    doc.addImage(logos.organizerLogo, 'PNG', 14, 7.5, 10, 10, undefined, 'FAST');
-    textLeftX = 26.5;
+    const orgW = Math.min(24, Math.max(10.5, 10 * logos.organizerLogo.aspect));
+    addContainedImage(doc, logos.organizerLogo, 14, 7.2, orgW, 10.5);
+    textLeftX = 14 + orgW + 2.8;
   }
   if (logos.mainLogo) {
-    doc.addImage(logos.mainLogo, 'PNG', 186, 7, 10.5, 11, undefined, 'FAST');
+    const mainW = Math.min(24, Math.max(11, 11 * logos.mainLogo.aspect));
+    addContainedImage(doc, logos.mainLogo, 196 - mainW, 6.8, mainW, 11.2);
   }
 
   doc.setFont('helvetica', 'bold');
@@ -307,23 +405,24 @@ export async function downloadTournamentBulletinPdf(
 
   const accentRgb = hexToRgb(settings.accentColor, [224, 157, 23]);
 
-  // Preload brand & team logos concurrently
+  // Preload brand & team logos concurrently (with true aspect-ratio & alpha bounds)
   const [mainLogo, coBrandLogo, organizerLogo, watermarkLogo, customCover] =
     await Promise.all([
-      loadRasterPngDataUrl(settings.logoUrl || '/brand/svc-crest-color.svg', {
-        maxDim: 420,
+      loadRasterAsset(settings.logoUrl || '/brand/svc-crest-color.svg', {
+        maxDim: 480,
       }),
-      loadRasterPngDataUrl(settings.coBrandLogoUrl, { maxDim: 300 }),
-      loadRasterPngDataUrl(settings.organizerLogoUrl, { maxDim: 300 }),
-      loadRasterPngDataUrl(settings.logoUrl || '/brand/svc-crest-color.svg', {
-        maxDim: 360,
+      loadRasterAsset(settings.coBrandLogoUrl, { maxDim: 420 }),
+      loadRasterAsset(settings.organizerLogoUrl, { maxDim: 360 }),
+      loadRasterAsset(settings.logoUrl || '/brand/svc-crest-color.svg', {
+        maxDim: 380,
         opacity: 0.055,
       }),
       docMeta.coverImageUrl
-        ? loadRasterPngDataUrl(docMeta.coverImageUrl, {
+        ? loadRasterAsset(docMeta.coverImageUrl, {
             maxDim: 1600,
             mode: 'cover',
             aspect: 210 / 297,
+            trimAlpha: false,
           })
         : Promise.resolve(null),
     ]);
@@ -340,13 +439,13 @@ export async function downloadTournamentBulletinPdf(
       .filter((tm) => activeTournaments.some((t) => t.id === tm.tournamentId))
       .map((tm) => tm.id)
   );
-  const teamLogoMap = new Map<number, string>();
+  const teamLogoMap = new Map<number, RasterAsset>();
   await Promise.all(
     overview.teams
       .filter((tm) => relevantTeamIds.has(tm.id) && tm.logoUrl)
       .map(async (tm) => {
-        const uri = await loadRasterPngDataUrl(tm.logoUrl, { maxDim: 180 });
-        if (uri) teamLogoMap.set(tm.id, uri);
+        const asset = await loadRasterAsset(tm.logoUrl, { maxDim: 220 });
+        if (asset) teamLogoMap.set(tm.id, asset);
       })
   );
 
@@ -361,7 +460,7 @@ export async function downloadTournamentBulletinPdf(
   // PAGE 1: CHAMPIONSHIP COVER PAGE
   // =========================================================================
   if (customCover) {
-    doc.addImage(customCover, 'PNG', 0, 0, 210, 297, undefined, 'FAST');
+    doc.addImage(customCover.dataUrl, 'PNG', 0, 0, 210, 297, undefined, 'FAST');
   } else {
     // Deep Obsidian Championship Background
     doc.setFillColor(11, 15, 25);
@@ -382,28 +481,52 @@ export async function downloadTournamentBulletinPdf(
     doc.rect(0, 0, 210, 4.5, 'F');
     doc.rect(0, 292.5, 210, 4.5, 'F');
 
-    // Accent geometric stripes
-    doc.setDrawColor(accentRgb[0], accentRgb[1], accentRgb[2]);
-    doc.setLineWidth(1.2);
-    doc.line(18, 52, 62, 52);
-
-    // Top Partner & Organizer Logo Badges
+    // Top Partner & Organizer Logo Badges (Adaptive Width + True Aspect Ratio + Contrast-Aware)
     let badgeX = 18;
-    for (const logoUri of [organizerLogo, coBrandLogo].filter(Boolean) as string[]) {
-      doc.setFillColor(255, 255, 255);
-      doc.roundedRect(badgeX, 18, 18, 18, 3.5, 3.5, 'F');
-      doc.addImage(logoUri, 'PNG', badgeX + 2, 20, 14, 14, undefined, 'FAST');
-      badgeX += 22;
+    const topBadges = [organizerLogo, coBrandLogo].filter(
+      (b): b is RasterAsset => Boolean(b)
+    );
+    for (const badgeAsset of topBadges) {
+      const pillH = 18;
+      // Wide horizontal wordmarks (e.g. AVERSA ~ 2.85:1) get slightly sleeker height & generous width
+      const innerH = badgeAsset.aspect > 1.8 ? 10.6 : 13.2;
+      const innerW = Math.min(40, Math.max(13.2, innerH * badgeAsset.aspect));
+      const pillW = innerW + 6.4;
+
+      if (badgeAsset.isVeryDark) {
+        doc.setFillColor(248, 250, 252);
+        doc.setDrawColor(203, 213, 225);
+      } else {
+        doc.setFillColor(19, 28, 46);
+        doc.setDrawColor(51, 65, 85);
+      }
+      doc.setLineWidth(0.35);
+      doc.roundedRect(badgeX, 18, pillW, pillH, 3.6, 3.6, 'FD');
+
+      addContainedImage(
+        doc,
+        badgeAsset,
+        badgeX + 3.2,
+        18 + (pillH - innerH) / 2,
+        innerW,
+        innerH
+      );
+      badgeX += pillW + 4;
     }
 
-    // Center-Right Showcase Crest Card
+    // Accent geometric stripe aligned cleanly under the top badge row
+    doc.setDrawColor(accentRgb[0], accentRgb[1], accentRgb[2]);
+    doc.setLineWidth(1.2);
+    doc.line(18, 44, Math.min(92, Math.max(62, badgeX - 4)), 44);
+
+    // Center Showcase Crest Card
     doc.setFillColor(17, 24, 39);
     doc.setDrawColor(accentRgb[0], accentRgb[1], accentRgb[2]);
     doc.setLineWidth(0.7);
-    doc.roundedRect(55, 58, 100, 96, 8, 8, 'FD');
+    doc.roundedRect(55, 56, 100, 98, 8, 8, 'FD');
 
     if (mainLogo) {
-      doc.addImage(mainLogo, 'PNG', 67, 66, 76, 80, undefined, 'FAST');
+      addContainedImage(doc, mainLogo, 65, 64, 80, 82);
     } else {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(34);
@@ -633,18 +756,9 @@ export async function downloadTournamentBulletinPdf(
           doc.setDrawColor(226, 232, 240);
           doc.roundedRect(cardX + 4.8, cursorY + 2.8, 13.5, 13.5, 2, 2, 'FD');
 
-          const crestUri = teamLogoMap.get(tm.id);
-          if (crestUri) {
-            doc.addImage(
-              crestUri,
-              'PNG',
-              cardX + 5.8,
-              cursorY + 3.8,
-              11.5,
-              11.5,
-              undefined,
-              'FAST'
-            );
+          const crestAsset = teamLogoMap.get(tm.id);
+          if (crestAsset) {
+            addContainedImage(doc, crestAsset, cardX + 5.8, cursorY + 3.8, 11.5, 11.5);
           } else {
             doc.setFont('helvetica', 'bold');
             doc.setFontSize(7.5);
@@ -842,7 +956,7 @@ export async function downloadTournamentBulletinPdf(
   }
 
   // =========================================================================
-  // SECTION 2B: SCHEDULE & RESULTS TABLE
+  // SECTION 2B: SCHEDULE & RESULTS TABLE (GROUPED CHRONOLOGICALLY PER DAY)
   // =========================================================================
   const teamById = new Map(overview.teams.map((t) => [t.id, t]));
   const tournamentById = new Map(activeTournaments.map((t) => [t.id, t]));
@@ -855,23 +969,13 @@ export async function downloadTournamentBulletinPdf(
     maxMainRoundByCat.set(t.id, mainRounds.length > 0 ? Math.max(...mainRounds) : 1);
   }
 
-  // Build sequential match numbering per tournament + global schedule list
-  const allRelevantMatches = overview.matches
-    .filter((m) => tournamentById.has(m.tournamentId) && m.status !== 'bye')
-    .sort((a, b) => {
-      // Pool matches first, then main rounds ascending, then third_place before final
-      const typeRank = (m: Match) =>
-        m.bracketType === 'pool' ? 0 : m.bracketType === 'third_place' ? 1 : 1;
-      if (typeRank(a) !== typeRank(b)) return typeRank(a) - typeRank(b);
-      if (a.round !== b.round) return a.round - b.round;
-      if (a.bracketType !== b.bracketType) {
-        return a.bracketType === 'third_place' ? -1 : 1;
-      }
-      if (a.tournamentId !== b.tournamentId) return a.tournamentId - b.tournamentId;
-      return a.matchIndex - b.matchIndex;
-    });
+  const rawRelevantMatches = overview.matches.filter(
+    (m) => tournamentById.has(m.tournamentId) && m.status !== 'bye'
+  );
+  const { dayGroups, orderedMatches: allRelevantMatches } =
+    groupMatchesByScheduleDay(rawRelevantMatches);
 
-  // Map matchId -> display Match Number (#1..#N) for advancement placeholders
+  // Map matchId -> display Match Number (#1..#N) in chronological schedule order
   const matchSeqNum = new Map<number, number>();
   allRelevantMatches.forEach((m, idx) => {
     matchSeqNum.set(m.id, idx + 1);
@@ -890,22 +994,72 @@ export async function downloadTournamentBulletinPdf(
   }
 
   if (allRelevantMatches.length > 0) {
+    const scheduledDayCount = dayGroups.filter((g) => !g.isUnscheduled).length;
+    const sectionBadgeLabel =
+      scheduledDayCount > 1
+        ? `${allRelevantMatches.length} Partai • ${scheduledDayCount} Hari`
+        : `${allRelevantMatches.length} Partai`;
+
+    const drawDayGroupHeader = (
+      startY: number,
+      dayIndex: number,
+      dayLabel: string,
+      matchCount: number,
+      isUnscheduled: boolean,
+      isContinuation = false
+    ) => {
+      const softTint = mixWithWhite(accentRgb, 0.86);
+      doc.setFillColor(softTint[0], softTint[1], softTint[2]);
+      doc.setDrawColor(accentRgb[0], accentRgb[1], accentRgb[2]);
+      doc.setLineWidth(0.32);
+      doc.roundedRect(14, startY, 182, 7.4, 1.4, 1.4, 'FD');
+
+      const pillText = isUnscheduled ? 'MENYUSUL' : `HARI ${dayIndex}`;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.8);
+      const pillW = Math.max(17, doc.getTextWidth(pillText) + 5.6);
+      doc.setFillColor(15, 23, 42);
+      doc.roundedRect(15.4, startY + 1.1, pillW, 5.2, 1.1, 1.1, 'F');
+      doc.setTextColor(accentRgb[0], accentRgb[1], accentRgb[2]);
+      doc.text(pillText, 15.4 + pillW / 2, startY + 4.6, { align: 'center' });
+
+      const titleStr = isContinuation
+        ? `${dayLabel.toUpperCase()} (LANJUTAN)`
+        : dayLabel.toUpperCase();
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(15, 23, 42);
+      doc.text(truncatePdfText(doc, titleStr, 128), 15.4 + pillW + 3.2, startY + 4.9);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(71, 85, 105);
+      doc.text(`${matchCount} Partai`, 193, startY + 4.9, { align: 'right' });
+
+      return startY + 8.2;
+    };
+
     const drawScheduleTableHeader = (startY: number) => {
       doc.setFillColor(30, 41, 59);
-      doc.roundedRect(14, startY, 182, 7.2, 1.2, 1.2, 'F');
+      doc.roundedRect(14, startY, 182, 7, 1.2, 1.2, 'F');
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(6.6);
+      doc.setFontSize(6.4);
       doc.setTextColor(248, 250, 252);
 
-      doc.text('NO', 18.5, startY + 4.7, { align: 'center' });
-      doc.text('WAKTU', 32, startY + 4.7, { align: 'center' });
-      doc.text('LAPANGAN', 52, startY + 4.7, { align: 'center' });
-      doc.text('KAT. / FASE', 75, startY + 4.7, { align: 'center' });
-      doc.text('TIM 1', 105, startY + 4.7, { align: 'center' });
-      doc.text('SET', 129, startY + 4.7, { align: 'center' });
-      doc.text('TIM 2', 153, startY + 4.7, { align: 'center' });
-      doc.text('SKOR PER SET', 182, startY + 4.7, { align: 'center' });
-      return startY + 7.6;
+      doc.text('NO', 18.2, startY + 4.6, { align: 'center' });
+      doc.text('WAKTU (WIB)', 34.5, startY + 4.6, { align: 'center' });
+      doc.text('LAP.', 55, startY + 4.6, { align: 'center' });
+      doc.text(
+        activeTournaments.length > 1 ? 'KAT. / BABAK' : 'BABAK / FASE',
+        78.5,
+        startY + 4.6,
+        { align: 'center' }
+      );
+      doc.text('TIM 1', 110, startY + 4.6, { align: 'center' });
+      doc.text('SET', 133, startY + 4.6, { align: 'center' });
+      doc.text('TIM 2', 156, startY + 4.6, { align: 'center' });
+      doc.text('SKOR PER SET', 184, startY + 4.6, { align: 'center' });
+      return startY + 7.4;
     };
 
     doc.addPage();
@@ -914,153 +1068,203 @@ export async function downloadTournamentBulletinPdf(
       settings,
       docMeta,
       'Jadwal & Rekapitulasi Hasil Pertandingan',
-      `${allRelevantMatches.length} Partai`,
+      sectionBadgeLabel,
       logos,
       accentRgb
     );
 
-    let rowY = drawScheduleTableHeader(37);
+    let rowY = 37;
 
-    allRelevantMatches.forEach((m, idx) => {
-      if (rowY + 7.4 > 278) {
+    dayGroups.forEach((dayGrp) => {
+      // Ensure room for Day Header + Table Header + at least 2 rows so Day Header never orphans
+      if (rowY + 29 > 278) {
         doc.addPage();
         drawInteriorPageShell(
           doc,
           settings,
           docMeta,
           'Jadwal & Rekapitulasi Hasil Pertandingan (Lanjutan)',
-          `${allRelevantMatches.length} Partai`,
+          sectionBadgeLabel,
           logos,
           accentRgb
         );
-        rowY = drawScheduleTableHeader(37);
+        rowY = 37;
       }
 
-      const cat = tournamentById.get(m.tournamentId)!;
-      const totalRounds = maxMainRoundByCat.get(m.tournamentId) ?? 1;
-      const phaseName = getRoundStageLabel(m, totalRounds);
-
-      const stageParts = m.stageLabel?.includes(' vs ')
-        ? m.stageLabel.split(' vs ')
-        : [null, null];
-
-      const teamA = m.teamAId ? teamById.get(m.teamAId) : undefined;
-      const teamB = m.teamBId ? teamById.get(m.teamBId) : undefined;
-
-      const labelA =
-        teamA?.name ||
-        stageParts[0] ||
-        feederLabelMap.get(`${m.id}:A`) ||
-        'Menunggu';
-      const labelB =
-        teamB?.name ||
-        stageParts[1] ||
-        feederLabelMap.get(`${m.id}:B`) ||
-        'Menunggu';
-
-      const isWinnerA = Boolean(m.winnerId && m.teamAId && m.winnerId === m.teamAId);
-      const isWinnerB = Boolean(m.winnerId && m.teamBId && m.winnerId === m.teamBId);
-
-      // Alternating clean tint
-      if (m.status === 'live') {
-        doc.setFillColor(254, 242, 242);
-      } else if (idx % 2 === 1) {
-        doc.setFillColor(248, 250, 252);
-      } else {
-        doc.setFillColor(255, 255, 255);
-      }
-      doc.rect(14, rowY, 182, 7.2, 'F');
-      doc.setDrawColor(226, 232, 240);
-      doc.setLineWidth(0.22);
-      doc.line(14, rowY + 7.2, 196, rowY + 7.2);
-
-      // Match number
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7);
-      doc.setTextColor(51, 65, 85);
-      doc.text(String(idx + 1), 18.5, rowY + 4.7, { align: 'center' });
-
-      // Scheduled Time
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(6.6);
-      doc.setTextColor(71, 85, 105);
-      doc.text(
-        truncatePdfText(doc, m.scheduledAt || '-', 17),
-        32,
-        rowY + 4.7,
-        { align: 'center' }
+      rowY = drawDayGroupHeader(
+        rowY,
+        dayGrp.dayIndex,
+        dayGrp.dayLabel,
+        dayGrp.items.length,
+        dayGrp.isUnscheduled,
+        false
       );
+      rowY = drawScheduleTableHeader(rowY);
 
-      // Court
-      doc.text(
-        truncatePdfText(doc, m.courtName || 'Court 1', 19),
-        52,
-        rowY + 4.7,
-        { align: 'center' }
-      );
+      dayGrp.items.forEach(({ match: m, parsed }, rowIdxInDay) => {
+        if (rowY + 7.2 > 278) {
+          doc.addPage();
+          drawInteriorPageShell(
+            doc,
+            settings,
+            docMeta,
+            'Jadwal & Rekapitulasi Hasil Pertandingan (Lanjutan)',
+            sectionBadgeLabel,
+            logos,
+            accentRgb
+          );
+          rowY = drawDayGroupHeader(
+            37,
+            dayGrp.dayIndex,
+            dayGrp.dayLabel,
+            dayGrp.items.length,
+            dayGrp.isUnscheduled,
+            true
+          );
+          rowY = drawScheduleTableHeader(rowY);
+        }
 
-      // Category / Phase
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(6.4);
-      doc.setTextColor(30, 41, 59);
-      doc.text(
-        truncatePdfText(doc, `${cat.name} • ${phaseName}`, 26),
-        75,
-        rowY + 4.7,
-        { align: 'center' }
-      );
+        const seqNum = matchSeqNum.get(m.id) ?? rowIdxInDay + 1;
+        const cat = tournamentById.get(m.tournamentId)!;
+        const totalRounds = maxMainRoundByCat.get(m.tournamentId) ?? 1;
+        const customPhase =
+          m.stageLabel && !m.stageLabel.includes(' vs ')
+            ? m.stageLabel.trim()
+            : '';
+        const basePhase = customPhase || getRoundStageLabel(m, totalRounds);
+        const phaseColText =
+          activeTournaments.length > 1 ? `${cat.name} • ${basePhase}` : basePhase;
 
-      // Team A
-      doc.setFont(
-        'helvetica',
-        teamA ? (isWinnerA ? 'bold' : 'normal') : 'italic'
-      );
-      doc.setFontSize(6.8);
-      doc.setTextColor(
-        teamA ? (isWinnerA ? 15 : 51) : 148,
-        teamA ? (isWinnerA ? 23 : 65) : 163,
-        teamA ? (isWinnerA ? 42 : 85) : 184
-      );
-      doc.text(truncatePdfText(doc, labelA, 30), 105, rowY + 4.7, { align: 'center' });
+        const stageParts = m.stageLabel?.includes(' vs ')
+          ? m.stageLabel.split(' vs ')
+          : [null, null];
 
-      // Set Score Pill
-      const hasScore = m.status === 'finished' || m.status === 'live';
-      const setScoreText = hasScore ? `${m.setsWonA} - ${m.setsWonB}` : 'vs';
-      doc.setFillColor(hasScore ? 15 : 241, hasScore ? 23 : 245, hasScore ? 42 : 249);
-      doc.roundedRect(123, rowY + 1.3, 12, 4.6, 1.1, 1.1, 'F');
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(6.8);
-      doc.setTextColor(hasScore ? 255 : 100, hasScore ? 255 : 116, hasScore ? 255 : 139);
-      doc.text(setScoreText, 129, rowY + 4.5, { align: 'center' });
+        const teamA = m.teamAId ? teamById.get(m.teamAId) : undefined;
+        const teamB = m.teamBId ? teamById.get(m.teamBId) : undefined;
 
-      // Team B
-      doc.setFont(
-        'helvetica',
-        teamB ? (isWinnerB ? 'bold' : 'normal') : 'italic'
-      );
-      doc.setFontSize(6.8);
-      doc.setTextColor(
-        teamB ? (isWinnerB ? 15 : 51) : 148,
-        teamB ? (isWinnerB ? 23 : 65) : 163,
-        teamB ? (isWinnerB ? 24 : 85) : 184
-      );
-      doc.text(truncatePdfText(doc, labelB, 30), 153, rowY + 4.7, { align: 'center' });
+        const labelA =
+          teamA?.name ||
+          stageParts[0] ||
+          feederLabelMap.get(`${m.id}:A`) ||
+          'Menunggu';
+        const labelB =
+          teamB?.name ||
+          stageParts[1] ||
+          feederLabelMap.get(`${m.id}:B`) ||
+          'Menunggu';
 
-      // Set-by-set points
-      const setDetails =
-        m.sets && m.sets.length > 0
-          ? m.sets.map((s) => `${s.scoreA}-${s.scoreB}`).join(', ')
-          : m.status === 'live'
-            ? 'LIVE'
-            : '-';
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(6.4);
-      doc.setTextColor(71, 85, 105);
-      doc.text(truncatePdfText(doc, setDetails, 26), 182, rowY + 4.7, {
-        align: 'center',
+        const isWinnerA = Boolean(m.winnerId && m.teamAId && m.winnerId === m.teamAId);
+        const isWinnerB = Boolean(m.winnerId && m.teamBId && m.winnerId === m.teamBId);
+
+        // Alternating clean tint within each day group
+        if (m.status === 'live') {
+          doc.setFillColor(254, 242, 242);
+        } else if (rowIdxInDay % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+        } else {
+          doc.setFillColor(255, 255, 255);
+        }
+        doc.rect(14, rowY, 182, 7, 'F');
+        doc.setDrawColor(226, 232, 240);
+        doc.setLineWidth(0.22);
+        doc.line(14, rowY + 7, 196, rowY + 7);
+
+        // Match number (#1..#N)
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(6.8);
+        doc.setTextColor(51, 65, 85);
+        doc.text(String(seqNum), 18.2, rowY + 4.6, { align: 'center' });
+
+        // Time (WIB) — clean without redundant date!
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(6.4);
+        doc.setTextColor(30, 41, 59);
+        doc.text(
+          truncatePdfText(doc, parsed.timeLabel, 23.5),
+          34.5,
+          rowY + 4.6,
+          { align: 'center' }
+        );
+
+        // Court
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.3);
+        doc.setTextColor(71, 85, 105);
+        doc.text(
+          truncatePdfText(doc, m.courtName || 'Court 1', 16),
+          55,
+          rowY + 4.6,
+          { align: 'center' }
+        );
+
+        // Phase / Stage
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(6.3);
+        doc.setTextColor(30, 41, 59);
+        doc.text(
+          truncatePdfText(doc, phaseColText, 29),
+          78.5,
+          rowY + 4.6,
+          { align: 'center' }
+        );
+
+        // Team A
+        doc.setFont(
+          'helvetica',
+          teamA ? (isWinnerA ? 'bold' : 'normal') : 'italic'
+        );
+        doc.setFontSize(6.7);
+        doc.setTextColor(
+          teamA ? (isWinnerA ? 15 : 51) : 148,
+          teamA ? (isWinnerA ? 23 : 65) : 163,
+          teamA ? (isWinnerA ? 42 : 85) : 184
+        );
+        doc.text(truncatePdfText(doc, labelA, 31), 110, rowY + 4.6, { align: 'center' });
+
+        // Set Score Pill
+        const hasScore = m.status === 'finished' || m.status === 'live';
+        const setScoreText = hasScore ? `${m.setsWonA} - ${m.setsWonB}` : 'vs';
+        doc.setFillColor(hasScore ? 15 : 241, hasScore ? 23 : 245, hasScore ? 42 : 249);
+        doc.roundedRect(127.4, rowY + 1.2, 11.2, 4.6, 1.1, 1.1, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(6.7);
+        doc.setTextColor(hasScore ? 255 : 100, hasScore ? 255 : 116, hasScore ? 255 : 139);
+        doc.text(setScoreText, 133, rowY + 4.4, { align: 'center' });
+
+        // Team B
+        doc.setFont(
+          'helvetica',
+          teamB ? (isWinnerB ? 'bold' : 'normal') : 'italic'
+        );
+        doc.setFontSize(6.7);
+        doc.setTextColor(
+          teamB ? (isWinnerB ? 15 : 51) : 148,
+          teamB ? (isWinnerB ? 23 : 65) : 163,
+          teamB ? (isWinnerB ? 24 : 85) : 184
+        );
+        doc.text(truncatePdfText(doc, labelB, 31), 156, rowY + 4.6, { align: 'center' });
+
+        // Set-by-set points (only played non-zero sets for scheduled/live)
+        const playedSets = (m.sets ?? []).filter(
+          (s) => s.scoreA > 0 || s.scoreB > 0 || s.isFinished
+        );
+        const setDetails =
+          playedSets.length > 0
+            ? playedSets.map((s) => `${s.scoreA}-${s.scoreB}`).join(', ')
+            : m.status === 'live'
+              ? 'LIVE'
+              : '-';
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.3);
+        doc.setTextColor(71, 85, 105);
+        doc.text(truncatePdfText(doc, setDetails, 23), 184, rowY + 4.6, {
+          align: 'center',
+        });
+
+        rowY += 7;
       });
 
-      rowY += 7.2;
+      rowY += 4.4;
     });
   }
 
@@ -1244,7 +1448,8 @@ function drawBracketMatchCardPdf(
 
   const mNum = matchSeqNum.get(m.id);
   const stripLeft = m.status === 'bye' ? 'BYE' : mNum ? `M#${mNum}` : `R${m.round}`;
-  const stripRight = m.scheduledAt || m.courtName || '';
+  const compactSched = parseScheduleDayAndTime(m.scheduledAt).compactLabel;
+  const stripRight = compactSched || m.scheduledAt || m.courtName || '';
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(5.4);
@@ -1351,16 +1556,16 @@ export async function downloadMatchSummaryPdf(
   const accentRgb = hexToRgb(settings.accentColor, [224, 157, 23]);
 
   const [mainLogo, organizerLogo, watermarkLogo, crestA, crestB] = await Promise.all([
-    loadRasterPngDataUrl(settings.logoUrl || '/brand/svc-crest-color.svg', {
-      maxDim: 320,
+    loadRasterAsset(settings.logoUrl || '/brand/svc-crest-color.svg', {
+      maxDim: 360,
     }),
-    loadRasterPngDataUrl(settings.organizerLogoUrl, { maxDim: 260 }),
-    loadRasterPngDataUrl(settings.logoUrl || '/brand/svc-crest-color.svg', {
+    loadRasterAsset(settings.organizerLogoUrl, { maxDim: 300 }),
+    loadRasterAsset(settings.logoUrl || '/brand/svc-crest-color.svg', {
       maxDim: 340,
       opacity: 0.05,
     }),
-    loadRasterPngDataUrl(teamA?.logoUrl, { maxDim: 220 }),
-    loadRasterPngDataUrl(teamB?.logoUrl, { maxDim: 220 }),
+    loadRasterAsset(teamA?.logoUrl, { maxDim: 240 }),
+    loadRasterAsset(teamB?.logoUrl, { maxDim: 240 }),
   ]);
 
   const doc = new jsPDF({
@@ -1371,19 +1576,21 @@ export async function downloadMatchSummaryPdf(
   });
 
   if (watermarkLogo) {
-    doc.addImage(watermarkLogo, 'PNG', 55, 102, 100, 100, undefined, 'FAST');
+    addContainedImage(doc, watermarkLogo, 55, 102, 100, 100);
   }
 
   // Top Championship Accent Bar
   doc.setFillColor(accentRgb[0], accentRgb[1], accentRgb[2]);
   doc.rect(0, 0, 210, 3, 'F');
 
-  // Official Letterhead
+  // Official Letterhead (aspect-preserved)
   if (organizerLogo) {
-    doc.addImage(organizerLogo, 'PNG', 15, 9, 16, 16, undefined, 'FAST');
+    const orgW = Math.min(28, Math.max(16, 16 * organizerLogo.aspect));
+    addContainedImage(doc, organizerLogo, 15, 8.8, orgW, 16.2);
   }
   if (mainLogo) {
-    doc.addImage(mainLogo, 'PNG', 179, 8.5, 16, 17, undefined, 'FAST');
+    const mainW = Math.min(28, Math.max(16, 16.5 * mainLogo.aspect));
+    addContainedImage(doc, mainLogo, 195 - mainW, 8.5, mainW, 16.8);
   }
 
   doc.setFont('helvetica', 'bold');
@@ -1479,7 +1686,7 @@ export async function downloadMatchSummaryPdf(
 
   // Team A side
   if (crestA) {
-    doc.addImage(crestA, 'PNG', 22, 81, 18, 18, undefined, 'FAST');
+    addContainedImage(doc, crestA, 22, 81, 18, 18);
   } else {
     const rgbA = hexToRgb(teamA?.color, accentRgb);
     doc.setFillColor(rgbA[0], rgbA[1], rgbA[2]);
@@ -1530,7 +1737,7 @@ export async function downloadMatchSummaryPdf(
 
   // Team B side
   if (crestB) {
-    doc.addImage(crestB, 'PNG', 170, 81, 18, 18, undefined, 'FAST');
+    addContainedImage(doc, crestB, 170, 81, 18, 18);
   } else {
     const rgbB = hexToRgb(teamB?.color, [59, 130, 246]);
     doc.setFillColor(rgbB[0], rgbB[1], rgbB[2]);

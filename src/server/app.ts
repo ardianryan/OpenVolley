@@ -9,10 +9,20 @@ import { publicRoutes } from './routes/public';
 import { injectDynamicHtmlMeta } from './services/ogImage';
 
 function resolveRequestOrigin(c: Context): string {
+  const configuredOrigin = process.env.PUBLIC_ORIGIN?.trim();
+  if (configuredOrigin) {
+    try {
+      return new URL(configuredOrigin).origin;
+    } catch {
+      // Ignore malformed env origin
+    }
+  }
+
   const proto = isSecureRequest(c) ? 'https' : 'http';
   const fwdHost = c.req.header('x-forwarded-host')?.split(',')[0]?.trim();
   const host = fwdHost || c.req.header('host')?.trim();
-  if (host) {
+  // Validate host format strictly to prevent Host / X-Forwarded-Host header injection
+  if (host && /^[a-zA-Z0-9.-]+(:\d{1,5})?$/.test(host)) {
     return `${proto}://${host}`;
   }
   try {

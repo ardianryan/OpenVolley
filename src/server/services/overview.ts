@@ -1,12 +1,15 @@
 import { asc, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import {
+  masterCourts,
+  masterTeams,
   matchReports,
   matchSets,
   matches,
   siteSettings,
   teams,
   tournaments,
+  tvScreens,
 } from '../db/schema';
 import { getOverviewVersion, onCacheInvalidate } from './sse';
 
@@ -41,6 +44,21 @@ async function queryFullOverview(includeDisabledTournaments = false) {
         })()
       : rawSettings;
 
+  const masterTeamList = await db
+    .select()
+    .from(masterTeams)
+    .orderBy(asc(masterTeams.name), asc(masterTeams.id));
+
+  const masterCourtList = await db
+    .select()
+    .from(masterCourts)
+    .orderBy(asc(masterCourts.sortOrder), asc(masterCourts.id));
+
+  const tvScreenList = await db
+    .select()
+    .from(tvScreens)
+    .orderBy(asc(tvScreens.sortOrder), asc(tvScreens.id));
+
   const tournamentList = includeDisabledTournaments
     ? await db.select().from(tournaments).orderBy(asc(tournaments.sortOrder), asc(tournaments.id))
     : await db
@@ -54,6 +72,9 @@ async function queryFullOverview(includeDisabledTournaments = false) {
   if (tournamentIds.length === 0) {
     return {
       settings,
+      masterTeams: masterTeamList,
+      masterCourts: masterCourtList,
+      tvScreens: tvScreenList,
       tournaments: [],
       teams: [],
       matches: [],
@@ -107,6 +128,9 @@ async function queryFullOverview(includeDisabledTournaments = false) {
 
   return {
     settings,
+    masterTeams: masterTeamList,
+    masterCourts: masterCourtList,
+    tvScreens: tvScreenList,
     tournaments: tournamentList,
     teams: teamList,
     matches: enrichedMatches,

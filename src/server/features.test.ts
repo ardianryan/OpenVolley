@@ -496,4 +496,619 @@ describe('Feature Suite — Tournament Lifecycle, Role Matrix & Production Routi
     );
     expect(arbitraryBlock.status).toBe(403);
   });
+
+  test('Feature 8: Real-Time VIP TV SSE Stream — Live Point Movement & Instant Final Set Transition', async () => {
+    // 1. Verify /api/public/overview uses no-cache + ETag (never stale max-age window)
+    const ovCheck = await app.request('/api/public/overview');
+    expect(ovCheck.headers.get('cache-control')).toContain('no-cache');
+
+    // 2. Create a quick 2-team match
+    const catRes = await app.request('/api/admin/tournaments', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'TV SSE Test Cup',
+        bestOf: 3,
+        regularSetPoints: 5,
+        decidingSetPoints: 5,
+        useDeuce: false,
+      }),
+    });
+    const { tournament } = await catRes.json();
+    const tid = tournament.id as number;
+
+    await app.request(`/api/admin/tournaments/${tid}/init-draw`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slotCount: 4 }),
+    });
+    const ovInit = await (
+      await app.request('/api/admin/overview', { headers: { Cookie: adminCookie } })
+    ).json();
+    const matchId = ovInit.matches.find(
+      (m: { tournamentId: number; round: number }) => m.tournamentId === tid && m.round === 1
+    ).id as number;
+
+    // 3. Open VIP TV SSE stream with admin cookie and read real-time chunks
+    const abortCtrl = new AbortController();
+    const sseRes = await app.request(
+      new Request('http://localhost/api/public/tv-stream', {
+        headers: { Cookie: adminCookie },
+        signal: abortCtrl.signal,
+      })
+    );
+    expect(sseRes.status).toBe(200);
+    expect(sseRes.headers.get('x-accel-buffering')).toBe('no');
+    expect(sseRes.headers.get('cache-control')).toContain('no-transform');
+
+    const reader = sseRes.body!.getReader();
+    const decoder = new TextDecoder();
+    let sseBuffer = '';
+
+    // Continuously drain stream in background just like browser EventSource
+    const pumpTask = (async () => {
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          sseBuffer += decoder.decode(value, { stream: true });
+        }
+      } catch {
+        // aborted on cleanup
+      }
+    })();
+
+    const waitForSse = async (predicate: (buf: string) => boolean) => {
+      for (let i = 0; i < 40 && !predicate(sseBuffer); i++) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+    };
+
+    await waitForSse((b) => b.includes('event: connected'));
+    expect(sseBuffer).toContain('event: connected');
+
+    // 4. Start match & score Set 1 to 5-0 -> confirm next set -> score Set 2 to 4-2 -> finish match
+    await app.request(`/api/admin/matches/${matchId}/score`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'start' }),
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await app.request(`/api/admin/matches/${matchId}/score`, {
+        method: 'POST',
+        headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'point', team: 'A', delta: 1 }),
+      });
+    }
+    await waitForSse((b) => b.includes('"scoreA":5'));
+    expect(sseBuffer).toContain('"scoreA":5');
+
+    await app.request(`/api/admin/matches/${matchId}/score`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'confirm_set_next' }),
+    });
+
+    // Score 4-2 in Set 2 and trigger manual finish ("Menangkan ALP") to verify last set is closed & counted!
+    for (let i = 0; i < 4; i++) {
+      await app.request(`/api/admin/matches/${matchId}/score`, {
+        method: 'POST',
+        headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'point', team: 'A', delta: 1 }),
+      });
+    }
+    for (let i = 0; i < 2; i++) {
+      await app.request(`/api/admin/matches/${matchId}/score`, {
+        method: 'POST',
+        headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'point', team: 'B', delta: 1 }),
+      });
+    }
+
+    sseBuffer = '';
+    const finRes = await app.request(`/api/admin/matches/${matchId}/score`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'finish', team: 'A' }),
+    });
+    expect(finRes.status).toBe(200);
+
+    await waitForSse((b) => b.includes('"status":"finished"'));
+    expect(sseBuffer).toContain('event: match_updated');
+    expect(sseBuffer).toContain('"status":"finished"');
+    expect(sseBuffer).toContain('"setsWonA":2');
+    expect(sseBuffer).toContain('"setsWonB":0');
+    expect(sseBuffer).toContain('"scoreA":4,"scoreB":2');
+
+    abortCtrl.abort();
+    await reader.cancel().catch(() => {});
+    await pumpTask;
+
+    await app.request(`/api/admin/tournaments/${tid}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+  });
+
+  test('Feature 9: Master Contingents Registry, Tab-Bulk Import, TM Draw Slot SSE & Per-Category Override', async () => {
+    const uniqueSuffix = Date.now().toString(36);
+    const schoolAName = `SMAN 99 Test ${uniqueSuffix}`;
+    const kabBName = `Kab. Test ${uniqueSuffix}`;
+
+    // 1. Bulk import Google Sheets Tab-separated rows (with header + duplicate row)
+    const bulkLines = [
+      'No\tNama Sekolah\tKab/Kota',
+      `1\t${schoolAName}\tKab. Mojokerto`,
+      `2\t${kabBName}\tJawa Timur`,
+      `3\t${schoolAName}\tKab. Mojokerto`,
+    ].join('\n');
+
+    const bulkRes = await app.request('/api/admin/master-teams/bulk', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lines: bulkLines }),
+    });
+    expect(bulkRes.status).toBe(201);
+    const bulkJson = await bulkRes.json();
+    expect(bulkJson.insertedCount).toBe(2);
+    expect(bulkJson.skippedCount).toBe(1);
+
+    const masterA = bulkJson.masterTeams.find((m: { name: string }) => m.name === schoolAName);
+    const masterB = bulkJson.masterTeams.find((m: { name: string }) => m.name === kabBName);
+    expect(masterA.level).toBe('sma');
+    expect(masterB.level).toBe('kab_kota');
+
+    // Set default coach on Master A before drawing into categories
+    await app.request(`/api/admin/master-teams/${masterA.id}`, {
+      method: 'PATCH',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultCoachName: 'Coach Utama Default' }),
+    });
+
+    // 2. Create Putra & Putri categories and initialize 4-slot TM Brackets
+    const putraRes = await app.request('/api/admin/tournaments', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: `SMA Putra ${uniqueSuffix}` }),
+    });
+    const putraId = (await putraRes.json()).tournament.id as number;
+
+    const putriRes = await app.request('/api/admin/tournaments', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: `SMA Putri ${uniqueSuffix}` }),
+    });
+    const putriId = (await putriRes.json()).tournament.id as number;
+
+    await app.request(`/api/admin/tournaments/${putraId}/init-draw`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slotCount: 4 }),
+    });
+    await app.request(`/api/admin/tournaments/${putriId}/init-draw`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slotCount: 4 }),
+    });
+
+    const ovSlots = await (
+      await app.request('/api/admin/overview', { headers: { Cookie: adminCookie } })
+    ).json();
+    const putraSlots = ovSlots.teams
+      .filter((t: { tournamentId: number }) => t.tournamentId === putraId)
+      .sort((a: { seed: number }, b: { seed: number }) => a.seed - b.seed);
+    const putriSlots = ovSlots.teams
+      .filter((t: { tournamentId: number }) => t.tournamentId === putriId)
+      .sort((a: { seed: number }, b: { seed: number }) => a.seed - b.seed);
+
+    // 3. Connect VIP TV SSE stream and assign Master A to Putra Slot #01 & Putri Slot #01
+    const abortCtrl = new AbortController();
+    const sseRes = await app.request(
+      new Request('http://localhost/api/public/tv-stream', {
+        headers: { Cookie: adminCookie },
+        signal: abortCtrl.signal,
+      })
+    );
+    const reader = sseRes.body!.getReader();
+    const decoder = new TextDecoder();
+    let sseBuf = '';
+    const pump = (async () => {
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          sseBuf += decoder.decode(value, { stream: true });
+        }
+      } catch {
+        // aborted on cleanup
+      }
+    })();
+
+    const assignPutra1 = await app.request(`/api/admin/tournaments/${putraId}/draw-slot`, {
+      method: 'PUT',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slotTeamId: putraSlots[0].id, masterTeamId: masterA.id }),
+    });
+    expect(assignPutra1.status).toBe(200);
+
+    for (let i = 0; i < 30 && !sseBuf.includes('event: draw_slot_updated'); i++) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    expect(sseBuf).toContain('event: draw_slot_updated');
+    expect(sseBuf).toContain(schoolAName);
+
+    // Duplicate guard in same category without squadLabel -> 409 Conflict
+    const dupRes = await app.request(`/api/admin/tournaments/${putraId}/draw-slot`, {
+      method: 'PUT',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slotTeamId: putraSlots[1].id, masterTeamId: masterA.id }),
+    });
+    expect(dupRes.status).toBe(409);
+
+    // Secondary squad (`squadLabel: 'B'`) in same category -> 200 OK (`... (Tim B)`)
+    const squadBRes = await app.request(`/api/admin/tournaments/${putraId}/draw-slot`, {
+      method: 'PUT',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slotTeamId: putraSlots[1].id,
+        masterTeamId: masterA.id,
+        squadLabel: 'B',
+      }),
+    });
+    expect(squadBRes.status).toBe(200);
+    expect((await squadBRes.json()).team.name).toBe(`${schoolAName} (Tim B)`);
+
+    // Same Master A in Putri category without re-entering identity -> 200 OK
+    const assignPutri1 = await app.request(`/api/admin/tournaments/${putriId}/draw-slot`, {
+      method: 'PUT',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slotTeamId: putriSlots[0].id, masterTeamId: masterA.id }),
+    });
+    expect(assignPutri1.status).toBe(200);
+
+    // 4. Override coachName ONLY on Putri, then update Master A's name & defaultCoachName
+    await app.request(`/api/admin/teams/${putriSlots[0].id}`, {
+      method: 'PATCH',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coachName: 'Coach Khusus Putri' }),
+    });
+
+    const renamedSchool = `SMAN 99 Unggulan ${uniqueSuffix}`;
+    const patchMasterRes = await app.request(`/api/admin/master-teams/${masterA.id}`, {
+      method: 'PATCH',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: renamedSchool,
+        defaultCoachName: 'Coach Utama Baru',
+      }),
+    });
+    expect(patchMasterRes.status).toBe(200);
+
+    const ovAfter = await (
+      await app.request('/api/admin/overview', { headers: { Cookie: adminCookie } })
+    ).json();
+    const putraSlot1After = ovAfter.teams.find(
+      (t: { id: number }) => t.id === putraSlots[0].id
+    );
+    const putraSlot2After = ovAfter.teams.find(
+      (t: { id: number }) => t.id === putraSlots[1].id
+    );
+    const putriSlot1After = ovAfter.teams.find(
+      (t: { id: number }) => t.id === putriSlots[0].id
+    );
+
+    // Identity propagated everywhere; Putra inherited new default coach; Putri kept its custom coach!
+    expect(putraSlot1After.name).toBe(renamedSchool);
+    expect(putraSlot2After.name).toBe(`${renamedSchool} (Tim B)`);
+    expect(putraSlot1After.coachName).toBe('Coach Utama Baru');
+    expect(putriSlot1After.name).toBe(renamedSchool);
+    expect(putriSlot1After.coachName).toBe('Coach Khusus Putri');
+
+    // Cleanup SSE & temporary test rows
+    abortCtrl.abort();
+    await reader.cancel().catch(() => {});
+    await pump;
+
+    await app.request(`/api/admin/tournaments/${putraId}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+    await app.request(`/api/admin/tournaments/${putriId}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+    await app.request(`/api/admin/master-teams/${masterA.id}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+    await app.request(`/api/admin/master-teams/${masterB.id}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+  });
+
+  test('Feature 10: Master Courts, Cross-Court Schedule Transfer, Remote Multi-TV SSE & Public TV Gate', async () => {
+    // 1. Create Master Court & Tournament with 4-slot bracket
+    const cRes = await app.request('/api/admin/master-courts', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Lapangan VIP Timur', shortCode: 'VIP-T' }),
+    });
+    expect(cRes.status).toBe(201);
+    const courtCreated = (await cRes.json()).court as { id: number; name: string };
+
+    const tRes = await app.request('/api/admin/tournaments', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'TV Remote & Courts Cup' }),
+    });
+    const tid = (await tRes.json()).tournament.id as number;
+    await app.request(`/api/admin/tournaments/${tid}/init-draw`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slotCount: 4 }),
+    });
+
+    const ov1 = await (
+      await app.request('/api/admin/overview', { headers: { Cookie: adminCookie } })
+    ).json();
+    const catMatches = ov1.matches.filter(
+      (m: { tournamentId: number; bracketType: string }) =>
+        m.tournamentId === tid && m.bracketType === 'main'
+    );
+    expect(catMatches.length).toBeGreaterThanOrEqual(2);
+
+    // 2. Bulk pull & assign schedule slot onto Master Court
+    const bulkAssign = await app.request('/api/admin/matches/bulk-schedule-assign', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        updates: [
+          {
+            matchId: catMatches[0].id,
+            courtName: courtCreated.name,
+            scheduledAt: 'Jumat, 27 Nov 2026 • 13.00 - 14.00',
+          },
+        ],
+      }),
+    });
+    expect(bulkAssign.status).toBe(200);
+    expect((await bulkAssign.json()).count).toBe(1);
+
+    // Rename Master Court and confirm match.courtName cascades automatically
+    const renameCourt = await app.request(`/api/admin/master-courts/${courtCreated.id}`, {
+      method: 'PATCH',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Arena Utama Timur' }),
+    });
+    expect(renameCourt.status).toBe(200);
+    const matchAfterRename = await (
+      await app.request(`/api/public/matches/${catMatches[0].id}`)
+    ).json();
+    expect(matchAfterRename.match.courtName).toBe('Arena Utama Timur');
+
+    // 3. Create Multi-TV Screen Profile & Connect VIP SSE to test Remote Push
+    const tvCreate = await app.request('/api/admin/tv-screens', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'TV Proyektor Aula TM',
+        slug: 'proyektor-aula-test',
+        courtId: courtCreated.id,
+      }),
+    });
+    expect(tvCreate.status).toBe(201);
+    const tvScreen = (await tvCreate.json()).screen as { id: number; slug: string };
+
+    const pubScreenGet = await app.request(`/api/public/tv-screens/${tvScreen.slug}`);
+    expect(pubScreenGet.status).toBe(200);
+    expect((await pubScreenGet.json()).screen.slug).toBe('proyektor-aula-test');
+
+    const abortCtrl = new AbortController();
+    const sseRes = await app.request(
+      new Request('http://localhost/api/public/tv-stream', {
+        headers: { Cookie: adminCookie },
+        signal: abortCtrl.signal,
+      })
+    );
+    const reader = sseRes.body!.getReader();
+    const decoder = new TextDecoder();
+    let sseBuf = '';
+    const pump = (async () => {
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          sseBuf += decoder.decode(value, { stream: true });
+        }
+      } catch {
+        // aborted on cleanup
+      }
+    })();
+
+    // Admin remotely switches screen to Standby Banner (TM Preset + Marquee)
+    const remotePatch = await app.request(`/api/admin/tv-screens/${tvScreen.id}`, {
+      method: 'PATCH',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'standby',
+        bannerPreset: 'tm',
+        bannerBadge: 'STANDBY TM',
+        bannerTitle: 'TECHNICAL MEETING SVC',
+        bannerNoticeText: 'Harap seluruh manajer bersiap di ruang aula.',
+      }),
+    });
+    expect(remotePatch.status).toBe(200);
+
+    for (let i = 0; i < 30 && !sseBuf.includes('event: tv_screen_updated'); i++) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    expect(sseBuf).toContain('event: tv_screen_updated');
+    expect(sseBuf).toContain('proyektor-aula-test');
+    expect(sseBuf).toContain('TECHNICAL MEETING SVC');
+
+    abortCtrl.abort();
+    await reader.cancel().catch(() => {});
+    await pump;
+
+    // 4. Verify publicTvEnabled defaults to false & toggles cleanly
+    const checkDefault = await (await app.request('/api/public/tv-check')).json();
+    expect(checkDefault.publicTvEnabled).toBe(false);
+
+    await app.request('/api/admin/settings', {
+      method: 'PUT',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publicTvEnabled: true }),
+    });
+    const checkOpened = await (await app.request('/api/public/tv-check')).json();
+    expect(checkOpened.publicTvEnabled).toBe(true);
+
+    // Restore publicTvEnabled = false & clean up temporary rows
+    await app.request('/api/admin/settings', {
+      method: 'PUT',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publicTvEnabled: false }),
+    });
+    await app.request(`/api/admin/tv-screens/${tvScreen.id}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+    await app.request(`/api/admin/master-courts/${courtCreated.id}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+    await app.request(`/api/admin/tournaments/${tid}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+  });
+
+  test('Feature 11: Comprehensive Granular RBAC (Custom Roles & Per-User Permissions), Live JWT Revocation & Security Hardening', async () => {
+    // 1. Admin creates a Custom Role with ONLY 'operator' permission
+    const roleRes = await app.request('/api/auth/roles', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Wasit Skor Meja',
+        description: 'Hanya akses Live Operator',
+        permissions: ['operator'],
+      }),
+    });
+    expect(roleRes.status).toBe(201);
+    const createdRole = (await roleRes.json()).role as {
+      id: number;
+      slug: string;
+      permissions: string[];
+    };
+    expect(createdRole.slug).toBe('wasit_skor_meja');
+    expect(createdRole.permissions).toEqual(['operator']);
+
+    // System role deletion is blocked -> 400
+    const rolesListRes = await (
+      await app.request('/api/auth/roles', { headers: { Cookie: adminCookie } })
+    ).json();
+    const panitiaRole = rolesListRes.roles.find((r: { slug: string }) => r.slug === 'panitia');
+    const delSysRole = await app.request(`/api/auth/roles/${panitiaRole.id}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+    expect(delSysRole.status).toBe(400);
+
+    // 2. Create user under Custom Role -> inherits ['operator']
+    const userCreateRes = await app.request('/api/auth/users', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'wasit_meja_1',
+        name: 'Petugas Wasit 1',
+        password: 'password123',
+        role: createdRole.slug,
+      }),
+    });
+    expect(userCreateRes.status).toBe(201);
+    const createdUser = (await userCreateRes.json()).user as {
+      id: number;
+      permissions: string[];
+    };
+    expect(createdUser.permissions).toEqual(['operator']);
+
+    const loginWasit = await app.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'wasit_meja_1', password: 'password123' }),
+    });
+    expect(loginWasit.status).toBe(200);
+    const wasitCookie = loginWasit.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    // 3. Enforce endpoint RBAC strictly + redact tvPin from overview
+    const ovWasit = await app.request('/api/admin/overview', {
+      headers: { Cookie: wasitCookie },
+    });
+    expect(ovWasit.status).toBe(200);
+    expect((await ovWasit.json()).settings.tvPin).toBeUndefined();
+
+    const blockedTv = await app.request('/api/admin/tv-screens', {
+      headers: { Cookie: wasitCookie },
+    });
+    expect(blockedTv.status).toBe(403);
+
+    const blockedMaster = await app.request('/api/admin/master-teams', {
+      method: 'POST',
+      headers: { Cookie: wasitCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Should Be Blocked' }),
+    });
+    expect(blockedMaster.status).toBe(403);
+
+    // Allowed route ('operator') clears middleware (400 on dummy matchId, NOT 403)
+    const allowedScore = await app.request('/api/admin/matches/999999/score', {
+      method: 'POST',
+      headers: { Cookie: wasitCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'start' }),
+    });
+    expect(allowedScore.status).toBe(400);
+
+    // 4. Per-User custom permission override takes effect IMMEDIATELY without re-login
+    const overrideRes = await app.request(`/api/auth/users/${createdUser.id}`, {
+      method: 'PUT',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ permissions: ['operator', 'tv_screens'] }),
+    });
+    expect(overrideRes.status).toBe(200);
+
+    const meAfterOverride = await (
+      await app.request('/api/auth/me', { headers: { Cookie: wasitCookie } })
+    ).json();
+    expect(meAfterOverride.user.permissions).toEqual(['operator', 'tv_screens']);
+
+    const unlockedTv = await app.request('/api/admin/tv-screens', {
+      headers: { Cookie: wasitCookie },
+    });
+    expect(unlockedTv.status).toBe(200);
+
+    // 5. Deleting user IMMEDIATELY revokes old 7-day JWT -> 401 Unauthorized
+    await app.request(`/api/auth/users/${createdUser.id}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+    const staleJwtCheck = await app.request('/api/auth/me', {
+      headers: { Cookie: wasitCookie },
+    });
+    expect(staleJwtCheck.status).toBe(401);
+
+    // Delete now-unused custom role cleanly
+    const delCustomRole = await app.request(`/api/auth/roles/${createdRole.id}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+    expect(delCustomRole.status).toBe(200);
+
+    // 6. Security Audit: Host header injection guard blocks spoofed X-Forwarded-Host
+    const poisonedHtml = await (
+      await app.request('http://localhost/', {
+        headers: { 'X-Forwarded-Host': 'evil.attacker.com/phish' },
+      })
+    ).text();
+    expect(poisonedHtml).not.toContain('evil.attacker.com');
+  });
 });

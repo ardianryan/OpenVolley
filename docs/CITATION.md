@@ -12,7 +12,7 @@ GitHub also exposes an interactive **"Cite this repository"** widget in the repo
 @software{ryan2026openvolley,
   author       = {Ryan, Ardian},
   title        = {{OpenVolley: A Self-Hosted Real-Time Volleyball Scoreboard, Symmetric Tournament Bracket, and Client-Side Broadcast Media Suite}},
-  version      = {0.1.0},
+  version      = {0.2.1},
   year         = {2026},
   month        = nov,
   url          = {https://github.com/ardianryan/OpenVolley},
@@ -24,10 +24,10 @@ GitHub also exposes an interactive **"Cite this repository"** widget in the repo
 
 ## APA (7th Edition)
 
-> Ryan, A. (2026). *OpenVolley: A Self-Hosted Real-Time Volleyball Scoreboard, Symmetric Tournament Bracket, and Client-Side Broadcast Media Suite* (Version 0.1.0) [Computer software]. https://github.com/ardianryan/OpenVolley
+> Ryan, A. (2026). *OpenVolley: A Self-Hosted Real-Time Volleyball Scoreboard, Symmetric Tournament Bracket, and Client-Side Broadcast Media Suite* (Version 0.2.1) [Computer software]. https://github.com/ardianryan/OpenVolley
 
 ---
 
 ## IEEE
 
-> [1] A. Ryan, *OpenVolley: A Self-Hosted Real-Time Volleyball Scoreboard, Symmetric Tournament Bracket, and Client-Side Broadcast Media Suite*, version 0.1.0, Nov. 2026. [Online]. Available: https://github.com/ardianryan/OpenVolley
+> [1] A. Ryan, *OpenVolley: A Self-Hosted Real-Time Volleyball Scoreboard, Symmetric Tournament Bracket, and Client-Side Broadcast Media Suite*, version 0.2.1, Nov. 2026. [Online]. Available: https://github.com/ardianryan/OpenVolley

@@ -16,6 +16,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1] - 2026-11-18
+
+### Added
+- **Master Contingents Registry (`/back-office/kontingen`) & Non-Destructive Auto-Migration**:
+  - Centralized `master_teams` table (`name`, `shortCode`, `school`, `level`, `logoUrl`, `color`, `defaultCoachName`, `defaultManagerName`, `defaultJerseyColors`) shared across `SMP/MTs`, `SMA/SMK/MA`, `Kab/Kota`, and `Klub/Umum` divisions.
+  - Direct Tab-separated (`No \t Nama Sekolah \t Kab/Kota`) & Pipe-separated bulk import from Google Sheets/Excel (`POST /api/admin/master-teams/bulk`) with header/duplicate skipping and automatic level inference.
+  - Automatic identity & logo synchronization across linked category entries (`teams.master_team_id`) while preserving per-category coach, manager, and jersey overrides.
+  - Safe shared-logo reference counting (`safeDeleteTeamLogoIfUnreferenced`) so deleting one division preserves shared Master Contingent emblems.
+- **Hybrid FIVB Technical Meeting (TM) Drawing & Live Bagan / TM Mode**:
+  - Searchable draw-slot combobox (`SearchableTeamPicker`) directly on `4 / 8 / 16 / 32` TM bracket slots (`PUT /api/admin/tournaments/:id/draw-slot`) with duplicate guards, secondary squad support (`+ Tim B`), and inline `+ Simpan Baru ke Master`.
+  - FIVB Smart Auto-Draw engine (`src/shared/fivb-draw.ts`) supporting seeded opposite-wing locking (`isSeeded`), Serpentine Snake Pool seeding, and Round-1/Pool anti-same-region separation (`separateSameRegion`).
+  - Live `draw_slot_updated` SSE broadcasts driving gold reveal spotlight banners & slot highlights on `/tv` and `/bagan` without page refresh.
+- **Master Courts & Visual Cross-Court Schedule Board (`/back-office/jadwal`)**:
+  - Centralized `master_courts` registry with cascading court renames (`PATCH /api/admin/master-courts/:id`) synced to schedules and `LiveOperator`.
+  - Side-by-side cross-court schedule board (`ScheduleCourtsManager`) featuring 1-click **"Tarik Jadwal"** transfers between courts, chronological day sorting, and **"Salin Pola Jam"** time-slot copying (`POST /api/admin/matches/bulk-schedule-assign`).
+- **Multi-Screen Remote TV Controller & Dynamic Standby Banners (`/back-office/layar-tv`)**:
+  - Dedicated `tv_screens` profile table (`/tv?screen=<slug>`) centrally controlled by admins/officials over real-time `tv_screen_updated` SSE (`1 Lapangan`, `Split 2`, `Auto 12d`, `Bagan / TM`, and `Standby Banner`).
+  - Clean display-only `/tv` header (no manual TV-side mode switchers or internal profile pill clutter).
+  - Fullscreen Dynamic Standby Banner renderer supporting quick presets (**Technical Meeting**, **Warm-Up Arena**, **Istirahat / Jeda**, **Next Match**, **Kustom Bebas**), live WIB digital clock, optional custom backdrop upload, sponsor footer, and continuous CSS running-text marquee (`animate-tv-marquee`).
+- **Public Portal TV Visibility Gate (`publicTvEnabled`)**:
+  - Hides the `Layar Skor TV` CTA button on the public homepage (`VolleyballArena3D`) by default (`publicTvEnabled: false`) while preserving TV PIN protection; admins can toggle public visibility in **Branding & Logo**.
+- **Chronological Per-Day PDF Schedule Grouping & Accordion Back-Office Sidebar**:
+  - Day-by-day chronological schedule sections (`src/shared/schedule.ts` → `HARI 1..N`) with column headers and compact bracket schedule strips in Bulletin PDFs.
+  - Smooth CSS-Grid collapsible accordion sidebar groups in `BackOffice` (default collapsed, expanding automatically for the active menu category).
+- **Comprehensive Granular RBAC & Custom Roles (`/back-office/users`)**:
+  - Dedicated `roles` database table with immutable/protected system roles (`admin`, `panitia`, `media`) and full CRUD for custom roles (`GET/POST/PUT/DELETE /api/auth/roles`) with checkbox-driven permission selection across all 12 Back-Office menus (`src/shared/rbac.ts`).
+  - Per-user granular menu permission overrides (`users.permissions_json`, `null` inherits role defaults) editable directly when creating or updating staff accounts (`UserRolesManager.tsx`).
+  - Dynamic default landing route (`getDefaultLandingSection`) so staff without `overview` automatically land on their first allowed Back-Office module.
+
+### Changed
+- **3-Step Live Operator UX Wizard (`src/client/pages/LiveOperator.tsx`)**:
+  - Rebuilt the live scoring console into a focused 3-step workflow: **1. Pilih Lapangan** -> **2. Pilih Jadwal Aktif** -> **3. Konsol Skor Live**.
+  - Removed redundant `PIN TV` / `Set` inputs and `Layar TV ↗` links now handled centrally by `/back-office/layar-tv`, and added `Escape`-key handling on confirmation modals.
+- **Media Studio Visual Polish (`src/client/pages/MediaStudio.tsx`)**:
+  - Upgraded lighting to ReactBits-inspired volumetric top-center `LightRays`, dual symmetric diagonal shutter transitions with full clearance, `warmUpGpuTextures()` + `img.decode()` pre-warming prior to recording, `drawContainedCanvasImage()` aspect-ratio preservation, and proportionally larger (`~2×`) school crests on score cards & VS doors.
+- **PDF & OG Partner Badge Aspect Preservation (`src/client/lib/pdfDocuments.ts`, `src/server/services/ogImage.ts`)**:
+  - Added `loadRasterAsset()` alpha bounding-box auto-trimming + `addContainedImage()` and adaptive dark-slate contrast badges so wide horizontal gold wordmarks (e.g. `AVERSA`) retain natural aspect ratios without clipping.
+- **Anti-Slop UI & Accessibility Refinements**:
+  - Replaced native `window.confirm` popups across `MasterTeamsManager.tsx`, `ScheduleCourtsManager.tsx`, and `TvScreensManager.tsx` with a themed accessible `ConfirmDialog` component (`Escape` close, `>=44px` mobile buttons).
+  - Enlarged mobile action icon tap targets (`min-h-11 min-w-11 sm:min-h-8 sm:min-w-8`), replaced generic `Sparkles` placeholders with `LayoutTemplate`, and cleaned em-dash punctuation from TV UI copy.
+
+### Fixed
+- **RBAC & Security Hardening (`src/server/middleware/auth.ts`, `src/server/routes/admin.ts`, `src/server/routes/media.ts`, `src/server/app.ts`, `src/server/services/upload.ts`)**:
+  - Enforced real-time database session & role permission verification (`resolveLiveAuthUser`, `requirePermission`) on every protected request so deleted or demoted accounts are rejected immediately (`401`/`403`) rather than trusting stale JWT claims.
+  - Applied granular `requirePermission(...)` guards across `/api/admin/*` and `/api/media/*` endpoints and redacted `tvPin` from `/api/admin/overview` unless the caller holds `branding` or `tv_screens` permissions.
+  - Sanitized `resolveRequestOrigin()` against forged `X-Forwarded-Host` / `Host` header injection (with optional `PUBLIC_ORIGIN` override) and tightened `deleteUploadedImage()` local path validation via strict allowlist regex.
+- **Zero-Delay VIP TV SSE & Instant Final-Set Match Ending (`src/server/routes/public.ts`, `src/server/services/sse.ts`, `src/server/services/scoring.ts`)**:
+  - Applied `no-cache, no-store, no-transform, must-revalidate` and `X-Accel-Buffering: no` headers directly onto Hono `streamSSE()` `Response` objects to defeat reverse-proxy buffering.
+  - Replaced sequential SSE loops with concurrent non-blocking `Promise.allSettled` fan-out + `2500ms` write timeout & stalled-socket eviction so slow mobile viewers never block VIP TVs or scoring updates.
+  - Updated `finishMatchManually` to close and count active non-zero sets so `/tv` transitions immediately (`0ms`) to the final set & winner summary without refresh.
+
+---
+
 ## [0.2.0] - 2026-11-18
 
 ### Added
@@ -94,7 +147,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **DevOps, CI/CD & Documentation**:
   - Multi-stage Alpine `Dockerfile`, `docker-compose.yml`, GitHub Actions (`CI`, `CodeQL`, multi-arch `GHCR` Docker package publishing, and automated GitHub Releases), `CITATION.cff`, BibTeX metadata, GitHub Custom Properties schema, and English documentation suite under `docs/`.
 
-[Unreleased]: https://github.com/ardianryan/OpenVolley/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ardianryan/OpenVolley/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/ardianryan/OpenVolley/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ardianryan/OpenVolley/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/ardianryan/OpenVolley/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ardianryan/OpenVolley/releases/tag/v0.1.0

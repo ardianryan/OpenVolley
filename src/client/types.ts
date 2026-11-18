@@ -1,3 +1,6 @@
+import type { MasterTeamLevel } from '../shared/fivb-draw';
+import type { PermissionKey } from '../shared/rbac';
+
 export interface SponsorItem {
   id: string;
   name: string;
@@ -37,14 +40,64 @@ export interface SiteSettings {
   seoDescription?: string;
   socialImageUrl?: string;
   publicDocsEnabled?: boolean;
+  publicTvEnabled?: boolean;
   docSettingsJson?: string;
+}
+
+export interface MasterCourt {
+  id: number;
+  name: string;
+  shortCode: string;
+  sortOrder: number;
+  isEnabled: boolean;
+  createdAt?: number;
+}
+
+export type TvScreenMode = 'single' | 'split' | 'bracket' | 'standby' | 'auto_rotate';
+export type TvBannerPreset = 'tm' | 'warmup' | 'break' | 'upcoming' | 'custom';
+
+export interface TvScreen {
+  id: number;
+  name: string;
+  slug: string;
+  mode: TvScreenMode;
+  courtId?: number | null;
+  targetMatchId?: number | null;
+  secondaryMatchId?: number | null;
+  bracketTournamentId?: number | null;
+  bannerPreset: TvBannerPreset;
+  bannerTitle: string;
+  bannerSubtitle: string;
+  bannerBadge: string;
+  bannerNoticeText: string;
+  showClock: boolean;
+  showSponsors: boolean;
+  customBannerUrl?: string | null;
+  sortOrder: number;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 export interface AuthUser {
   id: number;
   username: string;
   name: string;
-  role: 'admin' | 'panitia' | 'media';
+  role: string;
+  roleName?: string;
+  permissions?: PermissionKey[];
+  customPermissions?: PermissionKey[] | null;
+  hasCustomPermissions?: boolean;
+}
+
+export interface RoleDefinition {
+  id: number;
+  slug: string;
+  name: string;
+  description: string;
+  permissions: PermissionKey[];
+  isSystem: boolean;
+  userCount?: number;
+  createdAt?: number;
 }
 
 export interface Tournament {
@@ -64,9 +117,26 @@ export interface Tournament {
   sortOrder: number;
 }
 
+export interface MasterTeam {
+  id: number;
+  name: string;
+  shortCode: string;
+  school: string;
+  level: MasterTeamLevel;
+  logoUrl: string | null;
+  color: string;
+  defaultCoachName: string;
+  defaultManagerName: string;
+  defaultJerseyColors: string;
+  createdAt?: number;
+}
+
 export interface Team {
   id: number;
   tournamentId: number;
+  masterTeamId?: number | null;
+  squadLabel?: string;
+  isSeeded?: boolean;
   name: string;
   shortCode: string;
   school: string;
@@ -77,6 +147,19 @@ export interface Team {
   coachName?: string;
   managerName?: string;
   jerseyColors?: string;
+}
+
+export interface DrawSlotBroadcastPayload {
+  tournamentId: number;
+  teamId: number;
+  masterTeamId: number | null;
+  slotNumber: number;
+  poolName?: string | null;
+  teamName: string;
+  school: string;
+  logoUrl: string | null;
+  cleared?: boolean;
+  timestamp: number;
 }
 
 export interface MatchSet {
@@ -143,6 +226,9 @@ export interface MatchReport {
 
 export interface OverviewData {
   settings: SiteSettings;
+  masterTeams?: MasterTeam[];
+  masterCourts?: MasterCourt[];
+  tvScreens?: TvScreen[];
   tournaments: Tournament[];
   teams: Team[];
   matches: Match[];

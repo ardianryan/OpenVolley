@@ -9,22 +9,28 @@ import {
   GitBranch,
   GripVertical,
   ImagePlus,
-  KeyRound,
   Layers,
   Palette,
   Plus,
   RotateCcw,
   Shuffle,
+  Star,
   Trash2,
-  UserPlus,
   Users,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import {
+  MASTER_TEAM_LEVEL_LABELS,
+  isPlaceholderDrawSlotName,
+  type MasterTeamLevel,
+} from '../../shared/fivb-draw';
 import { formatInternationalStageLabel } from '../../shared/stages';
 import { BracketView } from '../components/BracketView';
 import { ConfirmDeleteCategoryModal } from '../components/ConfirmDeleteCategoryModal';
 import { PoolStandingsView } from '../components/PoolStandingsView';
+import { SearchableTeamPicker } from '../components/SearchableTeamPicker';
 import { TeamAvatar } from '../components/TeamAvatar';
+import { UserRolesManager } from '../components/UserRolesManager';
 import { apiFetch } from '../lib/api';
 import {
   IMAGE_INPUT_ACCEPT,
@@ -34,6 +40,7 @@ import { parseJerseyColors } from '../lib/seo';
 import type {
   AuthUser,
   JerseyColorItem,
+  MasterTeam,
   OverviewData,
   SponsorItem,
   Tournament,
@@ -79,9 +86,16 @@ export function AdminDashboard({
   const [newJerseyHex, setNewJerseyHex] = useState('#111827');
   const [downloadingBulletin, setDownloadingBulletin] = useState(false);
 
-  // Pool stage config state
+  // Pool stage & FIVB Smart Draw config state
   const [poolCountField, setPoolCountField] = useState<number>(4);
   const [advancePerPoolField, setAdvancePerPoolField] = useState<number>(2);
+  const [separateSameRegion, setSeparateSameRegion] = useState<boolean>(true);
+
+  // Batch pick from Master Contingents state
+  const [showMasterBatchPicker, setShowMasterBatchPicker] = useState<boolean>(false);
+  const [masterBatchLevel, setMasterBatchLevel] = useState<'all' | MasterTeamLevel>('all');
+  const [masterBatchSearch, setMasterBatchSearch] = useState<string>('');
+  const [selectedMasterIds, setSelectedMasterIds] = useState<number[]>([]);
 
   // Branding form
   const [eventName, setEventName] = useState(data.settings?.eventName || '');
@@ -91,24 +105,10 @@ export function AdminDashboard({
     data.settings?.seoDescription || ''
   );
   const [tvPinField, setTvPinField] = useState(data.settings?.tvPin || '4426');
+  const [publicTvEnabled, setPublicTvEnabled] = useState(
+    Boolean(data.settings?.publicTvEnabled)
+  );
   const [ogPreviewBust, setOgPreviewBust] = useState<number>(() => Date.now());
-
-  // Users state
-  const [userList, setUserList] = useState<Array<AuthUser & { createdAt: number }>>([]);
-  const [newUsername, setNewUsername] = useState('');
-  const [newFullName, setNewFullName] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [newRole, setNewRole] = useState<'admin' | 'panitia' | 'media'>('panitia');
-  const [showNewUserPwd, setShowNewUserPwd] = useState(false);
-
-  // Inline Edit / Reset Password state for existing accounts
-  const [editingUserId, setEditingUserId] = useState<number | null>(null);
-  const [editUserName, setEditUserName] = useState('');
-  const [editUserRole, setEditUserRole] = useState<'admin' | 'panitia' | 'media'>('panitia');
-  const [editUserPassword, setEditUserPassword] = useState('');
-  const [showEditUserPwd, setShowEditUserPwd] = useState(false);
-  const [savingUserEdit, setSavingUserEdit] = useState(false);
-  const [userError, setUserError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedTid && data.tournaments[0]) {
@@ -123,17 +123,10 @@ export function AdminDashboard({
       setEventMeta(data.settings.eventMeta);
       setSeoDescription(data.settings.seoDescription || '');
       if (data.settings.tvPin) setTvPinField(data.settings.tvPin);
+      setPublicTvEnabled(Boolean(data.settings.publicTvEnabled));
       setOgPreviewBust(Date.now());
     }
   }, [data.settings]);
-
-  useEffect(() => {
-    if (section === 'users' && currentUser.role === 'admin') {
-      apiFetch<{ users: Array<AuthUser & { createdAt: number }> }>('/api/auth/users')
-        .then((res) => setUserList(res.users))
-        .catch(() => {});
-    }
-  }, [section, currentUser.role]);
 
   const flash = (msg: string) => {
     setMessage(msg);
@@ -263,20 +256,80 @@ export function AdminDashboard({
     if (!activeTournament) return;
     await apiFetch(`/api/admin/tournaments/${activeTournament.id}/generate-bracket`, {
       method: 'POST',
-      body: JSON.stringify({ shuffle }),
+      body: JSON.stringify({ shuffle, separateSameRegion }),
     });
     await onRefresh();
-    flash('Bagan otomatis berhasil dibuat!');
+    flash(
+      shuffle && separateSameRegion
+        ? 'Bagan FIVB berhasil diacak (Unggulan terkunci & Kota/Kab yang sama dipisahkan di Babak 1)!'
+        : 'Bagan otomatis berhasil dibuat!'
+    );
   };
 
-  const handleInitDraw = async (slotCount: 4 | 8 | 16) => {
+  const handleInitDraw = async (slotCount: 4 | 8 | 16 | 32) => {
     if (!activeTournament) return;
     await apiFetch(`/api/admin/tournaments/${activeTournament.id}/init-draw`, {
       method: 'POST',
       body: JSON.stringify({ slotCount }),
     });
     await onRefresh();
-    flash(`Slot Undian ${slotCount} Tim (Pool A & B) siap diisi!`);
+    flash(`Slot Undian ${slotCount} Tim (Pool A Kiri & Pool B Kanan) siap diisi saat TM!`);
+  };
+
+  const handleAssignDrawSlot = async (
+    slotTeamId: number,
+    masterTeamId: number | null,
+    options?: { squadLabel?: string }
+  ) => {
+    if (!activeTournament) return;
+    try {
+      await apiFetch(`/api/admin/tournaments/${activeTournament.id}/draw-slot`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          slotTeamId,
+          masterTeamId,
+          squadLabel: options?.squadLabel,
+        }),
+      });
+      await onRefresh();
+    } catch (err) {
+      flash((err as Error).message);
+    }
+  };
+
+  const handleQuickCreateMaster = async (
+    name: string,
+    school: string
+  ): Promise<MasterTeam | null> => {
+    try {
+      const res = await apiFetch<{ masterTeam: MasterTeam }>('/api/admin/master-teams', {
+        method: 'POST',
+        body: JSON.stringify({ name, school }),
+      });
+      return res.masterTeam;
+    } catch (err) {
+      flash((err as Error).message);
+      return null;
+    }
+  };
+
+  const handleBatchAddFromMaster = async () => {
+    if (!activeTournament || selectedMasterIds.length === 0) return;
+    try {
+      const res = await apiFetch<{ teams: unknown[] }>(
+        `/api/admin/tournaments/${activeTournament.id}/entries-from-master`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ masterTeamIds: selectedMasterIds }),
+        }
+      );
+      setSelectedMasterIds([]);
+      setShowMasterBatchPicker(false);
+      await onRefresh();
+      flash(`${res.teams.length} kontingen berhasil dimasukkan dari Master Tim!`);
+    } catch (err) {
+      flash((err as Error).message);
+    }
   };
 
   const handleInlineTeamUpdate = async (
@@ -285,6 +338,7 @@ export function AdminDashboard({
       name?: string;
       school?: string;
       poolName?: string | null;
+      isSeeded?: boolean;
       coachName?: string;
       managerName?: string;
       jerseyColors?: JerseyColorItem[];
@@ -306,6 +360,7 @@ export function AdminDashboard({
           poolCount: poolCountField,
           advancePerPool: advancePerPoolField,
           shuffle,
+          separateSameRegion,
         }),
       });
       await onRefresh();
@@ -368,6 +423,7 @@ export function AdminDashboard({
         eventSubtitle,
         eventMeta,
         seoDescription,
+        publicTvEnabled,
       }),
     });
     if (tvPinField.trim().length >= 4) {
@@ -508,94 +564,6 @@ export function AdminDashboard({
     });
     await onRefresh();
     flash('Logo dikembalikan ke default SVC & AVERSA');
-  };
-
-  const handleCreateUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setUserError(null);
-    try {
-      const res = await apiFetch<{ user: AuthUser & { createdAt: number } }>(
-        '/api/auth/users',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            username: newUsername,
-            name: newFullName,
-            password: newPassword,
-            role: newRole,
-          }),
-        }
-      );
-      setUserList((prev) => [...prev, res.user]);
-      setNewUsername('');
-      setNewFullName('');
-      setNewPassword('');
-      flash('Akun baru berhasil dibuat');
-    } catch (err) {
-      setUserError((err as Error).message);
-    }
-  };
-
-  const startEditUser = (target: AuthUser & { createdAt: number }) => {
-    setUserError(null);
-    setEditingUserId(target.id);
-    setEditUserName(target.name);
-    setEditUserRole(target.role);
-    setEditUserPassword('');
-    setShowEditUserPwd(false);
-  };
-
-  const handleSaveUserEdit = async (e: React.FormEvent, id: number) => {
-    e.preventDefault();
-    setUserError(null);
-    setSavingUserEdit(true);
-    try {
-      const payload: {
-        name: string;
-        role?: 'admin' | 'panitia' | 'media';
-        password?: string;
-      } = {
-        name: editUserName,
-      };
-      if (id !== currentUser.id) {
-        payload.role = editUserRole;
-      }
-      if (editUserPassword.trim() !== '') {
-        payload.password = editUserPassword;
-      }
-
-      const res = await apiFetch<{ user: AuthUser & { createdAt: number } }>(
-        `/api/auth/users/${id}`,
-        {
-          method: 'PUT',
-          body: JSON.stringify(payload),
-        }
-      );
-      setUserList((prev) => prev.map((u) => (u.id === id ? res.user : u)));
-      setEditingUserId(null);
-      setEditUserPassword('');
-      flash(
-        payload.password
-          ? `Password & profil @${res.user.username} berhasil diperbarui!`
-          : `Profil @${res.user.username} berhasil diperbarui!`
-      );
-    } catch (err) {
-      setUserError((err as Error).message);
-    } finally {
-      setSavingUserEdit(false);
-    }
-  };
-
-  const handleDeleteUser = async (id: number) => {
-    setUserError(null);
-    try {
-      await apiFetch(`/api/auth/users/${id}`, { method: 'DELETE' });
-      setUserList((prev) => prev.filter((u) => u.id !== id));
-      if (editingUserId === id) setEditingUserId(null);
-      flash('Akun dihapus');
-    } catch (err) {
-      setUserError((err as Error).message);
-    }
   };
 
   return (
@@ -811,37 +779,185 @@ export function AdminDashboard({
                 </button>
               </div>
 
-              {/* STEP 1: TEAMS & DRAWING */}
+              {/* STEP 1: TEAMS & TECHNICAL MEETING (TM) DRAWING */}
               {stepTab === 'teams' && (
                 <div className="animate-page-enter space-y-5">
                   <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 dark:bg-amber-500/10">
-                    <p className="text-xs font-medium text-slate-700 dark:text-slate-200">
-                      <strong>Panduan Langkah 1:</strong> Klik nama/kota tim untuk langsung mengedit saat Technical Meeting, atau buat slot undian baru.
-                    </p>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="space-y-0.5 text-xs text-slate-700 dark:text-slate-200">
+                      <p className="font-bold">
+                        Panduan Technical Meeting (TM Drawing):
+                      </p>
+                      <p className="text-slate-600 dark:text-slate-400">
+                        Siapkan slot undian (4/8/16/32), lalu tinggal cari &amp; pilih sekolah/kontingen dari{' '}
+                        <strong>Master Kontingen</strong> pada dropdown tiap slot (otomatis tampil live via SSE di <code>/tv</code> &amp; <code>/bagan</code>).
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleInitDraw(32)}
+                        className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900"
+                      >
+                        Slot 32 Tim
+                      </button>
                       <button
                         type="button"
                         onClick={() => handleInitDraw(16)}
                         className="rounded-xl bg-amber-500 px-3 py-1.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
                       >
-                        Reset Slot 16 Tim (4+4)
+                        Slot 16 Tim (8+8)
                       </button>
                       <button
                         type="button"
                         onClick={() => handleInitDraw(8)}
-                        className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900"
+                        className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900"
                       >
                         Slot 8 Tim
                       </button>
                       <button
                         type="button"
-                        onClick={() => setShowBulk(!showBulk)}
-                        className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900"
+                        onClick={() => handleInitDraw(4)}
+                        className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900"
                       >
-                        {showBulk ? 'Input Satuan' : 'Import Massal'}
+                        Slot 4 Tim
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowMasterBatchPicker((v) => !v)}
+                        className="inline-flex items-center gap-1 rounded-xl border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-500/20 dark:text-sky-300"
+                      >
+                        <Users className="h-3.5 w-3.5" />
+                        {showMasterBatchPicker ? 'Tutup Pilih Master' : '+ Pilih Banyak dari Master'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowBulk(!showBulk)}
+                        className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900"
+                      >
+                        {showBulk ? 'Input Satuan' : 'Teks Manual'}
                       </button>
                     </div>
                   </div>
+
+                  {/* Multi-Select Batch Picker from Master Contingents */}
+                  {showMasterBatchPicker && (
+                    <div className="space-y-3 rounded-2xl border border-sky-500/30 bg-sky-500/5 p-4 dark:bg-sky-500/10">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <h4 className="text-xs font-extrabold uppercase tracking-wider text-sky-800 dark:text-sky-300">
+                            Pilih Peserta Kategori dari Database Master Kontingen
+                          </h4>
+                          <p className="text-xs text-slate-600 dark:text-slate-400">
+                            Cocok untuk Fase Pool atau pra-undian sebelum menekan tombol <strong>Acak &amp; Buat Bagan</strong>.
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {(
+                            [
+                              ['all', 'Semua'],
+                              ['smp', 'SMP/MTs'],
+                              ['sma', 'SMA/SMK'],
+                              ['kab_kota', 'Kab/Kota'],
+                              ['umum', 'Umum'],
+                            ] as const
+                          ).map(([lv, lbl]) => (
+                            <button
+                              key={lv}
+                              type="button"
+                              onClick={() => setMasterBatchLevel(lv)}
+                              className={`rounded-lg px-2.5 py-1 text-[11px] font-bold ${
+                                masterBatchLevel === lv
+                                  ? 'bg-sky-500 text-slate-950'
+                                  : 'bg-white text-slate-600 dark:bg-slate-900 dark:text-slate-300'
+                              }`}
+                            >
+                              {lbl}
+                            </button>
+                          ))}
+                          <input
+                            type="search"
+                            value={masterBatchSearch}
+                            onChange={(e) => setMasterBatchSearch(e.target.value)}
+                            placeholder="Filter nama/kota..."
+                            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid max-h-56 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3">
+                        {(data.masterTeams ?? [])
+                          .filter((mt) => {
+                            if (masterBatchLevel !== 'all' && mt.level !== masterBatchLevel) {
+                              return false;
+                            }
+                            const q = masterBatchSearch.trim().toLowerCase();
+                            if (!q) return true;
+                            return (
+                              mt.name.toLowerCase().includes(q) ||
+                              mt.school.toLowerCase().includes(q)
+                            );
+                          })
+                          .map((mt) => {
+                            const alreadyIn = categoryTeams.some(
+                              (ct) => ct.masterTeamId === mt.id && !(ct.squadLabel || '')
+                            );
+                            const checked = selectedMasterIds.includes(mt.id);
+                            return (
+                              <label
+                                key={mt.id}
+                                className={`flex cursor-pointer items-center gap-2 rounded-xl border px-2.5 py-1.5 text-xs transition ${
+                                  alreadyIn
+                                    ? 'cursor-not-allowed border-slate-200 bg-slate-100 opacity-55 dark:border-slate-800 dark:bg-slate-900'
+                                    : checked
+                                      ? 'border-sky-500 bg-sky-500/15 font-bold'
+                                      : 'border-slate-200 bg-white hover:border-sky-400 dark:border-slate-800 dark:bg-slate-950'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  disabled={alreadyIn}
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedMasterIds((prev) => [...prev, mt.id]);
+                                    } else {
+                                      setSelectedMasterIds((prev) =>
+                                        prev.filter((id) => id !== mt.id)
+                                      );
+                                    }
+                                  }}
+                                />
+                                <TeamAvatar team={mt} size="sm" />
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate font-bold text-slate-900 dark:text-white">
+                                    {mt.name}
+                                  </p>
+                                  <p className="truncate text-[10px] text-slate-500">
+                                    {mt.school || MASTER_TEAM_LEVEL_LABELS[mt.level]}
+                                    {alreadyIn ? ' • Sudah Terdaftar' : ''}
+                                  </p>
+                                </div>
+                              </label>
+                            );
+                          })}
+                      </div>
+
+                      <div className="flex items-center justify-between border-t border-sky-500/20 pt-2.5">
+                        <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                          Terpilih: <strong>{selectedMasterIds.length}</strong> kontingen
+                        </span>
+                        <button
+                          type="button"
+                          disabled={selectedMasterIds.length === 0}
+                          onClick={handleBatchAddFromMaster}
+                          className="rounded-xl bg-sky-500 px-4 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-sky-400 disabled:opacity-40"
+                        >
+                          Masukkan ke Kategori Ini
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {showBulk ? (
                     <form
@@ -869,14 +985,14 @@ export function AdminDashboard({
                     <form onSubmit={handleAddTeam} className="flex flex-col gap-2 sm:flex-row">
                       <input
                         type="text"
-                        placeholder="Tambah Nama Tim (misal: SMPN 1 GEDEG)"
+                        placeholder="Tambah Tim Manual (atau pilih dari dropdown Master di kartu bawah)"
                         value={teamName}
                         onChange={(e) => setTeamName(e.target.value)}
                         className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
                       />
                       <input
                         type="text"
-                        placeholder="Asal Kota / Sekolah (opsional)"
+                        placeholder="Asal Kota / Kabupaten (opsional)"
                         value={teamSchool}
                         onChange={(e) => setTeamSchool(e.target.value)}
                         className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
@@ -886,79 +1002,129 @@ export function AdminDashboard({
                         className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white dark:bg-amber-500 dark:text-slate-950"
                       >
                         <Plus className="h-4 w-4" />
-                        Tambah Tim
+                        Tambah Slot
                       </button>
                     </form>
+                  )}
+
+                  {/* TM Draw Progress Summary */}
+                  {categoryTeams.length > 0 && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+                      <span>
+                        Slot Terisi:{' '}
+                        <strong className="text-slate-900 dark:text-white">
+                          {categoryTeams.filter((t) => !isPlaceholderDrawSlotName(t.name)).length} /{' '}
+                          {categoryTeams.length}
+                        </strong>{' '}
+                        Tim
+                      </span>
+                      <span>
+                        Tim Unggulan (Seeded):{' '}
+                        <strong className="text-amber-600 dark:text-amber-400">
+                          {categoryTeams.filter((t) => Boolean(t.isSeeded)).length}
+                        </strong>
+                      </span>
+                    </div>
                   )}
 
                   <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
                     {categoryTeams.map((team, idx) => {
                       const isExpanded = expandedTeamId === team.id;
                       const jerseys = parseJerseyColors(team.jerseyColors);
+                      const isEmptySlot = isPlaceholderDrawSlotName(team.name);
+                      const linkedMaster = team.masterTeamId
+                        ? (data.masterTeams ?? []).find((m) => m.id === team.masterTeamId)
+                        : undefined;
+                      const hasStaffOverride = Boolean(
+                        linkedMaster &&
+                          ((team.coachName &&
+                            team.coachName !== linkedMaster.defaultCoachName) ||
+                            (team.managerName &&
+                              team.managerName !== linkedMaster.defaultManagerName))
+                      );
+                      const isRightWing =
+                        activeTournament.format !== 'pool_knockout' &&
+                        categoryTeams.length >= 4 &&
+                        idx >= Math.ceil(categoryTeams.length / 2);
+
                       return (
                         <div
                           key={team.id}
-                          className="rounded-xl border border-slate-200 p-2.5 dark:border-slate-800"
+                          className={`rounded-xl border p-2.5 transition ${
+                            isEmptySlot
+                              ? 'border-dashed border-amber-500/40 bg-amber-500/[0.03] dark:border-amber-500/30'
+                              : team.isSeeded
+                                ? 'border-amber-400/70 bg-amber-500/[0.04] dark:border-amber-500/50'
+                                : 'border-slate-200 dark:border-slate-800'
+                          }`}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex min-w-0 flex-1 items-center gap-2.5">
-                              <span className="w-5 shrink-0 text-center text-xs font-extrabold text-amber-500">
+                          {/* Top Slot Header: Undian # / Wing / Seeded Star / Actions */}
+                          <div className="mb-2 flex items-center justify-between gap-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="rounded-md bg-slate-900 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-400 dark:bg-slate-800">
                                 {team.poolName
-                                  ? team.poolName
-                                  : String(idx + 1).padStart(2, '0')}
+                                  ? `POOL ${team.poolName}`
+                                  : `UNDIAN ${String(idx + 1).padStart(2, '0')}`}
                               </span>
-                              <TeamAvatar team={team} size="sm" />
-                              <div className="min-w-0 flex-1 space-y-1">
-                                <input
-                                  type="text"
-                                  defaultValue={team.name}
-                                  aria-label={`Nama Tim ${idx + 1}`}
-                                  onBlur={(e) => {
-                                    const val = e.target.value.trim();
-                                    if (val && val !== team.name) {
-                                      handleInlineTeamUpdate(team.id, { name: val });
-                                    }
-                                  }}
-                                  className="w-full truncate rounded bg-transparent px-1 py-0.5 text-sm font-bold hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-800 dark:focus:bg-slate-800"
-                                />
-                                <input
-                                  type="text"
-                                  defaultValue={team.school}
-                                  placeholder="Asal Kota / Sekolah"
-                                  onBlur={(e) => {
-                                    const val = e.target.value.trim();
-                                    if (val !== team.school) {
-                                      handleInlineTeamUpdate(team.id, { school: val });
-                                    }
-                                  }}
-                                  className="w-full truncate rounded bg-transparent px-1 py-0.5 text-xs text-slate-500 hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-800 dark:focus:bg-slate-800"
-                                />
-                              </div>
+                              {activeTournament.format !== 'pool_knockout' &&
+                                categoryTeams.length >= 4 && (
+                                  <span
+                                    className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
+                                      isRightWing
+                                        ? 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-300'
+                                        : 'bg-sky-500/12 text-sky-700 dark:text-sky-300'
+                                    }`}
+                                  >
+                                    {isRightWing ? 'Pool B (Kanan)' : 'Pool A (Kiri)'}
+                                  </span>
+                                )}
                             </div>
+
                             <div className="flex items-center gap-0.5">
+                              {!isEmptySlot && (
+                                <button
+                                  type="button"
+                                  title="Tandai Tim Unggulan (Seeded — dipisah paruh bagan saat FIVB Draw)"
+                                  onClick={() =>
+                                    handleInlineTeamUpdate(team.id, {
+                                      isSeeded: !team.isSeeded,
+                                    })
+                                  }
+                                  className={`rounded-lg p-1 transition ${
+                                    team.isSeeded
+                                      ? 'bg-amber-500/20 text-amber-500'
+                                      : 'text-slate-300 hover:text-amber-400 dark:text-slate-600'
+                                  }`}
+                                >
+                                  <Star
+                                    className="h-3.5 w-3.5"
+                                    fill={team.isSeeded ? 'currentColor' : 'none'}
+                                  />
+                                </button>
+                              )}
                               <button
                                 type="button"
-                                title="Detail Opsional Buletin (Pool, Pelatih, Kostum)"
+                                title="Detail Opsional Kategori (Pool, Override Pelatih/Manajer/Kostum)"
                                 onClick={() =>
                                   setExpandedTeamId(isExpanded ? null : team.id)
                                 }
-                                className={`rounded-lg p-1.5 transition ${
+                                className={`rounded-lg p-1 transition ${
                                   isExpanded
                                     ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
                                     : 'text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800'
                                 }`}
                               >
                                 <ChevronDown
-                                  className={`h-4 w-4 transition-transform ${
+                                  className={`h-3.5 w-3.5 transition-transform ${
                                     isExpanded ? 'rotate-180' : ''
                                   }`}
                                 />
                               </button>
                               <label
-                                title="Upload Logo Tim"
-                                className="cursor-pointer rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-amber-500 dark:hover:bg-slate-800"
+                                title="Upload Logo Khusus Kategori Ini"
+                                className="cursor-pointer rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-amber-500 dark:hover:bg-slate-800"
                               >
-                                <ImagePlus className="h-4 w-4" />
+                                <ImagePlus className="h-3.5 w-3.5" />
                                 <input
                                   type="file"
                                   accept={IMAGE_INPUT_ACCEPT}
@@ -972,21 +1138,86 @@ export function AdminDashboard({
                               </label>
                               <button
                                 type="button"
+                                title="Hapus Slot / Tim"
                                 onClick={async () => {
                                   await apiFetch(`/api/admin/teams/${team.id}`, {
                                     method: 'DELETE',
                                   });
                                   await onRefresh();
                                 }}
-                                className="rounded-lg p-1.5 text-slate-400 hover:bg-red-500/10 hover:text-red-500"
+                                className="rounded-lg p-1 text-slate-400 hover:bg-red-500/10 hover:text-red-500"
                               >
-                                <Trash2 className="h-4 w-4" />
+                                <Trash2 className="h-3.5 w-3.5" />
                               </button>
+                            </div>
+                          </div>
+
+                          {/* Searchable Master Team Dropdown + Avatar + Auto-Populated School/City */}
+                          <div className="flex items-center gap-2.5">
+                            <TeamAvatar team={team} size="sm" />
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <SearchableTeamPicker
+                                slotTeam={team}
+                                slotIndex={idx}
+                                masterTeams={data.masterTeams ?? []}
+                                categoryTeams={categoryTeams}
+                                onAssignMaster={(masterId, opts) =>
+                                  handleAssignDrawSlot(team.id, masterId, opts)
+                                }
+                                onQuickCreateMaster={handleQuickCreateMaster}
+                              />
+                              <div className="flex items-center justify-between gap-1 px-1">
+                                <span className="truncate text-[11px] text-slate-500 dark:text-slate-400">
+                                  {isEmptySlot
+                                    ? 'Kosong (Menunggu Undian)'
+                                    : team.school || 'Asal daerah belum diisi'}
+                                </span>
+                                {linkedMaster && (
+                                  <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                                    {hasStaffOverride ? 'Override' : 'Master'}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
 
                           {isExpanded && (
                             <div className="mt-2.5 space-y-2 border-t border-slate-100 pt-2.5 text-xs dark:border-slate-800">
+                              {linkedMaster && (
+                                <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                                  Terhubung ke Master <strong>{linkedMaster.name}</strong>. Mengubah
+                                  Pelatih/Manajer/Kostum di bawah hanya berlaku pada kategori{' '}
+                                  <strong>{activeTournament.name}</strong>.
+                                </p>
+                              )}
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <input
+                                  type="text"
+                                  key={`nm-${team.id}-${team.name}`}
+                                  defaultValue={team.name}
+                                  placeholder="Nama Tampil Tim"
+                                  onBlur={(e) => {
+                                    const val = e.target.value.trim();
+                                    if (val && val !== team.name) {
+                                      handleInlineTeamUpdate(team.id, { name: val });
+                                    }
+                                  }}
+                                  className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold dark:border-slate-700 dark:bg-slate-950"
+                                />
+                                <input
+                                  type="text"
+                                  key={`sc-${team.id}-${team.school}`}
+                                  defaultValue={team.school}
+                                  placeholder="Asal Kota / Kab"
+                                  onBlur={(e) => {
+                                    const val = e.target.value.trim();
+                                    if (val !== team.school) {
+                                      handleInlineTeamUpdate(team.id, { school: val });
+                                    }
+                                  }}
+                                  className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
+                                />
+                              </div>
                               <div className="grid grid-cols-3 gap-1.5">
                                 <input
                                   type="text"
@@ -1005,8 +1236,9 @@ export function AdminDashboard({
                                 />
                                 <input
                                   type="text"
+                                  key={`ch-${team.id}-${team.coachName}`}
                                   defaultValue={team.coachName || ''}
-                                  placeholder="Pelatih (opsional)"
+                                  placeholder="Pelatih kategori ini"
                                   onBlur={(e) => {
                                     const v = e.target.value.trim();
                                     if (v !== (team.coachName || '')) {
@@ -1019,8 +1251,9 @@ export function AdminDashboard({
 
                               <input
                                 type="text"
+                                key={`mg-${team.id}-${team.managerName}`}
                                 defaultValue={team.managerName || ''}
-                                placeholder="Manajer / Official (opsional)"
+                                placeholder="Manajer / Official kategori ini"
                                 onBlur={(e) => {
                                   const v = e.target.value.trim();
                                   if (v !== (team.managerName || '')) {
@@ -1115,47 +1348,57 @@ export function AdminDashboard({
                       <span className="text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-200">
                         Format Kompetisi Kategori Ini
                       </span>
-                      <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900">
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            await apiFetch(
-                              `/api/admin/tournaments/${activeTournament.id}`,
-                              {
-                                method: 'PATCH',
-                                body: JSON.stringify({ format: 'knockout' }),
-                              }
-                            );
-                            await onRefresh();
-                          }}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                            (activeTournament.format || 'knockout') === 'knockout'
-                              ? 'bg-amber-500 text-slate-950'
-                              : 'text-slate-600 dark:text-slate-300'
-                          }`}
-                        >
-                          Sistem Gugur Langsung
-                        </button>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            await apiFetch(
-                              `/api/admin/tournaments/${activeTournament.id}`,
-                              {
-                                method: 'PATCH',
-                                body: JSON.stringify({ format: 'pool_knockout' }),
-                              }
-                            );
-                            await onRefresh();
-                          }}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
-                            activeTournament.format === 'pool_knockout'
-                              ? 'bg-amber-500 text-slate-950'
-                              : 'text-slate-600 dark:text-slate-300'
-                          }`}
-                        >
-                          Fase Pool → Babak Gugur
-                        </button>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
+                          <input
+                            type="checkbox"
+                            checked={separateSameRegion}
+                            onChange={(e) => setSeparateSameRegion(e.target.checked)}
+                          />
+                          Pisahkan Kota/Kab Sama di Babak Awal (FIVB)
+                        </label>
+                        <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await apiFetch(
+                                `/api/admin/tournaments/${activeTournament.id}`,
+                                {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ format: 'knockout' }),
+                                }
+                              );
+                              await onRefresh();
+                            }}
+                            className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                              (activeTournament.format || 'knockout') === 'knockout'
+                                ? 'bg-amber-500 text-slate-950'
+                                : 'text-slate-600 dark:text-slate-300'
+                            }`}
+                          >
+                            Sistem Gugur Langsung
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await apiFetch(
+                                `/api/admin/tournaments/${activeTournament.id}`,
+                                {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ format: 'pool_knockout' }),
+                                }
+                              );
+                              await onRefresh();
+                            }}
+                            className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                              activeTournament.format === 'pool_knockout'
+                                ? 'bg-amber-500 text-slate-950'
+                                : 'text-slate-600 dark:text-slate-300'
+                            }`}
+                          >
+                            Fase Pool → Babak Gugur
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -1309,18 +1552,33 @@ export function AdminDashboard({
                                 }}
                                 className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-950"
                               />
-                              <input
-                                type="text"
-                                defaultValue={m.courtName}
-                                placeholder="Lapangan 1"
-                                onBlur={(e) => {
-                                  const val = e.target.value.trim();
+                              <select
+                                value={m.courtName}
+                                onChange={(e) => {
+                                  const val = e.target.value;
                                   if (val && val !== m.courtName) {
                                     handleMatchScheduleUpdate(m.id, { courtName: val });
                                   }
                                 }}
-                                className="w-32 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-950"
-                              />
+                                aria-label={`Lapangan ${tA} vs ${tB}`}
+                                className="w-36 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
+                              >
+                                {(data.masterCourts && data.masterCourts.length > 0
+                                  ? data.masterCourts
+                                  : [
+                                      { id: -1, name: 'Lapangan 1' },
+                                      { id: -2, name: 'Lapangan 2' },
+                                    ]
+                                ).map((c) => (
+                                  <option key={c.id} value={c.name}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                                {m.courtName &&
+                                  !(data.masterCourts ?? []).some(
+                                    (c) => c.name === m.courtName
+                                  ) && <option value={m.courtName}>{m.courtName}</option>}
+                              </select>
                             </div>
                           </div>
                         );
@@ -1410,6 +1668,22 @@ export function AdminDashboard({
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm font-bold tracking-widest dark:border-slate-700 dark:bg-slate-950"
               />
             </div>
+
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+              <input
+                type="checkbox"
+                checked={publicTvEnabled}
+                onChange={(e) => setPublicTvEnabled(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded accent-amber-500"
+              />
+              <span className="text-xs leading-relaxed text-slate-700 dark:text-slate-300">
+                <strong className="block text-slate-900 dark:text-white">
+                  Buka Akses Layar TV untuk Publik
+                </strong>
+                Saat nonaktif (default), tombol &quot;Layar Skor TV&quot; disembunyikan dari
+                portal depan dan layar fisik terlindungi PIN TV Arena.
+              </span>
+            </label>
 
             <button
               type="submit"
@@ -1751,255 +2025,10 @@ export function AdminDashboard({
         </div>
       )}
 
-      {section === 'users' && currentUser.role === 'admin' && (
-        <div className="space-y-4">
-          {userError && (
-            <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-xs font-semibold text-red-600 dark:text-red-400">
-              {userError}
-            </div>
-          )}
-
-          <div className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Users className="h-5 w-5 text-amber-500" />
-                  <h2 className="font-display text-lg font-extrabold uppercase tracking-wider">
-                    Daftar Akun Admin, Panitia &amp; Media
-                  </h2>
-                </div>
-              </div>
-              <p className="mb-3 text-xs text-slate-600 dark:text-slate-400">
-                Klik tombol <strong>Ubah Password / Edit</strong> pada akun mana pun untuk mengganti password default, nama tampilan, atau peran akses.
-              </p>
-
-              <div className="space-y-2.5">
-                {userList.map((u) => {
-                  const isEditing = editingUserId === u.id;
-                  const isSelf = u.id === currentUser.id;
-                  return (
-                    <div
-                      key={u.id}
-                      className={`rounded-xl border p-3.5 transition ${
-                        isEditing
-                          ? 'border-amber-500/60 bg-amber-500/5 dark:border-amber-400/50 dark:bg-amber-500/5'
-                          : 'border-slate-200 dark:border-slate-800'
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm font-bold">{u.name}</p>
-                            {isSelf && (
-                              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-extrabold uppercase text-emerald-700 dark:text-emerald-400">
-                                Anda
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-slate-600 dark:text-slate-400">
-                            @{u.username} •{' '}
-                            <span className="font-semibold uppercase text-amber-800 dark:text-amber-400">
-                              {u.role}
-                            </span>
-                          </p>
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              isEditing ? setEditingUserId(null) : startEditUser(u)
-                            }
-                            className={`inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold transition sm:min-h-8 ${
-                              isEditing
-                                ? 'border-amber-500 bg-amber-500 text-slate-950'
-                                : 'border-slate-300 text-slate-700 hover:border-amber-600 hover:text-amber-800 dark:border-slate-700 dark:text-slate-200 dark:hover:border-amber-400 dark:hover:text-amber-300'
-                            }`}
-                          >
-                            <KeyRound className="h-3.5 w-3.5" />
-                            <span>{isEditing ? 'Tutup' : 'Ubah Password / Edit'}</span>
-                          </button>
-
-                          {!isSelf && (
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteUser(u.id)}
-                              aria-label={`Hapus akun ${u.username}`}
-                              title="Hapus Akun"
-                              className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-lg text-slate-400 hover:bg-red-500/10 hover:text-red-500 sm:min-h-8 sm:min-w-8"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {isEditing && (
-                        <form
-                          onSubmit={(e) => handleSaveUserEdit(e, u.id)}
-                          className="mt-3 space-y-2.5 border-t border-slate-200/80 pt-3 dark:border-slate-800"
-                        >
-                          <div className="grid gap-2.5 sm:grid-cols-2">
-                            <div>
-                              <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                                Nama Lengkap
-                              </label>
-                              <input
-                                type="text"
-                                required
-                                value={editUserName}
-                                onChange={(e) => setEditUserName(e.target.value)}
-                                className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
-                              />
-                            </div>
-                            <div>
-                              <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                                Peran Akses {isSelf ? '(Terkunci Akun Sendiri)' : ''}
-                              </label>
-                              <select
-                                disabled={isSelf}
-                                value={editUserRole}
-                                onChange={(e) =>
-                                  setEditUserRole(
-                                    e.target.value as 'admin' | 'panitia' | 'media'
-                                  )
-                                }
-                                className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950"
-                              >
-                                <option value="panitia">Panitia (Skor &amp; Bagan)</option>
-                                <option value="media">Tim Media (Studio)</option>
-                                <option value="admin">Admin Penuh</option>
-                              </select>
-                            </div>
-                          </div>
-
-                          <div>
-                            <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                              Password Baru (Min. 6 Karakter • Kosongkan jika tidak diganti)
-                            </label>
-                            <div className="relative">
-                              <input
-                                type={showEditUserPwd ? 'text' : 'password'}
-                                minLength={6}
-                                autoComplete="new-password"
-                                value={editUserPassword}
-                                onChange={(e) => setEditUserPassword(e.target.value)}
-                                placeholder="Ketik password baru untuk mengganti..."
-                                className="min-h-10 w-full rounded-lg border border-slate-200 bg-white py-1.5 pr-10 pl-3 text-xs dark:border-slate-700 dark:bg-slate-950"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => setShowEditUserPwd((v) => !v)}
-                                aria-label={
-                                  showEditUserPwd
-                                    ? 'Sembunyikan password'
-                                    : 'Tampilkan password'
-                                }
-                                className="absolute right-1.5 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
-                              >
-                                {showEditUserPwd ? (
-                                  <EyeOff className="h-3.5 w-3.5" />
-                                ) : (
-                                  <Eye className="h-3.5 w-3.5" />
-                                )}
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center justify-end gap-2 pt-1">
-                            <button
-                              type="button"
-                              onClick={() => setEditingUserId(null)}
-                              className="min-h-9 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-                            >
-                              Batal
-                            </button>
-                            <button
-                              type="submit"
-                              disabled={savingUserEdit}
-                              className="min-h-9 rounded-lg bg-amber-500 px-4 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50"
-                            >
-                              {savingUserEdit ? 'Menyimpan...' : 'Simpan Perubahan'}
-                            </button>
-                          </div>
-                        </form>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            <form
-              onSubmit={handleCreateUser}
-              className="space-y-3 self-start rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
-            >
-              <div className="flex items-center gap-2">
-                <UserPlus className="h-5 w-5 text-amber-500" />
-                <h3 className="font-display text-base font-extrabold uppercase tracking-wider">
-                  Buat Akun Baru
-                </h3>
-              </div>
-              <input
-                type="text"
-                required
-                placeholder="Username (tanpa spasi)"
-                value={newUsername}
-                onChange={(e) => setNewUsername(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
-              />
-              <input
-                type="text"
-                required
-                placeholder="Nama Lengkap"
-                value={newFullName}
-                onChange={(e) => setNewFullName(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
-              />
-              <div className="relative">
-                <input
-                  type={showNewUserPwd ? 'text' : 'password'}
-                  required
-                  minLength={6}
-                  placeholder="Password (min. 6 karakter)"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pr-10 pl-3 text-sm dark:border-slate-700 dark:bg-slate-950"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowNewUserPwd((v) => !v)}
-                  aria-label={
-                    showNewUserPwd ? 'Sembunyikan password' : 'Tampilkan password'
-                  }
-                  className="absolute right-1.5 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
-                >
-                  {showNewUserPwd ? (
-                    <EyeOff className="h-4 w-4" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
-                </button>
-              </div>
-              <select
-                value={newRole}
-                onChange={(e) => setNewRole(e.target.value as 'admin' | 'panitia' | 'media')}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold dark:border-slate-700 dark:bg-slate-950"
-              >
-                <option value="panitia">Panitia (Operator Skor &amp; Bagan)</option>
-                <option value="media">Tim Media (Media Studio)</option>
-                <option value="admin">Admin Penuh</option>
-              </select>
-              <button
-                type="submit"
-                className="w-full rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
-              >
-                Tambah Akun
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
+      {section === 'users' &&
+        (currentUser.role === 'admin' || currentUser.permissions?.includes('users')) && (
+          <UserRolesManager currentUser={currentUser} onFlash={flash} />
+        )}
       {pendingDeleteTournament && (
         <ConfirmDeleteCategoryModal
           tournament={pendingDeleteTournament}

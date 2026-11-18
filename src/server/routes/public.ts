@@ -4,9 +4,10 @@ import { sign, verify } from 'hono/jwt';
 import { streamSSE } from 'hono/streaming';
 import { desc, eq } from 'drizzle-orm';
 import { AUDIO_TRACKS } from '../../shared/audio-library';
+import { hasAnyPermission } from '../../shared/rbac';
 import { db } from '../db';
-import { matchReports } from '../db/schema';
-import { AUTH_COOKIE_NAME, JWT_SECRET } from '../middleware/auth';
+import { matchReports, tvScreens } from '../db/schema';
+import { authenticateRequestUser, JWT_SECRET } from '../middleware/auth';
 import {
   createRateLimiter,
   isSecureRequest,
@@ -29,17 +30,17 @@ export const publicRoutes = new Hono();
 const TV_VIP_COOKIE = 'ov_tv_vip';
 
 async function isTvVipAuthorized(c: Context): Promise<boolean> {
-  // 1. Check active Admin/Panitia session cookie
-  const authToken = getCookie(c, AUTH_COOKIE_NAME);
-  if (authToken) {
-    try {
-      const payload = (await verify(authToken, JWT_SECRET, 'HS256')) as { role?: string };
-      if (payload.role === 'admin' || payload.role === 'panitia') {
-        return true;
-      }
-    } catch {
-      // Fall through to TV VIP cookie check
-    }
+  // 1. Check live authenticated staff session & granular permission
+  const authUser = await authenticateRequestUser(c);
+  if (
+    authUser &&
+    hasAnyPermission(authUser.permissions, authUser.role, [
+      'tv_screens',
+      'operator',
+      'branding',
+    ])
+  ) {
+    return true;
   }
 
   // 2. Check signed TV PIN cookie (also verify pinVersion matches current tvPin)
@@ -72,7 +73,7 @@ publicRoutes.get('/health', (c) => {
 publicRoutes.get('/overview', async (c) => {
   const etag = `"v${getOverviewVersion()}"`;
   c.header('ETag', etag);
-  c.header('Cache-Control', 'public, max-age=2, stale-while-revalidate=5');
+  c.header('Cache-Control', 'no-cache, must-revalidate');
 
   if (c.req.header('if-none-match') === etag) {
     return c.body(null, 304);
@@ -187,6 +188,12 @@ async function isAllowedProxyAssetUrl(targetUrl: string): Promise<boolean> {
   if (overview.teams.some((t) => t.logoUrl === targetUrl)) {
     return true;
   }
+  if (overview.masterTeams.some((mt) => mt.logoUrl === targetUrl)) {
+    return true;
+  }
+  if (overview.tvScreens.some((tv) => tv.customBannerUrl === targetUrl)) {
+    return true;
+  }
   if (
     overview.reports.some(
       (r) => r.imagePath === targetUrl || (r.mediaJson && r.mediaJson.includes(targetUrl))
@@ -259,7 +266,22 @@ publicRoutes.get('/matches/:id', async (c) => {
 // TV Display PIN Verification & Priority VIP SSE
 publicRoutes.get('/tv-check', async (c) => {
   const authorized = await isTvVipAuthorized(c);
-  return c.json({ unlocked: authorized });
+  const settings = await db.query.siteSettings.findFirst();
+  return c.json({
+    unlocked: authorized,
+    publicTvEnabled: Boolean(settings?.publicTvEnabled),
+  });
+});
+
+publicRoutes.get('/tv-screens/:slug', async (c) => {
+  const slug = c.req.param('slug').trim().toLowerCase();
+  const screen = await db.query.tvScreens.findFirst({
+    where: eq(tvScreens.slug, slug),
+  });
+  if (!screen) {
+    return c.json({ error: 'Profil Layar TV tidak ditemukan' }, 404);
+  }
+  return c.json({ screen });
 });
 
 export const tvPinRateLimiter = createRateLimiter({
@@ -317,15 +339,81 @@ publicRoutes.get('/tv-stream', async (c) => {
     return c.json({ error: 'PIN TV diperlukan untuk jalur prioritas SSE' }, 401);
   }
 
-  return streamSSE(c, async (stream) => {
+  const res = streamSSE(c, async (stream) => {
     addSseClient(stream);
     await stream.writeSSE({
+      id: String(getOverviewVersion()),
       event: 'connected',
-      data: JSON.stringify({ priority: 'vip', time: Date.now() }),
+      retry: 2000,
+      data: JSON.stringify({
+        priority: 'vip',
+        time: Date.now(),
+        version: getOverviewVersion(),
+      }),
     });
 
     const heartbeat = setInterval(() => {
-      stream.writeSSE({ event: 'ping', data: String(Date.now()) }).catch(() => {});
+      stream
+        .writeSSE({
+          event: 'ping',
+          data: JSON.stringify({
+            time: Date.now(),
+            version: getOverviewVersion(),
+          }),
+        })
+        .catch(() => {});
+    }, 15000);
+
+    stream.onAbort(() => {
+      clearInterval(heartbeat);
+      removeSseClient(stream);
+    });
+
+    while (!stream.aborted && !stream.closed) {
+      await stream.sleep(15000);
+    }
+  });
+  res.headers.set('Cache-Control', 'no-cache, no-store, no-transform, must-revalidate');
+  res.headers.set('X-Accel-Buffering', 'no');
+  return res;
+});
+
+// Standard Public SSE Stream (subject to MAX_SSE_CLIENTS cap -> async fallback)
+publicRoutes.get('/stream', (c) => {
+  if (!canAcceptSseClient()) {
+    const fbRes = streamSSE(c, async (stream) => {
+      await stream.writeSSE({
+        event: 'fallback',
+        data: JSON.stringify({ mode: 'polling', intervalMs: 5000 }),
+      });
+    });
+    fbRes.headers.set('Cache-Control', 'no-cache, no-store, no-transform, must-revalidate');
+    fbRes.headers.set('X-Accel-Buffering', 'no');
+    return fbRes;
+  }
+
+  const res = streamSSE(c, async (stream) => {
+    addSseClient(stream);
+    await stream.writeSSE({
+      id: String(getOverviewVersion()),
+      event: 'connected',
+      retry: 2500,
+      data: JSON.stringify({
+        time: Date.now(),
+        version: getOverviewVersion(),
+      }),
+    });
+
+    const heartbeat = setInterval(() => {
+      stream
+        .writeSSE({
+          event: 'ping',
+          data: JSON.stringify({
+            time: Date.now(),
+            version: getOverviewVersion(),
+          }),
+        })
+        .catch(() => {});
     }, 20000);
 
     stream.onAbort(() => {
@@ -333,41 +421,11 @@ publicRoutes.get('/tv-stream', async (c) => {
       removeSseClient(stream);
     });
 
-    while (true) {
-      await stream.sleep(30000);
+    while (!stream.aborted && !stream.closed) {
+      await stream.sleep(15000);
     }
   });
-});
-
-// Standard Public SSE Stream (subject to MAX_SSE_CLIENTS cap -> async fallback)
-publicRoutes.get('/stream', (c) => {
-  if (!canAcceptSseClient()) {
-    return streamSSE(c, async (stream) => {
-      await stream.writeSSE({
-        event: 'fallback',
-        data: JSON.stringify({ mode: 'polling', intervalMs: 5000 }),
-      });
-    });
-  }
-
-  return streamSSE(c, async (stream) => {
-    addSseClient(stream);
-    await stream.writeSSE({
-      event: 'connected',
-      data: JSON.stringify({ time: Date.now() }),
-    });
-
-    const heartbeat = setInterval(() => {
-      stream.writeSSE({ event: 'ping', data: String(Date.now()) }).catch(() => {});
-    }, 25000);
-
-    stream.onAbort(() => {
-      clearInterval(heartbeat);
-      removeSseClient(stream);
-    });
-
-    while (true) {
-      await stream.sleep(30000);
-    }
-  });
+  res.headers.set('Cache-Control', 'no-cache, no-store, no-transform, must-revalidate');
+  res.headers.set('X-Accel-Buffering', 'no');
+  return res;
 });

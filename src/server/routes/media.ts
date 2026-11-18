@@ -4,7 +4,7 @@ import { type ReportMediaItem, serializeReportMedia } from '../../shared/gallery
 import { sanitizePlainText } from '../../shared/sanitize';
 import { db } from '../db';
 import { matchReports } from '../db/schema';
-import { type AuthUser, requireAuth } from '../middleware/auth';
+import { type AuthUser, requirePermission } from '../middleware/auth';
 import { broadcastEvent } from '../services/sse';
 import {
   deleteUploadedReportAssets,
@@ -14,7 +14,7 @@ import {
 
 export const mediaRoutes = new Hono<{ Variables: { user: AuthUser } }>();
 
-mediaRoutes.use('*', requireAuth(['admin', 'panitia', 'media']));
+mediaRoutes.use('*', requirePermission('media', 'operator'));
 
 mediaRoutes.post('/reports', async (c) => {
   const form = await c.req.formData();

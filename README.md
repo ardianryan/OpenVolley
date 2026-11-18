@@ -6,7 +6,7 @@
   [![CI](https://github.com/ardianryan/OpenVolley/actions/workflows/ci.yml/badge.svg)](https://github.com/ardianryan/OpenVolley/actions/workflows/ci.yml)
   [![CodeQL](https://github.com/ardianryan/OpenVolley/actions/workflows/codeql.yml/badge.svg)](https://github.com/ardianryan/OpenVolley/actions/workflows/codeql.yml)
   [![Release & GHCR](https://github.com/ardianryan/OpenVolley/actions/workflows/release-and-packages.yml/badge.svg)](https://github.com/ardianryan/OpenVolley/actions/workflows/release-and-packages.yml)
-  [![Version](https://img.shields.io/badge/version-0.1.0-F5C538?labelColor=0B0F19)](https://github.com/ardianryan/OpenVolley/releases)
+  [![Version](https://img.shields.io/badge/version-0.2.1-F5C538?labelColor=0B0F19)](https://github.com/ardianryan/OpenVolley/releases)
   [![License](https://img.shields.io/badge/license-Apache--2.0%20%2B%20Commons%20Clause-F5C538?labelColor=0B0F19)](LICENSE)
   [![Runtime](https://img.shields.io/badge/runtime-Bun%201.x-000000?logo=bun&logoColor=FBF0DF)](https://bun.sh)
   [![Docker](https://img.shields.io/badge/ghcr.io-ardianryan%2Fopenvolley-0EA5E9?logo=docker&logoColor=white)](https://github.com/ardianryan/OpenVolley/pkgs/container/openvolley)
@@ -26,8 +26,10 @@
 | :--- | :--- |
 | **Real-Time Live Score Engine** | Official rally-point scoring (`Best of 3` / `Best of 5`, configurable `25`/`15` set points, optional `2-point Deuce`), explicit set-point confirmation guard to prevent accidental taps, serving indicator tracking, and multi-step action undo. |
 | **Adaptive SSE + ETag Sync** | Instant Server-Sent Events (`/api/public/stream`) for up to `MAX_SSE_CLIENTS` concurrent spectators, seamlessly falling back to lightweight `ETag` (`304 Not Modified`) polling during traffic spikes. |
-| **Symmetric Knockout Brackets** | Technical-meeting draw generator (`16-team` or `8-team` symmetric left/right trees, plus arbitrary `2–32` team brackets with automatic byes), automatic winner advancement to Finals, and loser routing to the Third-Place match. |
-| **PIN-Gated Arena TV (`/tv`)** | Dedicated high-contrast 16:9 projector/LED venue display protected by constant-time PIN verification and a priority VIP SSE channel (`/api/public/tv-stream`) unaffected by public connection caps. |
+| **Master Registries & Hybrid FIVB TM Draw** | Unified **Master Contingents** (`/back-office/kontingen`) with Tab-separated Google Sheets import and automatic identity propagation across divisions without overwriting per-category staff overrides; searchable draw-slot comboboxes, seeded opposite-wing locking, anti-same-region Round-1 separation, and Pool Round-Robin (`3-2-1-0`) → Knockout advancement. |
+| **Master Courts & Visual Schedule Board** | Centralized **Master Courts** & side-by-side cross-court schedule board (`/back-office/jadwal`) featuring 1-click **"Tarik Jadwal"** transfers and time-slot template copying between courts. |
+| **Remote Multi-TV & Dynamic Standby Banners** | PIN-gated 16:9 venue screens (`/tv?screen=<slug>`) centrally remotely controlled from `/back-office/layar-tv` over priority VIP SSE (`1 Lapangan`, `Split 2`, `Auto 12d`, `Bagan / TM`, and customizable `Standby Banner` presets with WIB clock + running marquee). Public portal `/tv` button stays hidden unless explicitly enabled. |
+| **Official Vector PDF Bulletins** | Lazy-loaded `jspdf` suite (`/back-office/dokumen`) producing per-day grouped Schedule & Results Bulletins, full-page vector Knockout Bracket trees, and 1-page A4 Official Match Summary sheets with timeouts/substitutions & signature blocks. |
 | **Client-Side Broadcast Media Studio** | Browser-rendered `9:16`, `4:5`, `16:9`, and `1:1` posters (PNG) and animated broadcast videos (`MP4`/`WebM`) with 3D WebGL volleyball scenes, S3 audio tracks with smart auto-ducking, `1–3` photo collages/slideshows, in-browser video cut/trimmer (`2s–15s`), and automatic iPhone `.HEIC` / `.MOV` browser conversion. |
 | **Multi-Slide & Video Moments Gallery** | Match gallery supporting swipeable multi-photo carousels, inline HTML5 video playback, uncropped fullscreen lightbox inspection, and direct S3-compatible object storage (with local disk fallback). |
 | **3-Role Back-Office & Defense-in-Depth** | Granular RBAC (`admin`, `panitia`, `media`), `HttpOnly` JWT cookies, sliding-window brute-force rate limiting, strict `Content-Security-Policy` (no `'unsafe-inline'` scripts), magic-byte upload verification, and branded error pages (`400`–`503`, `Offline`, `ErrorBoundary`). |
@@ -109,7 +111,7 @@ docker run -d \
   -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e ADMIN_DEFAULT_PASSWORD="change-me-immediately" \
   -v openvolley_data:/app/data \
-  ghcr.io/ardianryan/openvolley:0.1.0
+  ghcr.io/ardianryan/openvolley:0.2.1
 ```
 
 ### Default Seeded Accounts (First Boot Only)
@@ -183,7 +185,7 @@ bun test
 | [docs/CITATION.md](docs/CITATION.md) | Academic and technical citation formats (BibTeX, APA, IEEE, CFF). |
 | [.github/CUSTOM_PROPERTIES.md](.github/CUSTOM_PROPERTIES.md) | GitHub Repository Custom Properties schema and `gh api` provisioning commands. |
 | [CHANGELOG.md](CHANGELOG.md) | Version history following Keep a Changelog & Semantic Versioning. |
-| [TODO.md](TODO.md) | Completed `v0.1.0` deliverables and upcoming `v0.2.0`–`v1.0.0` engineering roadmap. |
+| [TODO.md](TODO.md) | Completed `v0.1.0`–`v0.2.1` deliverables and upcoming `v0.3.0`–`v1.0.0` engineering roadmap. |
 | [SECURITY.md](SECURITY.md) | Vulnerability disclosure policy and security architecture summary. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow, coding conventions, and pull request checklist. |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant v2.1 community standards. |
@@ -198,7 +200,7 @@ If you reference **OpenVolley** in academic papers, technical reports, tournamen
 @software{ryan2026openvolley,
   author       = {Ryan, Ardian},
   title        = {{OpenVolley: A Self-Hosted Real-Time Volleyball Scoreboard, Symmetric Tournament Bracket, and Client-Side Broadcast Media Suite}},
-  version      = {0.1.0},
+  version      = {0.2.1},
   year         = {2026},
   month        = nov,
   url          = {https://github.com/ardianryan/OpenVolley},

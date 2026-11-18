@@ -4,6 +4,10 @@ import type { SSEStreamingApi } from 'hono/streaming';
 export type SseEventType =
   | 'match_updated'
   | 'bracket_updated'
+  | 'draw_slot_updated'
+  | 'master_teams_updated'
+  | 'courts_updated'
+  | 'tv_screen_updated'
   | 'report_added'
   | 'report_deleted'
   | 'tournament_updated'
@@ -55,25 +59,46 @@ export function getClientIp(c: Context): string {
   return 'unknown';
 }
 
+const WRITE_TIMEOUT_MS = 2500;
+
+async function writeToClientWithTimeout(
+  client: SSEStreamingApi,
+  message: { id: string; event: string; data: string }
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const ok = await Promise.race<boolean>([
+      client.writeSSE(message).then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), WRITE_TIMEOUT_MS);
+      }),
+    ]);
+    return ok;
+  } catch {
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function broadcastEvent(event: SseEventType, data: unknown) {
   overviewVersion += 1;
+  const eventId = String(overviewVersion);
   for (const cb of cacheListeners) cb();
 
   const payload = JSON.stringify(data);
-  const deadClients: SSEStreamingApi[] = [];
+  const message = { id: eventId, event, data: payload };
 
-  for (const client of clients) {
-    try {
-      await client.writeSSE({
-        event,
-        data: payload,
-      });
-    } catch {
-      deadClients.push(client);
-    }
-  }
-
-  for (const dead of deadClients) {
-    clients.delete(dead);
-  }
+  // Fan out concurrently without letting any half-open/stalled mobile socket block
+  // the scoring API response or delay delivery to healthy VIP Arena TV streams.
+  const snapshot = Array.from(clients);
+  void Promise.allSettled(
+    snapshot.map(async (client) => {
+      const ok = await writeToClientWithTimeout(client, message);
+      if (!ok) {
+        clients.delete(client);
+        client.close().catch(() => {});
+      }
+    })
+  );
 }

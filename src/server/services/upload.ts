@@ -216,10 +216,7 @@ export async function deleteUploadedImage(assetUrl: string): Promise<void> {
     return;
   }
 
-  if (
-    (assetUrl.startsWith('/uploads/reports/') || assetUrl.startsWith('/uploads/logos/')) &&
-    !assetUrl.includes('..')
-  ) {
+  if (/^\/uploads\/(logos|reports)\/[a-zA-Z0-9._-]+$/.test(assetUrl)) {
     try {
       unlinkSync(`./data${assetUrl}`);
     } catch {

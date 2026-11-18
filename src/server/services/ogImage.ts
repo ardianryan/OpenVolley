@@ -306,16 +306,16 @@ export async function generateDynamicOgImagePng(): Promise<{
   ${
     organizerUri
       ? `<g>
-          <rect x="478" y="54" width="52" height="52" rx="14" fill="#FFFFFF" fill-opacity="0.95" />
-          <image href="${organizerUri}" x="485" y="61" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+          <rect x="476" y="54" width="54" height="52" rx="14" fill="#1E293B" stroke="#475569" stroke-width="1.5" />
+          <image href="${organizerUri}" x="484" y="61" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
         </g>`
       : ''
   }
   ${
     coBrandUri
       ? `<g>
-          <rect x="${organizerUri ? 540 : 478}" y="54" width="52" height="52" rx="14" fill="#FFFFFF" fill-opacity="0.95" />
-          <image href="${coBrandUri}" x="${organizerUri ? 547 : 485}" y="61" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+          <rect x="${organizerUri ? 540 : 476}" y="54" width="112" height="52" rx="14" fill="#1E293B" stroke="#475569" stroke-width="1.5" />
+          <image href="${coBrandUri}" x="${organizerUri ? 552 : 488}" y="63" width="88" height="34" preserveAspectRatio="xMidYMid meet" />
         </g>`
       : ''
   }

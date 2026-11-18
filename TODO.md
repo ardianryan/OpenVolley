@@ -1,6 +1,6 @@
 # OpenVolley Engineering Roadmap & TODO
 
-This document tracks completed milestones in **`v0.1.0` – `v0.2.0`** alongside the prioritized engineering backlog for upcoming releases.
+This document tracks completed milestones in **`v0.1.0` – `v0.2.1`** alongside the prioritized engineering backlog for upcoming releases.
 
 ---
 
@@ -44,9 +44,21 @@ This document tracks completed milestones in **`v0.1.0` – `v0.2.0`** alongside
 
 ---
 
+## Completed in `v0.2.1` (Master Registries, Hybrid FIVB TM Draw, Remote Multi-TV & Granular RBAC)
+- [x] **Master Contingents Registry (`/back-office/kontingen`):** Shared club/school/region registry (`master_teams`) with Google Sheets Tab-bulk import, level tags (`SMP/MTs`, `SMA/SMK/MA`, `Kab/Kota`, `Umum`), automatic multi-division identity propagation, and non-destructive migration from existing teams.
+- [x] **Hybrid FIVB Technical Meeting Draw & Live Bagan SSE:** Searchable draw-slot comboboxes (`SearchableTeamPicker`), `+ Tim B` secondary squads, seeded opposite-wing locking, Round-1 anti-same-region separation, and real-time `draw_slot_updated` highlight banners on `/tv` and `/bagan`.
+- [x] **Master Courts & Visual Schedule Board (`/back-office/jadwal`):** Centralized court CRUD with cascading renames, 1-click **"Tarik Jadwal"** transfers across courts, and **"Salin Pola Jam"** time-slot copying.
+- [x] **Remote Multi-TV Controller & Dynamic Standby Banners (`/back-office/layar-tv`):** Multiple TV screen profiles (`/tv?screen=<slug>`) controlled remotely over VIP SSE (`tv_screen_updated`), clean display-only `/tv` chrome, customizable Standby Banner presets (`TM`, `Warm-Up`, `Break`, `Next Match`, `Custom`) with WIB digital clock & running marquee, and default-hidden public `/tv` CTA toggle (`publicTvEnabled`).
+- [x] **Comprehensive Granular RBAC & Custom Roles (`/back-office/users`):** Custom role CRUD (`roles` table protecting system `admin`/`panitia`/`media`), per-user checkbox permission overrides (`users.permissions_json`), real-time database session/permission enforcement (`requireAuth` & `requirePermission`), and automatic landing routing.
+- [x] **3-Step Live Operator Wizard & Security/Anti-Slop Hardening:** Rebuilt `/back-office/operator` into `Pilih Lapangan -> Pilih Jadwal Aktif -> Konsol Skor Live` without `PIN TV` clutter; hardened `Host` header parsing, `tvPin` redaction, upload path deletion regex, accessible `<ConfirmDialog>` modals, and `>=44px` mobile tap targets.
+- [x] **Zero-Delay SSE & Polish:** Non-blocking concurrent SSE fan-out (`2500ms` socket timeout), proxy-proof `streamSSE` headers, instant finished-match final-set transitions, per-day Bulletin PDF schedule grouping, aspect-preserved `AVERSA`/school logos, ReactBits volumetric `LightRays` + GPU texture pre-warming in Media Studio, and collapsible accordion sidebar groups.
+
+---
+
 ## Upcoming Backlog
 
 ### `v0.3.0` — Integrations & Full Localization
+- [ ] **FIVB Official Scoresheet (Form O-2 & Line-Up Sheet):** Optional court-table O-2 PDF export with player roster & jersey numbers, starting rotations (Positions I–VI) per set, Libero tracking, point-by-point running score, sanction cards, set duration timestamps, and Match No. in Match Summary.
 - [ ] **UI Localization Dictionary (`i18n`):** Pluggable locale pack (`id-ID` default + `en-US` toggle) for international tournaments.
 - [ ] **OBS Browser Source Overlay (`/obs/:matchId`):** Transparent-background lower-third scorebug URL for live YouTube / Twitch match streams.
 - [ ] **Outbound Webhooks:** Signed JSON webhooks on `match_started`, `set_confirmed`, and `match_finished` for Discord, Telegram, or WhatsApp bots.
