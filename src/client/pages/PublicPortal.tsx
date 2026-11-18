@@ -19,6 +19,7 @@ import { PoolStandingsView } from '../components/PoolStandingsView';
 import { PwaInstallButton } from '../components/PwaInstallButton';
 import { TeamAvatar } from '../components/TeamAvatar';
 import { ThemeToggle } from '../components/ThemeToggle';
+import { TurnstileWidget } from '../components/TurnstileWidget';
 import { VolleyballArena3D } from '../components/VolleyballArena3D';
 import { VolleyballIcon } from '../components/VolleyballIcon';
 import { ApiError, apiFetch } from '../lib/api';
@@ -66,6 +67,71 @@ export function PublicPortal() {
     message?: string;
     retryAfterSec?: number;
   } | null>(null);
+  const [turnstileGate, setTurnstileGate] = useState<{
+    checked: boolean;
+    enabled: boolean;
+    siteKey: string;
+    verified: boolean;
+    verifying: boolean;
+    error: string | null;
+    resetKey: number;
+  }>({
+    checked: false,
+    enabled: false,
+    siteKey: '',
+    verified: true,
+    verifying: false,
+    error: null,
+    resetKey: 0,
+  });
+
+  useEffect(() => {
+    apiFetch<{ enabled: boolean; siteKey: string; verified: boolean }>(
+      `/api/public/turnstile-config?_=${Date.now()}`,
+      { cache: 'no-store' }
+    )
+      .then((cfg) => {
+        setTurnstileGate((prev) => ({
+          ...prev,
+          checked: true,
+          enabled: cfg.enabled,
+          siteKey: cfg.siteKey,
+          verified: !cfg.enabled || cfg.verified,
+        }));
+      })
+      .catch(() => {
+        setTurnstileGate((prev) => ({
+          ...prev,
+          checked: true,
+          enabled: false,
+          verified: true,
+        }));
+      });
+  }, []);
+
+  const handlePublicTurnstileVerify = useCallback(async (token: string) => {
+    setTurnstileGate((prev) => ({ ...prev, verifying: true, error: null }));
+    try {
+      await apiFetch('/api/public/verify-turnstile', {
+        method: 'POST',
+        body: JSON.stringify({ token }),
+      });
+      setTurnstileGate((prev) => ({
+        ...prev,
+        verifying: false,
+        verified: true,
+        error: null,
+      }));
+    } catch (err) {
+      setTurnstileGate((prev) => ({
+        ...prev,
+        verifying: false,
+        verified: false,
+        error: (err as Error).message || 'Verifikasi gagal. Silakan coba lagi.',
+        resetKey: prev.resetKey + 1,
+      }));
+    }
+  }, []);
 
   const setActiveTab = useCallback((tab: PublicTab) => {
     setActiveTabState(tab);
@@ -573,6 +639,66 @@ export function PublicPortal() {
         retryAfterSec={portalError.retryAfterSec}
         onRetry={loadOverview}
       />
+    );
+  }
+
+  if (turnstileGate.checked && turnstileGate.enabled && !turnstileGate.verified) {
+    return (
+      <div className="court-pattern flex min-h-screen flex-col items-center justify-center p-4">
+        <div className="absolute right-4 top-4">
+          <ThemeToggle />
+        </div>
+        <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white/95 p-6 text-center shadow-xl backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/95">
+          <img
+            src={settings?.logoUrl || '/brand/svc-crest-color.svg'}
+            alt="Logo Kejuaraan"
+            className="mx-auto h-16 w-16 object-contain"
+          />
+          <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Verifikasi Pengunjung
+          </div>
+          <h1 className="mt-2.5 font-display text-xl font-extrabold uppercase tracking-wide text-slate-900 dark:text-white">
+            {settings?.eventName || 'Smansage Volleyball Competition'}
+          </h1>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            Konfirmasi singkat untuk melindungi portal skor langsung dari akses otomatis.
+          </p>
+
+          {turnstileGate.error && (
+            <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-600 dark:text-red-400">
+              {turnstileGate.error}
+            </div>
+          )}
+
+          <div className="mt-4">
+            <TurnstileWidget
+              siteKey={turnstileGate.siteKey}
+              action="public_portal"
+              resetKey={turnstileGate.resetKey}
+              onVerify={handlePublicTurnstileVerify}
+              onExpire={() =>
+                setTurnstileGate((prev) => ({
+                  ...prev,
+                  error: 'Sesi verifikasi kedaluwarsa. Silakan ulangi.',
+                }))
+              }
+              onError={() =>
+                setTurnstileGate((prev) => ({
+                  ...prev,
+                  error: 'Gagal memverifikasi Cloudflare Turnstile. Silakan muat ulang.',
+                }))
+              }
+            />
+          </div>
+
+          {turnstileGate.verifying && (
+            <p className="mt-3 text-xs font-semibold text-amber-600 dark:text-amber-400">
+              Membuka portal kejuaraan...
+            </p>
+          )}
+        </div>
+      </div>
     );
   }
 

@@ -29,6 +29,7 @@ import type { SupportedErrorCode } from '../../shared/routes';
 import { ChangePasswordModal } from '../components/ChangePasswordModal';
 import { ErrorPage } from '../components/ErrorPage';
 import { ThemeToggle } from '../components/ThemeToggle';
+import { TurnstileWidget } from '../components/TurnstileWidget';
 import { VolleyballIcon } from '../components/VolleyballIcon';
 import { ApiError, apiFetch } from '../lib/api';
 import { syncDocumentBranding } from '../lib/seo';
@@ -162,6 +163,18 @@ export function BackOffice() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [turnstileConfig, setTurnstileConfig] = useState<{
+    enabled: boolean;
+    siteKey: string;
+  }>({ enabled: false, siteKey: '' });
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
+
+  useEffect(() => {
+    apiFetch<{ enabled: boolean; siteKey: string }>('/api/public/turnstile-config')
+      .then((cfg) => setTurnstileConfig({ enabled: cfg.enabled, siteKey: cfg.siteKey }))
+      .catch(() => {});
+  }, []);
 
   const loadData = useCallback(async (u: AuthUser) => {
     try {
@@ -247,16 +260,28 @@ export function BackOffice() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError(null);
+    if (turnstileConfig.enabled && !turnstileToken) {
+      setLoginError('Silakan selesaikan verifikasi keamanan Cloudflare terlebih dahulu.');
+      return;
+    }
     try {
       const res = await apiFetch<{ user: AuthUser }>('/api/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({
+          username,
+          password,
+          ...(turnstileConfig.enabled ? { turnstileToken } : {}),
+        }),
       });
       setUser(res.user);
       setSection(getInitialSection(res.user));
       await loadData(res.user);
     } catch (err) {
       setLoginError((err as Error).message);
+      if (turnstileConfig.enabled) {
+        setTurnstileToken('');
+        setTurnstileResetKey((k) => k + 1);
+      }
     }
   };
 
@@ -352,9 +377,26 @@ export function BackOffice() {
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-950"
               />
             </div>
+            {turnstileConfig.enabled && turnstileConfig.siteKey && (
+              <TurnstileWidget
+                siteKey={turnstileConfig.siteKey}
+                action="admin_login"
+                resetKey={turnstileResetKey}
+                onVerify={(tok) => {
+                  setTurnstileToken(tok);
+                  setLoginError(null);
+                }}
+                onExpire={() => setTurnstileToken('')}
+                onError={() => {
+                  setTurnstileToken('');
+                  setLoginError('Verifikasi keamanan Turnstile gagal. Silakan coba lagi.');
+                }}
+              />
+            )}
             <button
               type="submit"
-              className="mt-2 w-full rounded-xl bg-amber-500 py-2.5 text-sm font-bold text-slate-950 shadow-lg shadow-amber-500/20 transition hover:bg-amber-400"
+              disabled={turnstileConfig.enabled && !turnstileToken}
+              className="mt-2 w-full rounded-xl bg-amber-500 py-2.5 text-sm font-bold text-slate-950 shadow-lg shadow-amber-500/20 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-60"
             >
               Masuk ke Panel
             </button>

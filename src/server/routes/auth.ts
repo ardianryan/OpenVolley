@@ -18,6 +18,8 @@ import {
   resolveLiveAuthUser,
 } from '../middleware/auth';
 import { createRateLimiter, isSecureRequest } from '../middleware/security';
+import { getClientIp } from '../services/sse';
+import { getTurnstileConfig, verifyTurnstileToken } from '../services/turnstile';
 
 export const authRoutes = new Hono<{ Variables: { user: AuthUser } }>();
 
@@ -51,12 +53,29 @@ authRoutes.post('/login', async (c) => {
     );
   }
 
-  const body = await c.req.json<{ username?: string; password?: string }>().catch(() => ({
-    username: '',
-    password: '',
-  }));
+  const body = await c.req
+    .json<{ username?: string; password?: string; turnstileToken?: string }>()
+    .catch(() => ({
+      username: '',
+      password: '',
+      turnstileToken: '',
+    }));
   const username = body.username?.trim();
   const password = body.password;
+
+  if (getTurnstileConfig().enabled) {
+    const turnstileOk = await verifyTurnstileToken(
+      body.turnstileToken,
+      getClientIp(c),
+      'admin_login'
+    );
+    if (!turnstileOk) {
+      return c.json(
+        { error: 'Verifikasi keamanan Turnstile gagal atau kedaluwarsa. Silakan ulangi.' },
+        403
+      );
+    }
+  }
 
   if (!username || !password) {
     return c.json({ error: 'Username dan password wajib diisi' }, 400);

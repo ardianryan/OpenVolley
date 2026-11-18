@@ -16,6 +16,7 @@ import {
 import { getFullOverview } from '../services/overview';
 import { generateDynamicOgImagePng } from '../services/ogImage';
 import { getMatchWithSets } from '../services/scoring';
+import { getTurnstileConfig, verifyTurnstileToken } from '../services/turnstile';
 import {
   MAX_SSE_CLIENTS,
   addSseClient,
@@ -28,6 +29,7 @@ import {
 
 export const publicRoutes = new Hono();
 const TV_VIP_COOKIE = 'ov_tv_vip';
+const PUBLIC_HUMAN_COOKIE = 'ov_human';
 
 async function isTvVipAuthorized(c: Context): Promise<boolean> {
   // 1. Check live authenticated staff session & granular permission
@@ -428,4 +430,61 @@ publicRoutes.get('/stream', (c) => {
   res.headers.set('Cache-Control', 'no-cache, no-store, no-transform, must-revalidate');
   res.headers.set('X-Accel-Buffering', 'no');
   return res;
+});
+
+async function isPublicHumanVerified(c: Context): Promise<boolean> {
+  const cfg = getTurnstileConfig();
+  if (!cfg.enabled) return true;
+  const cookie = getCookie(c, PUBLIC_HUMAN_COOKIE);
+  if (!cookie) return false;
+  try {
+    const payload = (await verify(cookie, JWT_SECRET, 'HS256')) as { scope?: string };
+    return payload.scope === 'public_portal';
+  } catch {
+    return false;
+  }
+}
+
+publicRoutes.get('/turnstile-config', async (c) => {
+  const cfg = getTurnstileConfig();
+  const verified = await isPublicHumanVerified(c);
+  return c.json({
+    enabled: cfg.enabled,
+    siteKey: cfg.siteKey,
+    verified,
+  });
+});
+
+publicRoutes.post('/verify-turnstile', async (c) => {
+  const cfg = getTurnstileConfig();
+  if (!cfg.enabled) {
+    return c.json({ ok: true, verified: true });
+  }
+
+  const body = await c.req.json<{ token?: string }>().catch(() => ({ token: '' }));
+  const ok = await verifyTurnstileToken(body.token, getClientIp(c), 'public_portal');
+  if (!ok) {
+    return c.json(
+      { error: 'Verifikasi keamanan Turnstile gagal atau kedaluwarsa. Silakan coba lagi.' },
+      403
+    );
+  }
+
+  const jwt = await sign(
+    {
+      scope: 'public_portal',
+      exp: Math.floor(Date.now() / 1000) + 60 * 60 * 12, // 12 hours
+    },
+    JWT_SECRET,
+    'HS256'
+  );
+  setCookie(c, PUBLIC_HUMAN_COOKIE, jwt, {
+    httpOnly: true,
+    secure: isSecureRequest(c),
+    sameSite: 'Lax',
+    path: '/',
+    maxAge: 60 * 60 * 12,
+  });
+
+  return c.json({ ok: true, verified: true });
 });

@@ -11,6 +11,7 @@ import {
   ImagePlus,
   Layers,
   Palette,
+  Pencil,
   Plus,
   RotateCcw,
   Shuffle,
@@ -75,6 +76,16 @@ export function AdminDashboard({
   const [decPts, setDecPts] = useState(15);
   const [useDeuce, setUseDeuce] = useState(true);
   const [hasThirdPlace, setHasThirdPlace] = useState(true);
+
+  // Edit active category rules form
+  const [showEditCat, setShowEditCat] = useState(false);
+  const [editCatName, setEditCatName] = useState('');
+  const [editBestOf, setEditBestOf] = useState<1 | 3 | 5>(3);
+  const [editRegPts, setEditRegPts] = useState(25);
+  const [editDecPts, setEditDecPts] = useState(15);
+  const [editUseDeuce, setEditUseDeuce] = useState(true);
+  const [editHasThirdPlace, setEditHasThirdPlace] = useState(true);
+  const [savingEditCat, setSavingEditCat] = useState(false);
 
   // Team form & optional detail drawer
   const [teamName, setTeamName] = useState('');
@@ -200,6 +211,41 @@ export function AdminDashboard({
       body: JSON.stringify({ isEnabled: !t.isEnabled }),
     });
     await onRefresh();
+  };
+
+  const openEditCategory = (t: Tournament) => {
+    setEditCatName(t.name);
+    setEditBestOf(t.bestOf === 5 ? 5 : t.bestOf === 1 ? 1 : 3);
+    setEditRegPts(t.regularSetPoints);
+    setEditDecPts(t.decidingSetPoints);
+    setEditUseDeuce(t.useDeuce);
+    setEditHasThirdPlace(t.hasThirdPlace);
+    setShowNewCat(false);
+    setShowEditCat((prev) => !prev);
+  };
+
+  const handleSaveEditCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeTournament || !editCatName.trim()) return;
+    setSavingEditCat(true);
+    try {
+      await apiFetch(`/api/admin/tournaments/${activeTournament.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: editCatName.trim(),
+          bestOf: editBestOf,
+          regularSetPoints: editRegPts,
+          decidingSetPoints: editDecPts,
+          useDeuce: editUseDeuce,
+          hasThirdPlace: editHasThirdPlace,
+        }),
+      });
+      setShowEditCat(false);
+      await onRefresh();
+      flash('Aturan kategori berhasil diperbarui');
+    } finally {
+      setSavingEditCat(false);
+    }
   };
 
   const handleAddTeam = async (e: React.FormEvent) => {
@@ -621,6 +667,19 @@ export function AdminDashboard({
 
                   <button
                     type="button"
+                    onClick={() => openEditCategory(activeTournament)}
+                    className={`inline-flex min-h-9 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold transition ${
+                      showEditCat
+                        ? 'border-amber-500 bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-amber-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200'
+                    }`}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    <span>Edit Aturan</span>
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => toggleCategoryEnabled(activeTournament)}
                     className={`inline-flex min-h-9 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition ${
                       activeTournament.isEnabled
@@ -721,6 +780,99 @@ export function AdminDashboard({
                     />
                     Perebutan Juara 3
                   </label>
+                </div>
+              </form>
+            )}
+
+            {showEditCat && activeTournament && (
+              <form
+                onSubmit={handleSaveEditCategory}
+                className="mt-4 grid gap-3 border-t border-slate-100 pt-4 dark:border-slate-800 sm:grid-cols-2 lg:grid-cols-5"
+              >
+                <div className="lg:col-span-2">
+                  <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Nama Kategori
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editCatName}
+                    onChange={(e) => setEditCatName(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Format Set
+                  </label>
+                  <select
+                    value={editBestOf}
+                    onChange={(e) => setEditBestOf(Number(e.target.value) as 1 | 3 | 5)}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
+                  >
+                    <option value={1}>1 Set</option>
+                    <option value={3}>Best of 3</option>
+                    <option value={5}>Best of 5</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Poin Biasa / Penentu
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min={5}
+                      max={50}
+                      title="Poin Set Biasa"
+                      value={editRegPts}
+                      onChange={(e) => setEditRegPts(Number(e.target.value))}
+                      className="w-1/2 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
+                    />
+                    <input
+                      type="number"
+                      min={5}
+                      max={30}
+                      title="Poin Set Penentu"
+                      value={editDecPts}
+                      onChange={(e) => setEditDecPts(Number(e.target.value))}
+                      className="w-1/2 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-end gap-2">
+                  <button
+                    type="submit"
+                    disabled={savingEditCat}
+                    className="w-full rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400 disabled:opacity-60"
+                  >
+                    {savingEditCat ? 'Menyimpan...' : 'Simpan Aturan'}
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-4 text-xs sm:col-span-2 lg:col-span-5">
+                  <label className="flex items-center gap-1.5 font-medium">
+                    <input
+                      type="checkbox"
+                      checked={editUseDeuce}
+                      onChange={(e) => setEditUseDeuce(e.target.checked)}
+                    />
+                    Deuce selisih 2 poin
+                  </label>
+                  <label className="flex items-center gap-1.5 font-medium">
+                    <input
+                      type="checkbox"
+                      checked={editHasThirdPlace}
+                      onChange={(e) => setEditHasThirdPlace(e.target.checked)}
+                    />
+                    Perebutan Juara 3
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowEditCat(false)}
+                    className="ml-auto text-xs font-semibold text-slate-500 hover:text-slate-700 dark:text-slate-400"
+                  >
+                    Batal
+                  </button>
                 </div>
               </form>
             )}

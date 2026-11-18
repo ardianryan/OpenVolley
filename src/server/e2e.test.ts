@@ -9,6 +9,8 @@ describe('UAT & Security E2E Flow', () => {
   let tournamentId = 0;
 
   beforeAll(async () => {
+    delete process.env.TURNSTILE_SITE_KEY;
+    delete process.env.TURNSTILE_SECRET_KEY;
     await seedDefaults();
   });
 

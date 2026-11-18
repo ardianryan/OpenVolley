@@ -20,6 +20,8 @@ describe('Feature Suite — Tournament Lifecycle, Role Matrix & Production Routi
   }
 
   beforeAll(async () => {
+    delete process.env.TURNSTILE_SITE_KEY;
+    delete process.env.TURNSTILE_SECRET_KEY;
     await seedDefaults();
     adminCookie = await loginAs('admin', 'admin123');
     panitiaCookie = await loginAs('panitia', 'panitia123');
@@ -1110,5 +1112,125 @@ describe('Feature Suite — Tournament Lifecycle, Role Matrix & Production Routi
       })
     ).text();
     expect(poisonedHtml).not.toContain('evil.attacker.com');
+  });
+
+  test('Feature 12: Category Rules Editor & Cloudflare Turnstile Gate + Login Verification', async () => {
+    // 1. Edit tournament category game rules via PATCH /api/admin/tournaments/:id
+    const createRes = await app.request('/api/admin/tournaments', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Kategori Awal',
+        bestOf: 3,
+        regularSetPoints: 25,
+        decidingSetPoints: 15,
+        useDeuce: true,
+        hasThirdPlace: true,
+      }),
+    });
+    expect(createRes.status).toBe(201);
+    const { tournament } = await createRes.json();
+
+    const patchRes = await app.request(`/api/admin/tournaments/${tournament.id}`, {
+      method: 'PATCH',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Kategori Revisi Bo5',
+        bestOf: 5,
+        regularSetPoints: 21,
+        decidingSetPoints: 15,
+        useDeuce: false,
+        hasThirdPlace: false,
+      }),
+    });
+    expect(patchRes.status).toBe(200);
+    const patched = await patchRes.json();
+    expect(patched.tournament.name).toBe('Kategori Revisi Bo5');
+    expect(patched.tournament.bestOf).toBe(5);
+    expect(patched.tournament.regularSetPoints).toBe(21);
+    expect(patched.tournament.useDeuce).toBe(false);
+    expect(patched.tournament.hasThirdPlace).toBe(false);
+
+    // 2. Verify CSP includes Cloudflare Turnstile origins
+    const healthRes = await app.request('/api/public/health');
+    const csp = healthRes.headers.get('content-security-policy') || '';
+    expect(csp).toContain('https://challenges.cloudflare.com');
+
+    // 3. Turnstile gate & login verification with mocked siteverify
+    const originalFetch = globalThis.fetch;
+    process.env.TURNSTILE_SITE_KEY = '0x4TEST_SITE_KEY';
+    process.env.TURNSTILE_SECRET_KEY = '0x4TEST_SECRET_KEY';
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('challenges.cloudflare.com/turnstile/v0/siteverify')) {
+        const bodyText = init?.body ? init.body.toString() : '';
+        const params = new URLSearchParams(bodyText);
+        const token = params.get('response');
+        return new Response(
+          JSON.stringify({
+            success: token === 'valid-cf-token',
+            action: token === 'valid-cf-token' ? undefined : 'mismatch',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    try {
+      const cfgRes = await app.request('/api/public/turnstile-config');
+      expect(cfgRes.status).toBe(200);
+      const cfg = await cfgRes.json();
+      expect(cfg.enabled).toBe(true);
+      expect(cfg.siteKey).toBe('0x4TEST_SITE_KEY');
+      expect(cfg.verified).toBe(false);
+
+      // Invalid public Turnstile token -> 403
+      const badGate = await app.request('/api/public/verify-turnstile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: 'bad-token' }),
+      });
+      expect(badGate.status).toBe(403);
+
+      // Valid public Turnstile token -> 200 + ov_human cookie
+      const okGate = await app.request('/api/public/verify-turnstile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: 'valid-cf-token' }),
+      });
+      expect(okGate.status).toBe(200);
+      const humanCookie = (okGate.headers.get('set-cookie') || '').split(';')[0] || '';
+      expect(humanCookie).toContain('ov_human=');
+
+      const cfgAfter = await app.request('/api/public/turnstile-config', {
+        headers: { Cookie: humanCookie },
+      });
+      expect((await cfgAfter.json()).verified).toBe(true);
+
+      // Admin login without Turnstile token -> 403
+      const missingLoginToken = await app.request('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'admin123' }),
+      });
+      expect(missingLoginToken.status).toBe(403);
+
+      // Admin login with valid Turnstile token -> 200
+      const okLogin = await app.request('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: 'admin',
+          password: 'admin123',
+          turnstileToken: 'valid-cf-token',
+        }),
+      });
+      expect(okLogin.status).toBe(200);
+    } finally {
+      globalThis.fetch = originalFetch;
+      delete process.env.TURNSTILE_SITE_KEY;
+      delete process.env.TURNSTILE_SECRET_KEY;
+    }
   });
 });
