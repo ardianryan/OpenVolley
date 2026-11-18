@@ -11,6 +11,10 @@ export const siteSettings = sqliteTable('site_settings', {
   sponsorsJson: text('sponsors_json').notNull().default('[]'),
   tvPin: text('tv_pin').notNull().default('4426'),
   accentColor: text('accent_color').notNull().default('#E09D17'),
+  seoDescription: text('seo_description').notNull().default(''),
+  socialImageUrl: text('social_image_url').notNull().default(''),
+  publicDocsEnabled: integer('public_docs_enabled', { mode: 'boolean' }).notNull().default(true),
+  docSettingsJson: text('doc_settings_json').notNull().default('{}'),
 });
 
 export const users = sqliteTable('users', {
@@ -28,6 +32,9 @@ export const tournaments = sqliteTable('tournaments', {
   slug: text('slug').notNull().unique(),
   isEnabled: integer('is_enabled', { mode: 'boolean' }).notNull().default(true),
   status: text('status', { enum: ['draft', 'active', 'finished'] }).notNull().default('active'),
+  format: text('format', { enum: ['knockout', 'pool_knockout'] }).notNull().default('knockout'),
+  poolCount: integer('pool_count').notNull().default(4),
+  advancePerPool: integer('advance_per_pool').notNull().default(2),
   bestOf: integer('best_of').notNull().default(3),
   regularSetPoints: integer('regular_set_points').notNull().default(25),
   decidingSetPoints: integer('deciding_set_points').notNull().default(15),
@@ -48,6 +55,10 @@ export const teams = sqliteTable('teams', {
   logoUrl: text('logo_url'),
   color: text('color').notNull().default('#E09D17'),
   seed: integer('seed').notNull().default(0),
+  poolName: text('pool_name'),
+  coachName: text('coach_name').notNull().default(''),
+  managerName: text('manager_name').notNull().default(''),
+  jerseyColors: text('jersey_colors').notNull().default('[]'),
 });
 
 export const matches = sqliteTable('matches', {
@@ -57,7 +68,11 @@ export const matches = sqliteTable('matches', {
     .references(() => tournaments.id, { onDelete: 'cascade' }),
   round: integer('round').notNull(),
   matchIndex: integer('match_index').notNull(),
-  bracketType: text('bracket_type', { enum: ['main', 'third_place'] }).notNull().default('main'),
+  bracketType: text('bracket_type', { enum: ['main', 'third_place', 'pool'] })
+    .notNull()
+    .default('main'),
+  poolName: text('pool_name'),
+  stageLabel: text('stage_label'),
   teamAId: integer('team_a_id').references(() => teams.id, { onDelete: 'set null' }),
   teamBId: integer('team_b_id').references(() => teams.id, { onDelete: 'set null' }),
   winnerId: integer('winner_id').references(() => teams.id, { onDelete: 'set null' }),
@@ -86,6 +101,10 @@ export const matchSets = sqliteTable('match_sets', {
   setNumber: integer('set_number').notNull(),
   scoreA: integer('score_a').notNull().default(0),
   scoreB: integer('score_b').notNull().default(0),
+  timeoutsA: integer('timeouts_a').notNull().default(0),
+  timeoutsB: integer('timeouts_b').notNull().default(0),
+  subsA: integer('subs_a').notNull().default(0),
+  subsB: integer('subs_b').notNull().default(0),
   isFinished: integer('is_finished', { mode: 'boolean' }).notNull().default(false),
   winnerId: integer('winner_id'),
 });

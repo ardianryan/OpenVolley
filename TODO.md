@@ -1,6 +1,6 @@
 # OpenVolley Engineering Roadmap & TODO
 
-This document tracks completed milestones in **`v0.1.0`** alongside the prioritized engineering backlog for upcoming releases.
+This document tracks completed milestones in **`v0.1.0` – `v0.2.0`** alongside the prioritized engineering backlog for upcoming releases.
 
 ---
 
@@ -34,15 +34,19 @@ This document tracks completed milestones in **`v0.1.0`** alongside the prioriti
 
 ---
 
+## Completed in `v0.2.0` (Matchday Operations, Dynamic Branding/SEO & Official Publications)
+- [x] **Dynamic Favicon, Server SEO Injector & Auto Social Image (`1200×630` PNG):** Default `/brand/svc-crest-color.svg` favicon synced to `siteSettings.logoUrl`, server HTML meta injection, and `@resvg/resvg-wasm` social preview card at `GET /api/public/og-image.png`.
+- [x] **Official Vector PDF Suite & "Dokumen Resmi" Hub:** Lazy-loaded `jspdf` **Tournament Bulletin PDF** (Cover + Contingent/Pool Cards + Schedule/Standings + Vector Main Bracket) and 1-page A4 **Official Match Summary PDF**, plus Admin `ON/OFF` public download toggle.
+- [x] **Media Studio Champions/Podium & Stage Visual Themes:** Dedicated `CHAMPIONS & PODIUM` (`1st`, `2nd`, `3rd`, `Official Podium 1-2-3`) template + `Quarter-Final`, `Semi-Final`, `3rd Place Match`, and `Grand Final` stage themes, standardized on international FIVB terminology, plus SSRF-safe `/api/public/asset-proxy` preventing S3 canvas tainting.
+- [x] **Pool / Round-Robin Group Stage → Knockout Progression:** FIVB `3-2-1-0` standings calculator, round-robin fixture generator, `PoolStandingsView`, and 1-click knockout advancement.
+- [x] **Per-Set Timeouts (`2/2`) & Substitutions (`6/6`) Counter:** Courtside controls with `undoLastAction` support and Arena TV indicators.
+- [x] **Multi-Court Arena TV (`/tv`):** Single-Court Focus, Dual Split-Screen (`Split 2`), and `12s` Auto-Rotate modes.
+
+---
+
 ## Upcoming Backlog
 
-### `v0.2.0` — Matchday Operations & Analytics
-- [ ] **Pool / Round-Robin Group Stage:** Optional group-stage standings table (`Points`, `Set Ratio`, `Point Ratio` per FIVB tie-breaker rules) feeding into knockout brackets.
-- [ ] **Timeouts & Substitutions Counter:** Optional per-set timeout (`2/2`) and player substitution counters on the Operator Console and Arena TV bug.
-- [ ] **Official Match Summary PDF:** One-click printable A4 match result sheet with set durations, set scores, and referee signature blocks.
-- [ ] **Multi-Court Arena TV Carousel:** Optional auto-rotating or split-screen dual-court view on `/tv` for venues running Court 1 and Court 2 simultaneously.
-
-### `v0.3.0` — Integrations & Internationalization
+### `v0.3.0` — Integrations & Full Localization
 - [ ] **UI Localization Dictionary (`i18n`):** Pluggable locale pack (`id-ID` default + `en-US` toggle) for international tournaments.
 - [ ] **OBS Browser Source Overlay (`/obs/:matchId`):** Transparent-background lower-third scorebug URL for live YouTube / Twitch match streams.
 - [ ] **Outbound Webhooks:** Signed JSON webhooks on `match_started`, `set_confirmed`, and `match_finished` for Discord, Telegram, or WhatsApp bots.

@@ -4,11 +4,17 @@ import { sanitizeHexColor, sanitizePlainText } from '../../shared/sanitize';
 import { db } from '../db';
 import { matchReports, matches, siteSettings, teams, tournaments } from '../db/schema';
 import { type AuthUser, requireAuth } from '../middleware/auth';
-import { generateBracket, initializeDrawBracket } from '../services/bracket';
+import {
+  advancePoolsToKnockout,
+  generateBracket,
+  generatePoolStageBracket,
+  initializeDrawBracket,
+} from '../services/bracket';
 import { getFullOverview } from '../services/overview';
 import {
   addExtraSet,
   addPoint,
+  adjustSetCounter,
   confirmCurrentSet,
   finishMatchManually,
   resetMatchScore,
@@ -26,6 +32,96 @@ import {
 export const adminRoutes = new Hono<{ Variables: { user: AuthUser } }>();
 
 adminRoutes.use('*', requireAuth(['admin', 'panitia']));
+
+function sanitizeDocSettingsJson(
+  rawInput: unknown,
+  existingJson = '{}'
+): string {
+  let prev: Record<string, string> = {};
+  try {
+    prev = JSON.parse(existingJson || '{}') as Record<string, string>;
+  } catch {
+    prev = {};
+  }
+
+  let incoming: Record<string, unknown> = {};
+  if (typeof rawInput === 'string') {
+    try {
+      incoming = JSON.parse(rawInput) as Record<string, unknown>;
+    } catch {
+      incoming = {};
+    }
+  } else if (rawInput && typeof rawInput === 'object') {
+    incoming = rawInput as Record<string, unknown>;
+  }
+
+  const merged: Record<string, string> = { ...prev };
+  const textFields: Array<[string, number]> = [
+    ['bulletinNumber', 60],
+    ['bulletinEdition', 120],
+    ['venueName', 120],
+    ['publishedDate', 80],
+    ['referee1Default', 80],
+    ['referee2Default', 80],
+    ['committeeChair', 80],
+  ];
+
+  for (const [key, maxLen] of textFields) {
+    if (incoming[key] !== undefined) {
+      merged[key] = sanitizePlainText(incoming[key], maxLen);
+    }
+  }
+
+  if (typeof incoming.coverImageUrl === 'string') {
+    const cleanUrl = incoming.coverImageUrl.trim();
+    if (
+      cleanUrl === '' ||
+      cleanUrl.startsWith('/uploads/') ||
+      cleanUrl.startsWith('/brand/') ||
+      cleanUrl.startsWith('https://') ||
+      cleanUrl.startsWith('http://')
+    ) {
+      merged.coverImageUrl = cleanUrl;
+    }
+  }
+
+  return JSON.stringify(merged);
+}
+
+function sanitizeJerseyColorsJson(rawInput: unknown): string {
+  let arr: unknown[] = [];
+  if (typeof rawInput === 'string') {
+    try {
+      const parsed = JSON.parse(rawInput);
+      if (Array.isArray(parsed)) arr = parsed;
+    } catch {
+      arr = [];
+    }
+  } else if (Array.isArray(rawInput)) {
+    arr = rawInput;
+  }
+
+  const cleaned = arr
+    .slice(0, 4)
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const obj = item as { label?: unknown; hex?: unknown };
+      const label = sanitizePlainText(obj.label, 30);
+      if (!label) return null;
+      const hex = sanitizeHexColor(obj.hex, '#1E293B');
+      return { label, hex };
+    })
+    .filter((x): x is { label: string; hex: string } => Boolean(x));
+
+  return JSON.stringify(cleaned);
+}
+
+function sanitizePoolCode(raw: unknown): string | null {
+  if (raw === null || raw === '') return null;
+  if (typeof raw !== 'string') return null;
+  const cleaned = sanitizePlainText(raw, 8).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return cleaned || null;
+}
 
 adminRoutes.get('/overview', async (c) => {
   const data = await getFullOverview(true);
@@ -50,10 +146,17 @@ adminRoutes.put('/settings', requireAuth(['admin']), async (c) => {
     eventSubtitle?: string;
     eventMeta?: string;
     accentColor?: string;
+    seoDescription?: string;
+    publicDocsEnabled?: boolean;
+    docSettingsJson?: unknown;
     resetLogo?: boolean;
+    resetSocialImage?: boolean;
+    resetDocCover?: boolean;
   }>();
 
+  const current = await db.query.siteSettings.findFirst();
   const updateData: Partial<typeof siteSettings.$inferInsert> = {};
+
   if (body.eventName !== undefined) {
     updateData.eventName = sanitizePlainText(body.eventName, 120);
   }
@@ -66,13 +169,113 @@ adminRoutes.put('/settings', requireAuth(['admin']), async (c) => {
   if (body.accentColor !== undefined) {
     updateData.accentColor = sanitizeHexColor(body.accentColor, '#E09D17');
   }
+  if (body.seoDescription !== undefined) {
+    updateData.seoDescription = sanitizePlainText(body.seoDescription, 260);
+  }
+  if (body.publicDocsEnabled !== undefined) {
+    updateData.publicDocsEnabled = Boolean(body.publicDocsEnabled);
+  }
+  if (body.docSettingsJson !== undefined) {
+    updateData.docSettingsJson = sanitizeDocSettingsJson(
+      body.docSettingsJson,
+      current?.docSettingsJson
+    );
+  }
   if (body.resetLogo) {
     updateData.logoUrl = '/brand/svc-crest-color.svg';
     updateData.coBrandLogoUrl = '/brand/aversa-standalone-color.svg';
     updateData.organizerLogoUrl = '/brand/logo_smansage.png';
   }
+  if (body.resetSocialImage) {
+    if (current?.socialImageUrl) {
+      await deleteUploadedImage(current.socialImageUrl);
+    }
+    updateData.socialImageUrl = '';
+  }
+  if (body.resetDocCover) {
+    try {
+      const parsed = JSON.parse(current?.docSettingsJson || '{}') as {
+        coverImageUrl?: string;
+      };
+      if (parsed.coverImageUrl) {
+        await deleteUploadedImage(parsed.coverImageUrl);
+      }
+      parsed.coverImageUrl = '';
+      updateData.docSettingsJson = JSON.stringify(parsed);
+    } catch {
+      updateData.docSettingsJson = '{}';
+    }
+  }
 
   await db.update(siteSettings).set(updateData).where(eq(siteSettings.id, 'default'));
+  const updated = await db.query.siteSettings.findFirst();
+  await broadcastEvent('settings_updated', updated);
+  return c.json({ settings: updated });
+});
+
+// Official Documents Settings (Admin & Panitia can edit Bulletin/Referee metadata; Admin can toggle publicDocsEnabled)
+adminRoutes.put('/settings/docs', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json<{
+    docSettings?: unknown;
+    publicDocsEnabled?: boolean;
+    resetDocCover?: boolean;
+  }>();
+
+  const current = await db.query.siteSettings.findFirst();
+  const updateData: Partial<typeof siteSettings.$inferInsert> = {};
+
+  if (body.docSettings !== undefined) {
+    updateData.docSettingsJson = sanitizeDocSettingsJson(
+      body.docSettings,
+      current?.docSettingsJson
+    );
+  }
+
+  if (body.resetDocCover) {
+    try {
+      const parsed = JSON.parse(
+        updateData.docSettingsJson || current?.docSettingsJson || '{}'
+      ) as Record<string, string>;
+      if (parsed.coverImageUrl) {
+        await deleteUploadedImage(parsed.coverImageUrl);
+      }
+      parsed.coverImageUrl = '';
+      updateData.docSettingsJson = JSON.stringify(parsed);
+    } catch {
+      updateData.docSettingsJson = '{}';
+    }
+  }
+
+  if (body.publicDocsEnabled !== undefined && user.role === 'admin') {
+    updateData.publicDocsEnabled = Boolean(body.publicDocsEnabled);
+  }
+
+  await db.update(siteSettings).set(updateData).where(eq(siteSettings.id, 'default'));
+  const updated = await db.query.siteSettings.findFirst();
+  await broadcastEvent('settings_updated', updated);
+  return c.json({ settings: updated });
+});
+
+adminRoutes.post('/settings/doc-cover', async (c) => {
+  const form = await c.req.formData();
+  const file = form.get('file');
+  if (!(file instanceof File)) {
+    return c.json({ error: 'File sampul wajib diunggah' }, 400);
+  }
+
+  const url = await saveUploadedImage(file, 'logos');
+  const current = await db.query.siteSettings.findFirst();
+  const nextDocJson = sanitizeDocSettingsJson(
+    { coverImageUrl: url },
+    current?.docSettingsJson
+  );
+
+  await db
+    .update(siteSettings)
+    .set({ docSettingsJson: nextDocJson })
+    .where(eq(siteSettings.id, 'default'));
+
   const updated = await db.query.siteSettings.findFirst();
   await broadcastEvent('settings_updated', updated);
   return c.json({ settings: updated });
@@ -82,22 +285,38 @@ adminRoutes.post('/settings/logo', requireAuth(['admin']), async (c) => {
   const form = await c.req.formData();
   const file = form.get('file');
   const rawTarget = form.get('target');
-  const target =
-    rawTarget === 'coBrand'
-      ? 'coBrandLogoUrl'
-      : rawTarget === 'organizer'
-        ? 'organizerLogoUrl'
-        : 'logoUrl';
 
   if (!(file instanceof File)) {
     return c.json({ error: 'File gambar wajib diunggah' }, 400);
   }
 
   const url = await saveUploadedImage(file, 'logos');
-  await db
-    .update(siteSettings)
-    .set({ [target]: url })
-    .where(eq(siteSettings.id, 'default'));
+
+  if (rawTarget === 'docCover') {
+    const current = await db.query.siteSettings.findFirst();
+    const nextDocJson = sanitizeDocSettingsJson(
+      { coverImageUrl: url },
+      current?.docSettingsJson
+    );
+    await db
+      .update(siteSettings)
+      .set({ docSettingsJson: nextDocJson })
+      .where(eq(siteSettings.id, 'default'));
+  } else {
+    const target =
+      rawTarget === 'coBrand'
+        ? 'coBrandLogoUrl'
+        : rawTarget === 'organizer'
+          ? 'organizerLogoUrl'
+          : rawTarget === 'social'
+            ? 'socialImageUrl'
+            : 'logoUrl';
+
+    await db
+      .update(siteSettings)
+      .set({ [target]: url })
+      .where(eq(siteSettings.id, 'default'));
+  }
 
   const updated = await db.query.siteSettings.findFirst();
   await broadcastEvent('settings_updated', updated);
@@ -248,6 +467,9 @@ adminRoutes.delete('/settings/sponsors/:id', requireAuth(['admin']), async (c) =
 adminRoutes.post('/tournaments', async (c) => {
   const body = await c.req.json<{
     name?: string;
+    format?: 'knockout' | 'pool_knockout';
+    poolCount?: number;
+    advancePerPool?: number;
     bestOf?: number;
     regularSetPoints?: number;
     decidingSetPoints?: number;
@@ -268,6 +490,10 @@ adminRoutes.post('/tournaments', async (c) => {
     '-' +
     Math.random().toString(36).slice(2, 6);
 
+  const format = body.format === 'pool_knockout' ? 'pool_knockout' : 'knockout';
+  const poolCount = Math.max(2, Math.min(8, Number(body.poolCount) || 4));
+  const advancePerPool = body.advancePerPool === 1 ? 1 : 2;
+
   const [created] = await db
     .insert(tournaments)
     .values({
@@ -275,6 +501,9 @@ adminRoutes.post('/tournaments', async (c) => {
       slug,
       isEnabled: true,
       status: 'active',
+      format,
+      poolCount,
+      advancePerPool,
       bestOf: body.bestOf === 5 ? 5 : body.bestOf === 1 ? 1 : 3,
       regularSetPoints: body.regularSetPoints || 25,
       decidingSetPoints: body.decidingSetPoints || 15,
@@ -304,6 +533,15 @@ adminRoutes.patch('/tournaments/:id', async (c) => {
     if ((validStatus as readonly string[]).includes(body.status)) {
       updateData.status = body.status;
     }
+  }
+  if (body.format !== undefined) {
+    updateData.format = body.format === 'pool_knockout' ? 'pool_knockout' : 'knockout';
+  }
+  if (body.poolCount !== undefined) {
+    updateData.poolCount = Math.max(2, Math.min(8, Number(body.poolCount) || 4));
+  }
+  if (body.advancePerPool !== undefined) {
+    updateData.advancePerPool = Number(body.advancePerPool) === 1 ? 1 : 2;
   }
   if (body.bestOf !== undefined) {
     updateData.bestOf = body.bestOf === 5 ? 5 : body.bestOf === 1 ? 1 : 3;
@@ -380,6 +618,10 @@ adminRoutes.post('/teams', async (c) => {
     shortCode?: string;
     school?: string;
     color?: string;
+    poolName?: string | null;
+    coachName?: string;
+    managerName?: string;
+    jerseyColors?: unknown;
   }>();
 
   const name = sanitizePlainText(body.name, 80);
@@ -408,6 +650,10 @@ adminRoutes.post('/teams', async (c) => {
       school: sanitizePlainText(body.school, 80),
       color: sanitizeHexColor(body.color, '#E09D17'),
       seed: existingTeams.length + 1,
+      poolName: sanitizePoolCode(body.poolName),
+      coachName: sanitizePlainText(body.coachName, 80),
+      managerName: sanitizePlainText(body.managerName, 80),
+      jerseyColors: sanitizeJerseyColorsJson(body.jerseyColors),
     })
     .returning();
 
@@ -488,6 +734,11 @@ adminRoutes.patch('/teams/:id', async (c) => {
     name?: string;
     shortCode?: string;
     school?: string;
+    color?: string;
+    poolName?: string | null;
+    coachName?: string;
+    managerName?: string;
+    jerseyColors?: unknown;
   }>();
 
   const updateData: Partial<typeof teams.$inferInsert> = {};
@@ -510,6 +761,21 @@ adminRoutes.patch('/teams/:id', async (c) => {
   if (body.school !== undefined) {
     updateData.school = sanitizePlainText(body.school, 80);
   }
+  if (body.color !== undefined) {
+    updateData.color = sanitizeHexColor(body.color, '#E09D17');
+  }
+  if (body.poolName !== undefined) {
+    updateData.poolName = sanitizePoolCode(body.poolName);
+  }
+  if (body.coachName !== undefined) {
+    updateData.coachName = sanitizePlainText(body.coachName, 80);
+  }
+  if (body.managerName !== undefined) {
+    updateData.managerName = sanitizePlainText(body.managerName, 80);
+  }
+  if (body.jerseyColors !== undefined) {
+    updateData.jerseyColors = sanitizeJerseyColorsJson(body.jerseyColors);
+  }
 
   const [updated] = await db
     .update(teams)
@@ -528,7 +794,7 @@ adminRoutes.delete('/teams/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-// Bracket Generation & Drawing Slots
+// Bracket Generation, Pool Stage, & Drawing Slots
 adminRoutes.post('/tournaments/:id/init-draw', async (c) => {
   const id = Number(c.req.param('id'));
   const body = await c.req.json<{ slotCount?: 4 | 8 | 16 }>().catch(() => ({ slotCount: 16 as const }));
@@ -546,9 +812,42 @@ adminRoutes.post('/tournaments/:id/generate-bracket', async (c) => {
   const id = Number(c.req.param('id'));
   const body = await c.req.json<{ shuffle?: boolean }>().catch(() => ({ shuffle: false }));
   try {
+    await db
+      .update(tournaments)
+      .set({ format: 'knockout' })
+      .where(eq(tournaments.id, id));
     const generated = await generateBracket(id, Boolean(body.shuffle));
     await broadcastEvent('bracket_updated', { tournamentId: id });
     return c.json({ matches: generated });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
+});
+
+adminRoutes.post('/tournaments/:id/generate-pools', async (c) => {
+  const id = Number(c.req.param('id'));
+  const body = await c.req
+    .json<{ poolCount?: number; advancePerPool?: number; shuffle?: boolean }>()
+    .catch(() => ({} as { poolCount?: number; advancePerPool?: number; shuffle?: boolean }));
+  try {
+    const generated = await generatePoolStageBracket(id, {
+      poolCount: body.poolCount,
+      advancePerPool: body.advancePerPool,
+      shuffle: Boolean(body.shuffle),
+    });
+    await broadcastEvent('bracket_updated', { tournamentId: id });
+    return c.json({ matches: generated });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
+});
+
+adminRoutes.post('/tournaments/:id/advance-pools', async (c) => {
+  const id = Number(c.req.param('id'));
+  try {
+    const updatedMatches = await advancePoolsToKnockout(id);
+    await broadcastEvent('bracket_updated', { tournamentId: id });
+    return c.json({ matches: updatedMatches });
   } catch (err) {
     return c.json({ error: (err as Error).message }, 400);
   }
@@ -561,6 +860,8 @@ adminRoutes.post('/matches/:id/score', async (c) => {
     action:
       | 'start'
       | 'point'
+      | 'timeout'
+      | 'sub'
       | 'undo'
       | 'serve'
       | 'finish'
@@ -599,6 +900,13 @@ adminRoutes.post('/matches/:id/score', async (c) => {
         }
         result = await addPoint(id, body.team, body.delta);
         break;
+      case 'timeout':
+      case 'sub':
+        if (!body.team || (body.delta !== 1 && body.delta !== -1)) {
+          return c.json({ error: 'Parameter team dan delta wajib valid' }, 400);
+        }
+        result = await adjustSetCounter(id, body.action, body.team, body.delta);
+        break;
       case 'undo':
         result = await undoLastAction(id);
         break;
@@ -634,7 +942,11 @@ adminRoutes.post('/matches/:id/score', async (c) => {
 
 adminRoutes.patch('/matches/:id', async (c) => {
   const id = Number(c.req.param('id'));
-  const body = await c.req.json<{ courtName?: string; scheduledAt?: string }>();
+  const body = await c.req.json<{
+    courtName?: string;
+    scheduledAt?: string;
+    stageLabel?: string;
+  }>();
 
   const updateData: Partial<typeof matches.$inferInsert> = {};
   if (body.courtName !== undefined) {
@@ -642,6 +954,9 @@ adminRoutes.patch('/matches/:id', async (c) => {
   }
   if (body.scheduledAt !== undefined) {
     updateData.scheduledAt = sanitizePlainText(body.scheduledAt, 60);
+  }
+  if (body.stageLabel !== undefined) {
+    updateData.stageLabel = sanitizePlainText(body.stageLabel, 80) || null;
   }
 
   const [updated] = await db

@@ -1,11 +1,26 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { serveStatic } from 'hono/bun';
 import { isKnownSpaPath, parseExplicitErrorRoute } from '../shared/routes';
-import { securityHeaders } from './middleware/security';
+import { isSecureRequest, securityHeaders } from './middleware/security';
 import { adminRoutes } from './routes/admin';
 import { authRoutes } from './routes/auth';
 import { mediaRoutes } from './routes/media';
 import { publicRoutes } from './routes/public';
+import { injectDynamicHtmlMeta } from './services/ogImage';
+
+function resolveRequestOrigin(c: Context): string {
+  const proto = isSecureRequest(c) ? 'https' : 'http';
+  const fwdHost = c.req.header('x-forwarded-host')?.split(',')[0]?.trim();
+  const host = fwdHost || c.req.header('host')?.trim();
+  if (host) {
+    return `${proto}://${host}`;
+  }
+  try {
+    return new URL(c.req.url).origin;
+  } catch {
+    return 'http://localhost:3000';
+  }
+}
 
 export function createApp() {
   const app = new Hono();
@@ -47,16 +62,21 @@ export function createApp() {
   });
 
   // Harden user-uploaded media fallback path against content sniffing / inline scripts
+  // Note: Do NOT add `sandbox` without `allow-same-origin` here, otherwise drawing `/uploads/*`
+  // onto <canvas> marks the canvas as non-origin-clean (`captureStream` / `toBlob` SecurityError).
   app.use('/uploads/*', async (c, next) => {
     await next();
     c.header('X-Content-Type-Options', 'nosniff');
+    c.header('Access-Control-Allow-Origin', '*');
+    c.header('Cross-Origin-Resource-Policy', 'cross-origin');
     c.header(
       'Content-Security-Policy',
-      "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox"
+      "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'"
     );
   });
   app.use('/uploads/*', serveStatic({ root: './data' }));
   app.use('/brand/*', serveStatic({ root: './public' }));
+  app.use('/fonts/*', serveStatic({ root: './public' }));
 
   // PWA Manifest, Theme Init Script, & Service Worker (served in dev, test, and prod)
   app.get('/theme-init.js', async (c) => {
@@ -93,12 +113,23 @@ export function createApp() {
     });
   });
 
+  let cachedRawIndexHtml: string | null = null;
+
   if (process.env.NODE_ENV === 'production') {
     app.use('/assets/*', serveStatic({ root: './dist/client' }));
+  }
+
+  if (process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'test') {
     app.get('*', async (c) => {
-      const indexFile = Bun.file('./dist/client/index.html');
+      const candidatePath =
+        process.env.NODE_ENV === 'production' ? './dist/client/index.html' : './index.html';
+      const indexFile = Bun.file(candidatePath);
       if (!(await indexFile.exists())) {
         return c.text('Aplikasi sedang disiapkan (503 Service Unavailable)', 503);
+      }
+
+      if (!cachedRawIndexHtml || process.env.NODE_ENV !== 'production') {
+        cachedRawIndexHtml = await indexFile.text();
       }
 
       const reqPath = c.req.path;
@@ -110,10 +141,16 @@ export function createApp() {
             ? 200
             : 404;
 
-      return new Response(indexFile, {
+      const dynamicHtml = await injectDynamicHtmlMeta(
+        cachedRawIndexHtml,
+        resolveRequestOrigin(c)
+      );
+
+      return new Response(dynamicHtml, {
         status,
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-cache',
         },
       });
     });

@@ -7,6 +7,22 @@ export interface SponsorItem {
   boxed?: boolean;
 }
 
+export interface JerseyColorItem {
+  label: string;
+  hex: string;
+}
+
+export interface OfficialDocSettings {
+  bulletinNumber?: string;
+  bulletinEdition?: string;
+  venueName?: string;
+  publishedDate?: string;
+  coverImageUrl?: string;
+  referee1Default?: string;
+  referee2Default?: string;
+  committeeChair?: string;
+}
+
 export interface SiteSettings {
   id: string;
   eventName: string;
@@ -18,6 +34,10 @@ export interface SiteSettings {
   sponsorsJson?: string;
   tvPin?: string;
   accentColor: string;
+  seoDescription?: string;
+  socialImageUrl?: string;
+  publicDocsEnabled?: boolean;
+  docSettingsJson?: string;
 }
 
 export interface AuthUser {
@@ -33,6 +53,9 @@ export interface Tournament {
   slug: string;
   isEnabled: boolean;
   status: 'draft' | 'active' | 'finished';
+  format?: 'knockout' | 'pool_knockout';
+  poolCount?: number;
+  advancePerPool?: number;
   bestOf: number;
   regularSetPoints: number;
   decidingSetPoints: number;
@@ -50,6 +73,10 @@ export interface Team {
   logoUrl: string | null;
   color: string;
   seed: number;
+  poolName?: string | null;
+  coachName?: string;
+  managerName?: string;
+  jerseyColors?: string;
 }
 
 export interface MatchSet {
@@ -58,6 +85,10 @@ export interface MatchSet {
   setNumber: number;
   scoreA: number;
   scoreB: number;
+  timeoutsA?: number;
+  timeoutsB?: number;
+  subsA?: number;
+  subsB?: number;
   isFinished: boolean;
   winnerId: number | null;
 }
@@ -67,7 +98,9 @@ export interface Match {
   tournamentId: number;
   round: number;
   matchIndex: number;
-  bracketType: 'main' | 'third_place';
+  bracketType: 'main' | 'third_place' | 'pool';
+  poolName?: string | null;
+  stageLabel?: string | null;
   teamAId: number | null;
   teamBId: number | null;
   winnerId: number | null;
@@ -88,6 +121,13 @@ export interface Match {
   useDeuce?: boolean | null;
   sets: MatchSet[];
   undoCount?: number;
+  pendingDecision?: {
+    setNumber: number;
+    scoreA: number;
+    scoreB: number;
+    leadingSide: 'A' | 'B';
+    willWinMatch: boolean;
+  };
 }
 
 export interface MatchReport {

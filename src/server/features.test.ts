@@ -291,4 +291,209 @@ describe('Feature Suite — Tournament Lifecycle, Role Matrix & Production Routi
     });
     expect(delRes.status).toBe(200);
   });
+
+  test('Feature 5: Per-Set Timeouts (0..2) & Substitutions (0..6) with Undo & Set Reset', async () => {
+    const catRes = await (
+      await app.request('/api/admin/tournaments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+        body: JSON.stringify({
+          name: 'Timeout Sub Test',
+          bestOf: 3,
+          regularSetPoints: 2,
+          decidingSetPoints: 2,
+          useDeuce: false,
+        }),
+      })
+    ).json();
+    const tid = catRes.tournament.id as number;
+
+    await app.request(`/api/admin/tournaments/${tid}/init-draw`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({ slotCount: 4 }),
+    });
+
+    const ov = await (
+      await app.request('/api/admin/overview', { headers: { Cookie: adminCookie } })
+    ).json();
+    const matchId = ov.matches.find((m: { tournamentId: number }) => m.tournamentId === tid)
+      .id as number;
+
+    // Start match
+    await app.request(`/api/admin/matches/${matchId}/score`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: panitiaCookie },
+      body: JSON.stringify({ action: 'start' }),
+    });
+
+    // Record 2 timeouts + try a 3rd (capped at 2) and 1 substitution
+    for (let i = 0; i < 3; i++) {
+      await app.request(`/api/admin/matches/${matchId}/score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: panitiaCookie },
+        body: JSON.stringify({ action: 'timeout', team: 'A', delta: 1 }),
+      });
+    }
+    const subRes = await (
+      await app.request(`/api/admin/matches/${matchId}/score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: panitiaCookie },
+        body: JSON.stringify({ action: 'sub', team: 'B', delta: 1 }),
+      })
+    ).json();
+    expect(subRes.match.sets[0].timeoutsA).toBe(2);
+    expect(subRes.match.sets[0].subsB).toBe(1);
+
+    // Undo reverts substitution back to 0
+    const afterUndo = await (
+      await app.request(`/api/admin/matches/${matchId}/score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: panitiaCookie },
+        body: JSON.stringify({ action: 'undo' }),
+      })
+    ).json();
+    expect(afterUndo.match.sets[0].subsB).toBe(0);
+    expect(afterUndo.match.sets[0].timeoutsA).toBe(2);
+
+    // Win Set 1 -> Set 2 starts fresh with 0 timeouts/subs while Set 1 keeps timeoutsA = 2
+    await app.request(`/api/admin/matches/${matchId}/score`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: panitiaCookie },
+      body: JSON.stringify({ action: 'point', team: 'A', delta: 1 }),
+    });
+    await app.request(`/api/admin/matches/${matchId}/score`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: panitiaCookie },
+      body: JSON.stringify({ action: 'point', team: 'A', delta: 1 }),
+    });
+    const nextSetJson = await (
+      await app.request(`/api/admin/matches/${matchId}/score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: panitiaCookie },
+        body: JSON.stringify({ action: 'confirm_set_next' }),
+      })
+    ).json();
+
+    expect(nextSetJson.match.currentSet).toBe(2);
+    expect(nextSetJson.match.sets[0].timeoutsA).toBe(2);
+    expect(nextSetJson.match.sets[1].timeoutsA).toBe(0);
+    expect(nextSetJson.match.sets[1].subsA).toBe(0);
+
+    await app.request(`/api/admin/tournaments/${tid}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+  });
+
+  test('Feature 6: Pool Stage (Round-Robin) Generation & Advancement to Knockout', async () => {
+    const catRes = await (
+      await app.request('/api/admin/tournaments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+        body: JSON.stringify({
+          name: 'Pool Knockout Category',
+          format: 'pool_knockout',
+          poolCount: 2,
+          advancePerPool: 2,
+          bestOf: 3,
+        }),
+      })
+    ).json();
+    const tid = catRes.tournament.id as number;
+
+    await app.request('/api/admin/teams/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        tournamentId: tid,
+        lines: [
+          'SMPN 1 | Mojokerto',
+          'SMPN 2 | Mojokerto',
+          'SMPN 3 | Mojokerto',
+          'SMPN 4 | Mojokerto',
+        ].join('\n'),
+      }),
+    });
+
+    const genPoolRes = await app.request(`/api/admin/tournaments/${tid}/generate-pools`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({ poolCount: 2, advancePerPool: 2, shuffle: false }),
+    });
+    expect(genPoolRes.status).toBe(200);
+    const genPoolJson = await genPoolRes.json();
+
+    const poolMatches = genPoolJson.matches.filter(
+      (m: { bracketType: string }) => m.bracketType === 'pool'
+    );
+    const mainMatches = genPoolJson.matches.filter(
+      (m: { bracketType: string }) => m.bracketType === 'main'
+    );
+    // 2 pools of 2 teams -> 1 match per pool = 2 pool matches + 2 semifinals + 1 final = 3 main matches
+    expect(poolMatches.length).toBe(2);
+    expect(mainMatches.length).toBe(3);
+    expect(mainMatches[0].stageLabel).toContain('Winner Pool A');
+
+    // Finish both pool matches manually & advance qualifiers into Semi-Finals
+    for (const pm of poolMatches) {
+      await app.request(`/api/admin/matches/${pm.id}/score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+        body: JSON.stringify({ action: 'finish', team: 'A' }),
+      });
+    }
+
+    const advRes = await app.request(`/api/admin/tournaments/${tid}/advance-pools`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie },
+    });
+    expect(advRes.status).toBe(200);
+    const advJson = await advRes.json();
+    const populatedSemis = advJson.matches.filter(
+      (m: { bracketType: string; round: number }) =>
+        m.bracketType === 'main' && m.round === 1
+    );
+    expect(populatedSemis.every((m: { teamAId: number; teamBId: number }) => m.teamAId && m.teamBId)).toBe(true);
+
+    await app.request(`/api/admin/tournaments/${tid}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+  });
+
+  test('Feature 7: Dynamic Favicon/SEO HTML Injection, 1200x630 OG PNG & SSRF-Safe Asset Proxy', async () => {
+    // 1. Dynamic HTML meta & SVC Crest favicon injection
+    const htmlRes = await app.request('http://openvolley.local/');
+    expect(htmlRes.status).toBe(200);
+    const htmlText = await htmlRes.text();
+    expect(htmlText).toContain('href="/brand/svc-crest-color.svg"');
+    expect(htmlText).toContain('property="og:image"');
+    expect(htmlText).toContain('http://openvolley.local/api/public/og-image.png');
+
+    // 2. Auto-generated 1200x630 PNG via @resvg/resvg-wasm
+    const ogRes = await app.request('/api/public/og-image.png');
+    expect(ogRes.status).toBe(200);
+    expect(ogRes.headers.get('content-type')).toBe('image/png');
+    const ogBytes = new Uint8Array(await ogRes.arrayBuffer());
+    // Verify PNG signature (89 50 4E 47) & IHDR width=1200 (0x04B0), height=630 (0x0276)
+    expect(ogBytes[0]).toBe(0x89);
+    expect(ogBytes[1]).toBe(0x50);
+    expect(ogBytes[2]).toBe(0x4e);
+    expect(ogBytes[3]).toBe(0x47);
+    const view = new DataView(ogBytes.buffer);
+    expect(view.getUint32(16, false)).toBe(1200);
+    expect(view.getUint32(20, false)).toBe(630);
+
+    // 3. Asset proxy strictly blocks loopback / private IPs & arbitrary external domains (SSRF guard)
+    const loopbackBlock = await app.request(
+      '/api/public/asset-proxy?url=' + encodeURIComponent('http://127.0.0.1:3000/api/public/health')
+    );
+    expect(loopbackBlock.status).toBe(403);
+
+    const arbitraryBlock = await app.request(
+      '/api/public/asset-proxy?url=' + encodeURIComponent('https://example.com/evil.png')
+    );
+    expect(arbitraryBlock.status).toBe(403);
+  });
 });

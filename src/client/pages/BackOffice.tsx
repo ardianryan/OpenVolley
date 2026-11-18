@@ -3,6 +3,7 @@ import {
   BarChart3,
   Camera,
   ExternalLink,
+  FileText,
   GitBranch,
   Home,
   KeyRound,
@@ -22,15 +23,18 @@ import { ErrorPage } from '../components/ErrorPage';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { VolleyballIcon } from '../components/VolleyballIcon';
 import { ApiError, apiFetch } from '../lib/api';
+import { syncDocumentBranding } from '../lib/seo';
 import type { AuthUser, OverviewData } from '../types';
 import { AdminDashboard } from './AdminDashboard';
 import { LiveOperator } from './LiveOperator';
 import { MediaStudio } from './MediaStudio';
+import { OfficialDocuments } from './OfficialDocuments';
 
 type BackOfficeSection =
   | 'overview'
   | 'operator'
   | 'tournaments'
+  | 'documents'
   | 'branding'
   | 'users'
   | 'media';
@@ -39,6 +43,7 @@ const SECTION_TO_PATH: Record<BackOfficeSection, string> = {
   overview: '/back-office/beranda',
   operator: '/back-office/operator',
   tournaments: '/back-office/bagan',
+  documents: '/back-office/dokumen',
   media: '/back-office/media',
   branding: '/back-office/branding',
   users: '/back-office/akun',
@@ -48,6 +53,7 @@ const PATH_TO_SECTION: Record<string, BackOfficeSection> = {
   '/back-office/beranda': 'overview',
   '/back-office/operator': 'operator',
   '/back-office/bagan': 'tournaments',
+  '/back-office/dokumen': 'documents',
   '/back-office/media': 'media',
   '/back-office/branding': 'branding',
   '/back-office/akun': 'users',
@@ -57,6 +63,7 @@ const SECTION_ALLOWED_ROLES: Record<BackOfficeSection, Array<AuthUser['role']>> 
   overview: ['admin', 'panitia'],
   operator: ['admin', 'panitia'],
   tournaments: ['admin', 'panitia'],
+  documents: ['admin', 'panitia'],
   media: ['admin', 'media'],
   branding: ['admin'],
   users: ['admin'],
@@ -150,6 +157,10 @@ export function BackOffice() {
       })
       .finally(() => setCheckingAuth(false));
   }, [loadData]);
+
+  useEffect(() => {
+    syncDocumentBranding(data?.settings, 'Back-Office');
+  }, [data?.settings]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -300,6 +311,13 @@ export function BackOffice() {
       roles: ['admin', 'panitia'],
     },
     {
+      id: 'documents',
+      label: 'Dokumen Resmi',
+      shortLabel: 'Dokumen',
+      icon: FileText,
+      roles: ['admin', 'panitia'],
+    },
+    {
       id: 'media',
       label: 'Media Studio',
       shortLabel: 'Media',
@@ -377,6 +395,14 @@ export function BackOffice() {
       icon: GitBranch,
       colorClass: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
       onClick: () => setSection('tournaments'),
+      visible: user.role !== 'media',
+    },
+    {
+      title: 'Dokumen Resmi',
+      subtitle: 'Buletin & Berita Acara',
+      icon: FileText,
+      colorClass: 'bg-teal-500/15 text-teal-700 dark:text-teal-400',
+      onClick: () => setSection('documents'),
       visible: user.role !== 'media',
     },
     {
@@ -787,6 +813,15 @@ export function BackOffice() {
           {data && section === 'operator' && (
             <div key="sec-operator" className="animate-page-enter">
               <LiveOperator data={data} onRefresh={() => loadData(user)} />
+            </div>
+          )}
+          {data && section === 'documents' && (
+            <div key="sec-documents" className="animate-page-enter">
+              <OfficialDocuments
+                data={data}
+                currentUser={user}
+                onRefresh={() => loadData(user)}
+              />
             </div>
           )}
           {data &&

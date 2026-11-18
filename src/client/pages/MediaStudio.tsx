@@ -4,16 +4,19 @@ import {
   Camera,
   CheckCircle2,
   ChevronRight,
+  Crown,
   Download,
   Film,
   ImagePlus,
   LayoutGrid,
+  Medal,
   Music,
   Play,
   Send,
   Shuffle,
   Square,
   Trash2,
+  Trophy,
   Video,
   Volume2,
   VolumeX,
@@ -24,6 +27,12 @@ import {
   getTracksForTemplate,
   pickSmartRandomTrack,
 } from '../../shared/audio-library';
+import {
+  STAGE_VISUAL_META,
+  detectMatchStageKey,
+  formatInternationalStageLabel,
+  type StagePresetKey,
+} from '../../shared/stages';
 import {
   DEFAULT_VIDEO_CLIP_SEC,
   MAX_STUDIO_PHOTOS,
@@ -40,6 +49,7 @@ import {
 } from '../components/VideoTrimmerControl';
 import { ShinyText } from '../components/reactbits/ShinyText';
 import { apiFetch } from '../lib/api';
+import { toCorsSafeAssetUrl } from '../lib/assetUrl';
 import { scheduleBroadcastSfx } from '../lib/audioSfx';
 import {
   IMAGE_INPUT_ACCEPT,
@@ -59,7 +69,9 @@ interface MediaStudioProps {
 }
 
 type AspectRatio = '9:16' | '4:5' | '16:9' | '1:1';
-type TemplateStyle = 'live' | 'final' | 'upcoming' | 'highlight';
+type TemplateStyle = 'live' | 'final' | 'upcoming' | 'highlight' | 'champion';
+type StageSelection = 'auto' | StagePresetKey;
+type PodiumVariant = 'champion_1' | 'runner_up' | 'third_place' | 'podium_all';
 type StudioStep = 1 | 2 | 3;
 
 const DIMENSIONS: Record<AspectRatio, { w: number; h: number; label: string }> = {
@@ -92,18 +104,31 @@ function clamp01(v: number): number {
 }
 
 function loadImage(src: string): Promise<HTMLImageElement | null> {
+  const safeSrc = toCorsSafeAssetUrl(src);
+  if (!safeSrc) return Promise.resolve(null);
+
   return new Promise((resolve) => {
     const img = new Image();
+    // Always enforce anonymous CORS / same-origin proxy so HTMLCanvasElement stays 100% origin-clean
+    // for captureStream(), toDataURL(), and toBlob(). Verify on a 1x1 scratch canvas before returning!
     img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => {
-      // Retry without crossOrigin if external host lacks CORS headers
-      const fallback = new Image();
-      fallback.onload = () => resolve(fallback);
-      fallback.onerror = () => resolve(null);
-      fallback.src = src;
+    img.onload = () => {
+      try {
+        const probe = document.createElement('canvas');
+        probe.width = 1;
+        probe.height = 1;
+        const pCtx = probe.getContext('2d');
+        if (pCtx) {
+          pCtx.drawImage(img, 0, 0, 1, 1);
+          pCtx.getImageData(0, 0, 1, 1);
+        }
+        resolve(img);
+      } catch {
+        resolve(null);
+      }
     };
-    img.src = src;
+    img.onerror = () => resolve(null);
+    img.src = safeSrc;
   });
 }
 
@@ -118,6 +143,37 @@ function drawRoundedRect(
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, r);
   ctx.closePath();
+}
+
+/**
+ * Pure geometric championship crown / medal vector badge for Grand Final & Champion templates
+ */
+function drawVectorCrown(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  size: number,
+  fillHex: string
+) {
+  const hw = size * 0.52;
+  const hh = size * 0.38;
+  ctx.save();
+  ctx.fillStyle = fillHex;
+  ctx.beginPath();
+  ctx.moveTo(cx - hw * 0.82, cy + hh);
+  ctx.lineTo(cx - hw, cy - hh * 0.45);
+  ctx.lineTo(cx - hw * 0.42, cy + hh * 0.12);
+  ctx.lineTo(cx, cy - hh);
+  ctx.lineTo(cx + hw * 0.42, cy + hh * 0.12);
+  ctx.lineTo(cx + hw, cy - hh * 0.45);
+  ctx.lineTo(cx + hw * 0.82, cy + hh);
+  ctx.closePath();
+  ctx.fill();
+
+  // Crown base band
+  drawRoundedRect(ctx, cx - hw * 0.82, cy + hh + size * 0.06, hw * 1.64, size * 0.14, 3);
+  ctx.fill();
+  ctx.restore();
 }
 
 /**
@@ -475,6 +531,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   });
   const [ratio, setRatio] = useState<AspectRatio>('9:16');
   const [template, setTemplate] = useState<TemplateStyle>('live');
+  const [stageTheme, setStageTheme] = useState<StageSelection>('auto');
+  const [podiumVariant, setPodiumVariant] = useState<PodiumVariant>('champion_1');
+  const [customSpotlightTeamId, setCustomSpotlightTeamId] = useState<number | null>(null);
   const [caption, setCaption] = useState('');
   const [includeOutro, setIncludeOutro] = useState(true);
   const [showSafeZone, setShowSafeZone] = useState(true);
@@ -552,6 +611,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     netOfficial: HTMLImageElement | null;
     teamALogo: HTMLImageElement | null;
     teamBLogo: HTMLImageElement | null;
+    podium1Logo: HTMLImageElement | null;
+    podium2Logo: HTMLImageElement | null;
+    podium3Logo: HTMLImageElement | null;
     sponsors: Array<{ item: SponsorItem; img: HTMLImageElement | null }>;
   }>({
     photos: [],
@@ -566,6 +628,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     netOfficial: null,
     teamALogo: null,
     teamBLogo: null,
+    podium1Logo: null,
+    podium2Logo: null,
+    podium3Logo: null,
     sponsors: [],
   });
 
@@ -578,12 +643,15 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     () => activeMatch?.courtName || ''
   );
 
-  // Auto-sync template style & match schedule/court with selected match
+  // Auto-sync template style & match schedule/court with selected match (preserve 'champion' if user chose it)
   useEffect(() => {
     if (!activeMatch) return;
-    if (activeMatch.status === 'finished') setTemplate('final');
-    else if (activeMatch.status === 'live') setTemplate('live');
-    else if (activeMatch.status === 'scheduled') setTemplate('upcoming');
+    setTemplate((prev) => {
+      if (prev === 'champion') return 'champion';
+      if (activeMatch.status === 'finished') return 'final';
+      if (activeMatch.status === 'live') return 'live';
+      return 'upcoming';
+    });
     setUpcomingSchedule(activeMatch.scheduledAt || '');
     setUpcomingCourt(activeMatch.courtName || '');
   }, [
@@ -620,13 +688,76 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   const selectedTrack =
     AUDIO_TRACKS.find((t) => t.id === selectedTrackId) ?? AUDIO_TRACKS[0];
   const recommendedTracks = getTracksForTemplate(template);
-  const otherTracks = AUDIO_TRACKS.filter((t) => !t.categories.includes(template));
+  const recommendedIdSet = new Set(recommendedTracks.map((t) => t.id));
+  const otherTracks = AUDIO_TRACKS.filter((t) => !recommendedIdSet.has(t.id));
   const teamMap = new Map<number, Team>(data.teams.map((t) => [t.id, t]));
   const teamA = activeMatch?.teamAId ? teamMap.get(activeMatch.teamAId) : null;
   const teamB = activeMatch?.teamBId ? teamMap.get(activeMatch.teamBId) : null;
-  const tournament = data.tournaments.find(
-    (t) => t.id === activeMatch?.tournamentId
+  const tournament =
+    data.tournaments.find((t) => t.id === activeMatch?.tournamentId) ??
+    data.tournaments[0];
+
+  const catMatches = data.matches.filter((m) => m.tournamentId === tournament?.id);
+  const catTeams = data.teams.filter((t) => t.tournamentId === tournament?.id);
+  const mainRoundNums = catMatches
+    .filter((m) => m.bracketType === 'main')
+    .map((m) => m.round);
+  const totalMainRounds =
+    mainRoundNums.length > 0 ? Math.max(...mainRoundNums) : 3;
+
+  const effectiveStageKey: StagePresetKey =
+    stageTheme === 'auto'
+      ? detectMatchStageKey(activeMatch, totalMainRounds)
+      : stageTheme;
+  const stageMeta = STAGE_VISUAL_META[effectiveStageKey];
+  const stageDisplayBadge =
+    effectiveStageKey === 'pool' && activeMatch?.poolName
+      ? `POOL ${activeMatch.poolName.toUpperCase()}`
+      : stageMeta.badge;
+
+  // Auto-resolve Podium Winners (1st Champion, 2nd Runner-Up, 3rd Place) for active category
+  const grandFinalMatch = catMatches.find(
+    (m) => m.bracketType === 'main' && m.round === totalMainRounds
   );
+  const thirdPlaceMatchObj = catMatches.find((m) => m.bracketType === 'third_place');
+
+  const autoChampionTeam = grandFinalMatch?.winnerId
+    ? teamMap.get(grandFinalMatch.winnerId) ?? null
+    : activeMatch?.winnerId
+      ? teamMap.get(activeMatch.winnerId) ?? null
+      : teamA ?? catTeams[0] ?? null;
+
+  const autoRunnerUpTeam =
+    grandFinalMatch?.winnerId && grandFinalMatch.teamAId && grandFinalMatch.teamBId
+      ? teamMap.get(
+          grandFinalMatch.winnerId === grandFinalMatch.teamAId
+            ? grandFinalMatch.teamBId
+            : grandFinalMatch.teamAId
+        ) ?? null
+      : teamB ?? catTeams[1] ?? null;
+
+  const autoThirdTeam = thirdPlaceMatchObj?.winnerId
+    ? teamMap.get(thirdPlaceMatchObj.winnerId) ?? null
+    : thirdPlaceMatchObj?.teamAId
+      ? teamMap.get(thirdPlaceMatchObj.teamAId) ?? null
+      : catTeams[2] ?? null;
+
+  const spotlightOverrideTeam = customSpotlightTeamId
+    ? teamMap.get(customSpotlightTeamId) ?? null
+    : null;
+
+  const resolvedPodium1 =
+    podiumVariant === 'champion_1' && spotlightOverrideTeam
+      ? spotlightOverrideTeam
+      : autoChampionTeam;
+  const resolvedPodium2 =
+    podiumVariant === 'runner_up' && spotlightOverrideTeam
+      ? spotlightOverrideTeam
+      : autoRunnerUpTeam;
+  const resolvedPodium3 =
+    podiumVariant === 'third_place' && spotlightOverrideTeam
+      ? spotlightOverrideTeam
+      : autoThirdTeam;
 
   /**
    * Renders either:
@@ -1086,9 +1217,14 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           safeTop + Math.round(lSize * 0.44)
         );
 
+        const headerSubStr =
+          template === 'champion'
+            ? `${tournament?.name || 'SVC'} • OFFICIAL CHAMPIONSHIP PODIUM`
+            : `${tournament?.name || 'SVC'} • ${stageDisplayBadge} • ${data.settings?.eventSubtitle || 'AVERSA Dies Natalis 44'}`;
+
         const fittedHeaderSub = fitSingleLine(
           ctx,
-          `${tournament?.name || 'SVC'} • ${data.settings?.eventSubtitle || 'AVERSA Dies Natalis 44'}`,
+          headerSubStr,
           maxHeaderTextW,
           Math.round(u * 0.024),
           Math.round(u * 0.015),
@@ -1103,7 +1239,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         );
         ctx.restore();
 
-        // Scoreboard Card: Sized strictly from `u` & `boxH` so 16:9 / 1:1 / 4:5 / 9:16 never collide
+        // Scoreboard / Championship Coronation Card: Sized strictly from `u` & `boxH`
         const cardT = animSlide ? clamp01((uiProgress - 0.08) / 0.85) : 1;
         if (cardT <= 0.001) return;
 
@@ -1114,37 +1250,84 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           u *
             (template === 'highlight'
               ? 0.22
-              : isStory
-                ? 0.32
-                : isPost45
-                  ? 0.29
-                  : isSquare
-                    ? 0.275
-                    : 0.265)
+              : template === 'champion' && podiumVariant === 'podium_all'
+                ? isStory
+                  ? 0.36
+                  : isPost45
+                    ? 0.33
+                    : 0.31
+                : isStory
+                  ? 0.32
+                  : isPost45
+                    ? 0.29
+                    : isSquare
+                      ? 0.275
+                      : 0.265)
         );
         const boxX = Math.round((w - boxW) / 2);
         const boxY = h - safeBottom - boxH + slideY + floatY;
 
+        const borderColor =
+          template === 'champion'
+            ? podiumVariant === 'runner_up'
+              ? 'rgba(226, 232, 240, 0.88)'
+              : podiumVariant === 'third_place'
+                ? 'rgba(251, 146, 60, 0.88)'
+                : 'rgba(250, 204, 21, 0.92)'
+            : stageMeta.isHighStakes
+              ? stageMeta.accentHex
+              : 'rgba(245, 197, 56, 0.78)';
+
         ctx.save();
         ctx.globalAlpha = easeOutCubic(cardT);
         drawRoundedRect(ctx, boxX, boxY, boxW, boxH, 26);
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+        ctx.fillStyle = 'rgba(11, 16, 30, 0.95)';
         ctx.fill();
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = 'rgba(245, 197, 56, 0.78)';
+        ctx.lineWidth = template === 'champion' || effectiveStageKey === 'final' ? 4 : 3;
+        ctx.strokeStyle = borderColor;
         ctx.stroke();
 
-        // Top Pill Badge (proportional to boxH)
+        // Subtle inner prestige border for Grand Final & Champion templates
+        if (template === 'champion' || effectiveStageKey === 'final') {
+          drawRoundedRect(ctx, boxX + 7, boxY + 7, boxW - 14, boxH - 14, 20);
+          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = 'rgba(250, 204, 21, 0.32)';
+          ctx.stroke();
+        }
+
+        // Top Pill Badge (Stage-aware & International Broadcast Standard)
+        const stageShort =
+          effectiveStageKey === 'final'
+            ? 'GRAND FINAL'
+            : effectiveStageKey === 'sf'
+              ? 'SEMI-FINAL'
+              : effectiveStageKey === 'third'
+                ? '3RD PLACE'
+                : effectiveStageKey === 'qf'
+                  ? 'QUARTER-FINAL'
+                  : effectiveStageKey === 'pool'
+                    ? stageDisplayBadge
+                    : 'ROUND OF 16';
+
         const badgeText =
-          template === 'live'
-            ? `LIVE • SET ${activeMatch?.currentSet ?? 1}`
-            : template === 'final'
-              ? 'FINISHED SCORE'
-              : template === 'upcoming'
-                ? 'UPCOMING MATCH'
-                : 'MATCH HIGHLIGHT';
-        const badgeH = Math.round(boxH * 0.195);
-        const badgeW = Math.round(Math.min(boxW * 0.6, u * 0.46));
+          template === 'champion'
+            ? podiumVariant === 'champion_1'
+              ? 'CHAMPIONS • 1ST PLACE'
+              : podiumVariant === 'runner_up'
+                ? 'RUNNER-UP • 2ND PLACE'
+                : podiumVariant === 'third_place'
+                  ? '3RD PLACE WINNER'
+                  : 'OFFICIAL PODIUM'
+            : template === 'live'
+              ? `${stageShort} • LIVE S${activeMatch?.currentSet ?? 1}`
+              : template === 'final'
+                ? `${stageShort} • FINAL SCORE`
+                : template === 'upcoming'
+                  ? `${stageShort} • UPCOMING`
+                  : `${stageShort} • HIGHLIGHT`;
+
+        const badgeH = Math.round(boxH * 0.19);
+        const badgeW = Math.round(Math.min(boxW * 0.74, u * 0.58));
         const badgeX = boxX + (boxW - badgeW) / 2;
         const badgeY = boxY - badgeH / 2;
 
@@ -1170,35 +1353,275 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           }
         }
 
+        const pillBg =
+          template === 'champion'
+            ? podiumVariant === 'runner_up'
+              ? '#E2E8F0'
+              : podiumVariant === 'third_place'
+                ? '#FB923C'
+                : '#FACC15'
+            : template === 'live'
+              ? '#DC2626'
+              : template === 'upcoming'
+                ? effectiveStageKey === 'final'
+                  ? '#D97706'
+                  : effectiveStageKey === 'sf'
+                    ? '#E11D48'
+                    : '#0284C7'
+                : stageMeta.accentHex;
+
+        const pillTextDark =
+          template === 'champion' ||
+          (template !== 'live' && template !== 'upcoming');
+
         drawRoundedRect(ctx, badgeX, badgeY, badgeW, badgeH, 999);
-        ctx.fillStyle =
-          template === 'live'
-            ? '#DC2626'
-            : template === 'upcoming'
-              ? '#0284C7'
-              : '#E09D17';
+        ctx.fillStyle = pillBg;
         ctx.fill();
 
-        const bIconSize = Math.round(badgeH * 0.78);
-        drawBall3D(
-          badgeX + Math.round(badgeH * 0.56),
-          badgeY + badgeH / 2,
-          bIconSize,
-          globalT * 1.9 + 0.4,
-          globalT * 2.4 + 0.8,
-          globalT * 0.7,
-          { alpha: easeOutCubic(cardT) }
-        );
+        if (template === 'champion' || effectiveStageKey === 'final') {
+          drawVectorCrown(
+            ctx,
+            badgeX + Math.round(badgeH * 0.62),
+            badgeY + badgeH * 0.46,
+            Math.round(badgeH * 0.56),
+            pillTextDark ? '#0B0F19' : '#FACC15'
+          );
+        } else {
+          const bIconSize = Math.round(badgeH * 0.78);
+          drawBall3D(
+            badgeX + Math.round(badgeH * 0.56),
+            badgeY + badgeH / 2,
+            bIconSize,
+            globalT * 1.9 + 0.4,
+            globalT * 2.4 + 0.8,
+            globalT * 0.7,
+            { alpha: easeOutCubic(cardT) }
+          );
+        }
 
-        ctx.fillStyle =
-          template === 'live' || template === 'upcoming' ? '#FFFFFF' : '#0B0F19';
-        ctx.font = `800 ${Math.round(badgeH * 0.46)}px "Plus Jakarta Sans", sans-serif`;
+        ctx.fillStyle = pillTextDark ? '#0B0F19' : '#FFFFFF';
+        const fittedPillLabel = fitSingleLine(
+          ctx,
+          badgeText,
+          badgeW - badgeH * 1.45,
+          Math.round(badgeH * 0.43),
+          Math.round(badgeH * 0.3),
+          '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
+        );
+        ctx.font = `800 ${fittedPillLabel.fontSize}px "Plus Jakarta Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.fillText(
-          badgeText,
-          w / 2 + Math.round(badgeH * 0.25),
-          badgeY + badgeH * 0.67
+          fittedPillLabel.text,
+          w / 2 + Math.round(badgeH * 0.24),
+          badgeY + badgeH * 0.66
         );
+
+        // ================================================================
+        // CHAMPION / PODIUM DEDICATED CARD BODY
+        // ================================================================
+        if (template === 'champion') {
+          if (podiumVariant === 'podium_all') {
+            const rows: Array<{
+              rank: string;
+              team: Team | null;
+              logo: HTMLImageElement | null;
+              badgeHex: string;
+              textHex: string;
+            }> = [
+              {
+                rank: '1ST',
+                team: resolvedPodium1,
+                logo: assets.podium1Logo,
+                badgeHex: '#FACC15',
+                textHex: '#FEF08A',
+              },
+              {
+                rank: '2ND',
+                team: resolvedPodium2,
+                logo: assets.podium2Logo,
+                badgeHex: '#E2E8F0',
+                textHex: '#F1F5F9',
+              },
+              {
+                rank: '3RD',
+                team: resolvedPodium3,
+                logo: assets.podium3Logo,
+                badgeHex: '#FB923C',
+                textHex: '#FED7AA',
+              },
+            ];
+
+            const innerTop = boxY + Math.round(boxH * 0.16);
+            const innerAvail = Math.round(boxH * 0.68);
+            const rowGap = Math.round(boxH * 0.032);
+            const rowH = Math.round((innerAvail - rowGap * 2) / 3);
+
+            rows.forEach((r, rIdx) => {
+              const ry = innerTop + rIdx * (rowH + rowGap);
+              const rx = boxX + 20;
+              const rw = boxW - 40;
+
+              drawRoundedRect(ctx, rx, ry, rw, rowH, 14);
+              ctx.fillStyle =
+                rIdx === 0
+                  ? 'rgba(250, 204, 21, 0.14)'
+                  : 'rgba(30, 41, 59, 0.65)';
+              ctx.fill();
+              ctx.lineWidth = 1.4;
+              ctx.strokeStyle =
+                rIdx === 0 ? 'rgba(250, 204, 21, 0.55)' : 'rgba(148, 163, 184, 0.25)';
+              ctx.stroke();
+
+              // Rank pill
+              const rkW = Math.round(rowH * 1.38);
+              drawRoundedRect(ctx, rx + 8, ry + 6, rkW, rowH - 12, 10);
+              ctx.fillStyle = r.badgeHex;
+              ctx.fill();
+              ctx.fillStyle = '#0B0F19';
+              ctx.font = `800 ${Math.round((rowH - 12) * 0.52)}px "Barlow Condensed", sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.fillText(r.rank, rx + 8 + rkW / 2, ry + rowH * 0.65);
+
+              let textStartX = rx + rkW + 20;
+              if (r.logo) {
+                const lgS = Math.round(rowH * 0.72);
+                ctx.drawImage(
+                  r.logo,
+                  textStartX,
+                  ry + (rowH - lgS) / 2,
+                  lgS,
+                  lgS
+                );
+                textStartX += lgS + 14;
+              }
+
+              const tLabel = r.team
+                ? r.team.school
+                  ? `${r.team.name} • ${r.team.school}`
+                  : r.team.name
+                : 'TBD';
+              const fittedRow = fitSingleLine(
+                ctx,
+                tLabel.toUpperCase(),
+                rw - (textStartX - rx) - 18,
+                Math.round(rowH * 0.48),
+                Math.round(rowH * 0.3),
+                '800 {SIZE}px "Barlow Condensed", sans-serif'
+              );
+              ctx.textAlign = 'left';
+              ctx.fillStyle = rIdx === 0 ? '#FEF08A' : '#FFFFFF';
+              ctx.font = `800 ${fittedRow.fontSize}px "Barlow Condensed", sans-serif`;
+              ctx.fillText(fittedRow.text, textStartX, ry + rowH * 0.66);
+            });
+          } else {
+            // Single Spotlight Winner Card (1st Champion, 2nd Runner-Up, or 3rd Place)
+            const spotTeam =
+              podiumVariant === 'runner_up'
+                ? resolvedPodium2
+                : podiumVariant === 'third_place'
+                  ? resolvedPodium3
+                  : resolvedPodium1;
+            const spotLogo =
+              podiumVariant === 'runner_up'
+                ? assets.podium2Logo
+                : podiumVariant === 'third_place'
+                  ? assets.podium3Logo
+                  : assets.podium1Logo;
+            const shineBase =
+              podiumVariant === 'runner_up'
+                ? '#E2E8F0'
+                : podiumVariant === 'third_place'
+                  ? '#FDBA74'
+                  : '#FACC15';
+
+            const midY = boxY + Math.round(boxH * 0.47);
+            const crestSize = Math.round(boxH * 0.44);
+            let nameCenterX = w / 2;
+            let maxNameW = boxW - 56;
+
+            if (spotLogo) {
+              const crestX = boxX + 28;
+              const crestY = midY - Math.round(crestSize / 2);
+              drawRoundedRect(
+                ctx,
+                crestX - 8,
+                crestY - 8,
+                crestSize + 16,
+                crestSize + 16,
+                18
+              );
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+              ctx.fill();
+              ctx.drawImage(spotLogo, crestX, crestY, crestSize, crestSize);
+              const leftReserved = crestSize + 52;
+              maxNameW = boxW - leftReserved - 28;
+              nameCenterX = boxX + leftReserved + maxNameW / 2;
+            }
+
+            const splicedSpot = splitTeamRegionName(
+              spotTeam?.name || 'CHAMPION TEAM',
+              spotTeam?.school
+            );
+            const fittedChamp = fitSingleLine(
+              ctx,
+              splicedSpot.primary.toUpperCase(),
+              maxNameW,
+              Math.round(boxH * 0.25),
+              Math.round(boxH * 0.13),
+              '800 {SIZE}px "Barlow Condensed", sans-serif'
+            );
+            ctx.textAlign = 'center';
+            ctx.font = `800 ${fittedChamp.fontSize}px "Barlow Condensed", sans-serif`;
+            fillShinyText(
+              ctx,
+              fittedChamp.text,
+              nameCenterX,
+              splicedSpot.region
+                ? midY - Math.round(boxH * 0.02)
+                : midY + Math.round(fittedChamp.fontSize * 0.34),
+              animSlide ? globalT * 0.45 : 0.45,
+              shineBase,
+              '#FFFFFF'
+            );
+
+            if (splicedSpot.region) {
+              const fittedReg = fitSingleLine(
+                ctx,
+                splicedSpot.region.toUpperCase(),
+                maxNameW,
+                Math.round(boxH * 0.105),
+                Math.round(boxH * 0.07),
+                '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
+              );
+              ctx.fillStyle = '#CBD5E1';
+              ctx.font = `700 ${fittedReg.fontSize}px "Plus Jakarta Sans", sans-serif`;
+              ctx.fillText(
+                fittedReg.text,
+                nameCenterX,
+                midY + Math.round(boxH * 0.125)
+              );
+            }
+          }
+
+          const champFooter = (
+            caption.trim() ||
+            `${tournament?.name || 'OPEN CATEGORY'} • ${data.settings?.eventName || 'OFFICIAL CHAMPIONSHIP'}`
+          ).toUpperCase();
+          const fittedCF = fitSingleLine(
+            ctx,
+            champFooter,
+            boxW - 48,
+            Math.round(boxH * 0.082),
+            Math.round(boxH * 0.058),
+            '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
+          );
+          ctx.textAlign = 'center';
+          ctx.fillStyle = '#FDE68A';
+          ctx.font = `700 ${fittedCF.fontSize}px "Plus Jakarta Sans", sans-serif`;
+          ctx.fillText(fittedCF.text, w / 2, boxY + Math.round(boxH * 0.905));
+          ctx.restore();
+          return;
+        }
 
         // Center Score inside [boxY + 0.22*boxH .. boxY + 0.70*boxH]
         const countEase = animSlide ? easeOutQuint(clamp01((uiProgress - 0.18) / 0.82)) : 1;
@@ -1363,11 +1786,19 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       // ================================================================
       const t = Math.max(0, Math.min(timeline.totalDurationSec, timeSec));
       const statusHeadline =
-        template === 'final'
-          ? 'FINISHED SCORE'
-          : template === 'upcoming'
-            ? 'UPCOMING MATCH'
-            : 'LIVE MATCH NOW';
+        template === 'champion'
+          ? podiumVariant === 'runner_up'
+            ? '2ND PLACE • RUNNER-UP'
+            : podiumVariant === 'third_place'
+              ? '3RD PLACE WINNER'
+              : podiumVariant === 'podium_all'
+                ? 'OFFICIAL PODIUM'
+                : 'CHAMPIONS'
+          : template === 'final'
+            ? `${stageDisplayBadge} • FINAL`
+            : template === 'upcoming'
+              ? `${stageDisplayBadge} • UPCOMING`
+              : `${stageDisplayBadge} • LIVE`;
 
       // ----------------------------------------------------------------
       // LAYER HELPER A: Scene 1 (SVC Poster Intro — 16:9 2-Column & Sequential Y-Flow)
@@ -1529,11 +1960,13 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         const splitP = clamp01((time - 0.35) / 0.95);
         const subP = easeOutCubic(clamp01((time - 0.65) / 0.65));
         const officialTagLabel =
-          template === 'final'
-            ? 'OFFICIAL MATCH RESULT'
-            : template === 'upcoming'
-              ? 'OFFICIAL MATCH SCHEDULE'
-              : 'OFFICIAL LIVE REPORT';
+          template === 'champion'
+            ? 'OFFICIAL CHAMPIONSHIP CEREMONY'
+            : template === 'final'
+              ? `${stageDisplayBadge} • FINAL RESULT`
+              : template === 'upcoming'
+                ? `${stageDisplayBadge} • MATCH SCHEDULE`
+                : `${stageDisplayBadge} • LIVE BROADCAST`;
 
         if (isLandscape) {
           // ============================================================
@@ -1745,9 +2178,161 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       };
 
       // ----------------------------------------------------------------
-      // LAYER HELPER B: Scene 3 (Matchup VS — 16:9 Left-vs-Right & Portrait Strict Bands)
+      // LAYER HELPER B: Scene 3 (Matchup VS or Championship Coronation Reveal)
       // ----------------------------------------------------------------
       const drawScene3Matchup = (time: number, doorSplit: number) => {
+        if (template === 'champion') {
+          const enterP = clamp01((time - 4.55) / 0.85);
+          const slideOffset = doorSplit * (isLandscape ? w * 0.62 : h * 0.68);
+          const spotTeam =
+            podiumVariant === 'runner_up'
+              ? resolvedPodium2
+              : podiumVariant === 'third_place'
+                ? resolvedPodium3
+                : resolvedPodium1;
+          const spotLogo =
+            podiumVariant === 'runner_up'
+              ? assets.podium2Logo
+              : podiumVariant === 'third_place'
+                ? assets.podium3Logo
+                : assets.podium1Logo;
+
+          ctx.save();
+          if (isLandscape) {
+            ctx.translate(0, -slideOffset);
+          } else {
+            ctx.translate(0, -slideOffset);
+          }
+
+          const royalGrad = ctx.createLinearGradient(0, 0, w, h);
+          royalGrad.addColorStop(0, '#090D16');
+          royalGrad.addColorStop(0.5, '#172036');
+          royalGrad.addColorStop(1, '#291D09');
+          ctx.fillStyle = royalGrad;
+          ctx.fillRect(0, 0, w, h);
+
+          drawAuroraAndBokeh(ctx, w, h, time, 0.72, 'dark');
+
+          if (assets.burstRays) {
+            const rayS = Math.round(u * 0.92);
+            ctx.save();
+            ctx.globalAlpha = 0.24 * enterP;
+            ctx.translate(w / 2, h * 0.46);
+            ctx.rotate(time * 0.18);
+            ctx.drawImage(assets.burstRays, -rayS / 2, -rayS / 2, rayS, rayS);
+            ctx.restore();
+          }
+
+          drawVectorCrown(
+            ctx,
+            w / 2,
+            safeTop + Math.round(u * 0.08),
+            Math.round(u * 0.11 * easeOutBack(enterP)),
+            '#FACC15'
+          );
+
+          ctx.textAlign = 'center';
+          ctx.font = `800 ${Math.round(u * 0.044)}px "Plus Jakarta Sans", sans-serif`;
+          fillShinyText(
+            ctx,
+            statusHeadline,
+            w / 2,
+            safeTop + Math.round(u * 0.19),
+            time * 0.55,
+            '#FACC15',
+            '#FFFFFF'
+          );
+
+          if (podiumVariant === 'podium_all') {
+            const pList = [
+              { rk: '1ST CHAMPION', tm: resolvedPodium1, col: '#FACC15' },
+              { rk: '2ND RUNNER-UP', tm: resolvedPodium2, col: '#E2E8F0' },
+              { rk: '3RD PLACE', tm: resolvedPodium3, col: '#FB923C' },
+            ];
+            let py = Math.round(h * 0.34);
+            const cardH = Math.round(u * 0.13);
+            pList.forEach((pItem, idx) => {
+              const localE = easeOutCubic(clamp01((enterP - idx * 0.15) / 0.7));
+              ctx.save();
+              ctx.globalAlpha = localE;
+              const cw = Math.round(w * (isLandscape ? 0.64 : 0.84));
+              const cx = Math.round((w - cw) / 2);
+              drawRoundedRect(ctx, cx, py + (1 - localE) * 24, cw, cardH, 20);
+              ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+              ctx.fill();
+              ctx.lineWidth = 2.5;
+              ctx.strokeStyle = pItem.col;
+              ctx.stroke();
+
+              ctx.fillStyle = pItem.col;
+              ctx.font = `800 ${Math.round(cardH * 0.25)}px "Plus Jakarta Sans", sans-serif`;
+              ctx.fillText(pItem.rk, w / 2, py + cardH * 0.34);
+
+              const fittedN = fitSingleLine(
+                ctx,
+                (pItem.tm?.name || 'TBD').toUpperCase(),
+                cw - 40,
+                Math.round(cardH * 0.38),
+                Math.round(cardH * 0.24),
+                '800 {SIZE}px "Barlow Condensed", sans-serif'
+              );
+              ctx.fillStyle = '#FFFFFF';
+              ctx.font = `800 ${fittedN.fontSize}px "Barlow Condensed", sans-serif`;
+              ctx.fillText(fittedN.text, w / 2, py + cardH * 0.78);
+              ctx.restore();
+              py += cardH + Math.round(u * 0.028);
+            });
+          } else {
+            const crestR = Math.round(u * 0.24 * easeOutBack(enterP));
+            if (spotLogo && crestR > 10) {
+              ctx.drawImage(
+                spotLogo,
+                w / 2 - crestR / 2,
+                h * 0.42 - crestR / 2,
+                crestR,
+                crestR
+              );
+            }
+            const fittedW = fitSingleLine(
+              ctx,
+              (spotTeam?.name || 'CHAMPIONS').toUpperCase(),
+              w * 0.84,
+              Math.round(u * 0.095),
+              Math.round(u * 0.05),
+              '800 {SIZE}px "Barlow Condensed", sans-serif'
+            );
+            ctx.font = `800 ${fittedW.fontSize}px "Barlow Condensed", sans-serif`;
+            fillShinyText(
+              ctx,
+              fittedW.text,
+              w / 2,
+              Math.round(h * 0.66),
+              time * 0.5,
+              '#FACC15',
+              '#FFFFFF'
+            );
+            if (spotTeam?.school) {
+              ctx.fillStyle = '#E2E8F0';
+              ctx.font = `700 ${Math.round(u * 0.034)}px "Plus Jakarta Sans", sans-serif`;
+              ctx.fillText(
+                spotTeam.school.toUpperCase(),
+                w / 2,
+                Math.round(h * 0.72)
+              );
+            }
+          }
+
+          ctx.fillStyle = '#FDE68A';
+          ctx.font = `800 ${Math.round(u * 0.028)}px "Plus Jakarta Sans", sans-serif`;
+          ctx.fillText(
+            `${tournament?.name || 'SVC'} • ${data.settings?.eventName || ''}`.toUpperCase(),
+            w / 2,
+            h - safeBottom
+          );
+          ctx.restore();
+          return;
+        }
+
         const enterP = clamp01((time - 4.55) / 0.9);
         const teamBP = clamp01((time - 4.7) / 0.9);
         const drift = clamp01((time - 4.5) / 3.5) * 20 - 10;
@@ -2970,6 +3555,14 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     [
       ratio,
       template,
+      stageTheme,
+      effectiveStageKey,
+      stageDisplayBadge,
+      stageMeta,
+      podiumVariant,
+      resolvedPodium1,
+      resolvedPodium2,
+      resolvedPodium3,
       caption,
       mediaMode,
       posterLayout,
@@ -2991,7 +3584,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
   const photoUrlsKey = photoItems.map((p) => p.url).join('|');
 
-  // Preload all visual assets (1-3 Photos, SVC, AVERSA, SMANSAGE, Burst Rays, Arcs, Sponsors, Team Logos)
+  // Preload all visual assets (1-3 Photos, SVC, AVERSA, SMANSAGE, Burst Rays, Arcs, Sponsors, Team & Podium Logos)
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -3008,6 +3601,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         netOfficial,
         teamALogo,
         teamBLogo,
+        podium1Logo,
+        podium2Logo,
+        podium3Logo,
         ...sponsorImgs
       ] = await Promise.all([
         Promise.all(photoItems.map((it) => loadImage(it.url))),
@@ -3022,6 +3618,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         loadImage('/brand/svc-net-official.svg'),
         teamA?.logoUrl ? loadImage(teamA.logoUrl) : Promise.resolve(null),
         teamB?.logoUrl ? loadImage(teamB.logoUrl) : Promise.resolve(null),
+        resolvedPodium1?.logoUrl ? loadImage(resolvedPodium1.logoUrl) : Promise.resolve(null),
+        resolvedPodium2?.logoUrl ? loadImage(resolvedPodium2.logoUrl) : Promise.resolve(null),
+        resolvedPodium3?.logoUrl ? loadImage(resolvedPodium3.logoUrl) : Promise.resolve(null),
         ...sponsorList.map((sp) => loadImage(sp.darkLogoUrl || sp.logoUrl)),
       ]);
 
@@ -3039,6 +3638,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         netOfficial,
         teamALogo,
         teamBLogo,
+        podium1Logo,
+        podium2Logo,
+        podium3Logo,
         sponsors: sponsorList.map((item, idx) => ({
           item,
           img: sponsorImgs[idx] ?? null,
@@ -3054,6 +3656,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     data.settings,
     teamA?.logoUrl,
     teamB?.logoUrl,
+    resolvedPodium1?.logoUrl,
+    resolvedPodium2?.logoUrl,
+    resolvedPodium3?.logoUrl,
     sponsorList.length,
     renderFrame,
     showSafeZone,
@@ -3255,7 +3860,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       miniAudioRef.current.crossOrigin = 'anonymous';
       miniAudioRef.current.onended = () => setMiniAudioPlaying(false);
     }
-    miniAudioRef.current.src = selectedTrack.url;
+    miniAudioRef.current.src = toCorsSafeAssetUrl(selectedTrack.url);
     miniAudioRef.current.volume = bgmVolume;
     miniAudioRef.current
       .play()
@@ -3328,7 +3933,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         try {
           let buf = audioBufferCacheRef.current.get(selectedTrack.url);
           if (!buf) {
-            const resp = await fetch(selectedTrack.url, { mode: 'cors' });
+            const safeTrackUrl = toCorsSafeAssetUrl(selectedTrack.url);
+            const resp = await fetch(safeTrackUrl, { mode: 'cors' });
             if (resp.ok) {
               const arr = await resp.arrayBuffer();
               buf = await ctx.decodeAudioData(arr);
@@ -3658,15 +4264,29 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         (s) => s.setNumber === activeMatch.currentSet
       );
       const scoreText =
-        activeMatch.status === 'live' && activeSet
-          ? `Set ${activeMatch.currentSet}: ${activeSet.scoreA}-${activeSet.scoreB}`
-          : `Set ${activeMatch.setsWonA}-${activeMatch.setsWonB}`;
+        template === 'champion'
+          ? podiumVariant === 'runner_up'
+            ? '2nd Place • Runner-Up'
+            : podiumVariant === 'third_place'
+              ? '3rd Place Winner'
+              : podiumVariant === 'podium_all'
+                ? 'Official Podium 1-2-3'
+                : '1st Place • Champions'
+          : activeMatch.status === 'live' && activeSet
+            ? `${stageDisplayBadge} • Set ${activeMatch.currentSet}: ${activeSet.scoreA}-${activeSet.scoreB}`
+            : `${stageDisplayBadge} • Final ${activeMatch.setsWonA}-${activeMatch.setsWonB}`;
 
       fd.append(
         'scoreSnapshot',
         JSON.stringify({
-          teamA: teamA?.shortCode || 'A',
-          teamB: teamB?.shortCode || 'B',
+          teamA:
+            template === 'champion'
+              ? resolvedPodium1?.shortCode || '1ST'
+              : teamA?.shortCode || 'A',
+          teamB:
+            template === 'champion'
+              ? resolvedPodium2?.shortCode || '2ND'
+              : teamB?.shortCode || 'B',
           scoreText,
         })
       );
@@ -3776,15 +4396,24 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   {playableMatches.map((m) => {
                     const tA = m.teamAId ? teamMap.get(m.teamAId)?.name : 'TBD';
                     const tB = m.teamBId ? teamMap.get(m.teamBId)?.name : 'TBD';
+                    const mRounds = data.matches
+                      .filter(
+                        (x) =>
+                          x.tournamentId === m.tournamentId &&
+                          x.bracketType === 'main'
+                      )
+                      .map((x) => x.round);
+                    const mTotal = mRounds.length > 0 ? Math.max(...mRounds) : 3;
+                    const stageLbl = formatInternationalStageLabel(m, mTotal);
                     const st =
                       m.status === 'live'
                         ? 'LIVE'
                         : m.status === 'finished'
-                          ? 'SELESAI'
-                          : 'JADWAL';
+                          ? 'FINAL'
+                          : 'UPCOMING';
                     return (
                       <option key={m.id} value={m.id}>
-                        [{st}] {tA} vs {tB} ({m.courtName})
+                        [{st}] {stageLbl} • {tA} vs {tB} ({m.courtName})
                       </option>
                     );
                   })}
@@ -3983,28 +4612,34 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Template Overlay
+                    Broadcast Template
                   </label>
                   <div className="grid gap-1.5">
                     {(
                       [
-                        ['live', 'Live Match Now (Skor Aktif)'],
-                        ['final', 'Finished Score (Hasil Akhir)'],
-                        ['upcoming', 'Upcoming Match (Segera Main)'],
-                        ['highlight', 'Highlight Momen'],
+                        ['live', 'LIVE MATCH (Active Set Score)'],
+                        ['final', 'FINAL SCORE (Full-Time Result)'],
+                        ['upcoming', 'UPCOMING MATCH (Fixture)'],
+                        ['highlight', 'MATCH HIGHLIGHT (Action)'],
+                        ['champion', 'CHAMPIONS & PODIUM (Winners)'],
                       ] as const
                     ).map(([val, label]) => (
                       <button
                         key={val}
                         type="button"
                         onClick={() => setTemplate(val)}
-                        className={`rounded-xl border px-3 py-2 text-left text-xs font-bold transition ${
+                        className={`flex items-center justify-between rounded-xl border px-3 py-2 text-left text-xs font-bold transition ${
                           template === val
-                            ? 'border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                            ? val === 'champion'
+                              ? 'border-amber-500 bg-gradient-to-r from-amber-500/20 to-yellow-500/10 text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-300'
+                              : 'border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-400'
                             : 'border-slate-200 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800'
                         }`}
                       >
-                        {label}
+                        <span>{label}</span>
+                        {val === 'champion' && (
+                          <Crown className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                        )}
                       </button>
                     ))}
                   </div>
@@ -4012,7 +4647,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
                 <div>
                   <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Rasio Konten
+                    Aspect Ratio
                   </label>
                   <div className="grid gap-1.5">
                     {(Object.keys(DIMENSIONS) as AspectRatio[]).map((r) => (
@@ -4032,6 +4667,118 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   </div>
                 </div>
               </div>
+
+              {/* Stage Theme Selector (Quarter-Final, Semi-Final, 3rd Place, Grand Final) OR Champion/Podium Selector */}
+              {template === 'champion' ? (
+                <div className="space-y-3 rounded-2xl border border-amber-500/40 bg-gradient-to-br from-amber-500/10 via-amber-500/5 to-transparent p-3.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-amber-800 dark:text-amber-300">
+                      <Trophy className="h-4 w-4" />
+                      Championship &amp; Podium Variant
+                    </span>
+                    <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                      {tournament?.name}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        ['champion_1', '1st Place • Champion', Crown],
+                        ['runner_up', '2nd Place • Runner-Up', Medal],
+                        ['third_place', '3rd Place Winner', Medal],
+                        ['podium_all', 'Official Podium (1-2-3)', Trophy],
+                      ] as const
+                    ).map(([vKey, vLabel, IconComp]) => (
+                      <button
+                        key={vKey}
+                        type="button"
+                        onClick={() => {
+                          setPodiumVariant(vKey);
+                          setCustomSpotlightTeamId(null);
+                        }}
+                        className={`inline-flex min-h-10 items-center gap-1.5 rounded-xl border px-3 py-2 text-left text-xs font-bold transition ${
+                          podiumVariant === vKey
+                            ? 'border-amber-500 bg-white text-amber-900 shadow-xs dark:bg-slate-900 dark:text-amber-300'
+                            : 'border-slate-200/80 bg-white/60 text-slate-700 hover:bg-white dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-300'
+                        }`}
+                      >
+                        <IconComp className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                        <span className="truncate">{vLabel}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {podiumVariant !== 'podium_all' && (
+                    <div>
+                      <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                        Spotlight Team (Auto from Bracket / Manual Override)
+                      </label>
+                      <select
+                        value={customSpotlightTeamId ?? ''}
+                        onChange={(e) =>
+                          setCustomSpotlightTeamId(
+                            e.target.value ? Number(e.target.value) : null
+                          )
+                        }
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"
+                      >
+                        <option value="">
+                          Auto-Detect (
+                          {(podiumVariant === 'runner_up'
+                            ? autoRunnerUpTeam?.name
+                            : podiumVariant === 'third_place'
+                              ? autoThirdTeam?.name
+                              : autoChampionTeam?.name) || 'TBD'}
+                          )
+                        </option>
+                        {catTeams.map((tm) => (
+                          <option key={tm.id} value={tm.id}>
+                            {tm.name} {tm.school ? `(${tm.school})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/80 p-3.5 dark:border-slate-800 dark:bg-slate-950/60">
+                  <div className="flex flex-wrap items-center justify-between gap-1">
+                    <label className="text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                      Match Stage Badge &amp; Visual Theme
+                    </label>
+                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-extrabold uppercase text-amber-800 dark:text-amber-300">
+                      Active: {stageDisplayBadge}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        ['auto', 'Auto (From Match)'],
+                        ['pool', 'Pool Stage'],
+                        ['r16', 'Round of 16'],
+                        ['qf', 'Quarter-Final'],
+                        ['sf', 'Semi-Final'],
+                        ['third', '3rd Place'],
+                        ['final', 'Grand Final'],
+                      ] as const
+                    ).map(([sKey, sLabel]) => (
+                      <button
+                        key={sKey}
+                        type="button"
+                        onClick={() => setStageTheme(sKey)}
+                        className={`rounded-lg border px-2.5 py-1.5 text-xs font-bold transition ${
+                          stageTheme === sKey
+                            ? 'border-amber-500 bg-amber-500 text-slate-950 shadow-xs'
+                            : 'border-slate-200 bg-white text-slate-700 hover:border-amber-500/50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300'
+                        }`}
+                      >
+                        {sLabel}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {mediaMode === 'photo' && photoItems.length >= 2 && (
                 <div className="rounded-2xl border border-amber-500/30 bg-amber-500/8 p-3.5">

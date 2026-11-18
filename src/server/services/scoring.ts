@@ -14,13 +14,20 @@ interface ScoreSnapshot {
     setNumber: number;
     scoreA: number;
     scoreB: number;
+    timeoutsA: number;
+    timeoutsB: number;
+    subsA: number;
+    subsB: number;
     isFinished: boolean;
     winnerId: number | null;
   }>;
 }
 
 const undoStacks = new Map<number, ScoreSnapshot[]>();
-const MAX_UNDO_STEPS = 10;
+const MAX_UNDO_STEPS = 12;
+
+export const MAX_TIMEOUTS_PER_SET = 2;
+export const MAX_SUBS_PER_SET = 6;
 
 async function pushUndoSnapshot(matchId: number) {
   const match = await db.query.matches.findFirst({ where: eq(matches.id, matchId) });
@@ -44,6 +51,10 @@ async function pushUndoSnapshot(matchId: number) {
       setNumber: s.setNumber,
       scoreA: s.scoreA,
       scoreB: s.scoreB,
+      timeoutsA: s.timeoutsA ?? 0,
+      timeoutsB: s.timeoutsB ?? 0,
+      subsA: s.subsA ?? 0,
+      subsB: s.subsB ?? 0,
       isFinished: s.isFinished,
       winnerId: s.winnerId,
     })),
@@ -84,6 +95,10 @@ export async function startMatch(matchId: number, rules?: MatchRulesOverride) {
       setNumber: 1,
       scoreA: 0,
       scoreB: 0,
+      timeoutsA: 0,
+      timeoutsB: 0,
+      subsA: 0,
+      subsB: 0,
       isFinished: false,
     });
   }
@@ -123,7 +138,6 @@ export async function addPoint(matchId: number, team: 'A' | 'B', delta: 1 | -1) 
   });
   if (!tournament) throw new Error('Turnamen tidak ditemukan');
 
-  // Auto-start if still scheduled
   if (match.status === 'scheduled') {
     await startMatch(matchId);
   }
@@ -146,19 +160,23 @@ export async function addPoint(matchId: number, team: 'A' | 'B', delta: 1 | -1) 
         setNumber: refreshedMatch.currentSet,
         scoreA: 0,
         scoreB: 0,
+        timeoutsA: 0,
+        timeoutsB: 0,
+        subsA: 0,
+        subsB: 0,
         isFinished: false,
       })
       .returning();
     activeSet = inserted;
   }
 
-  const newScoreA = Math.max(0, activeSet.scoreA + (team === 'A' ? delta : 0));
-  const newScoreB = Math.max(0, activeSet.scoreB + (team === 'B' ? delta : 0));
+  const newScoreA = Math.max(0, activeSet!.scoreA + (team === 'A' ? delta : 0));
+  const newScoreB = Math.max(0, activeSet!.scoreB + (team === 'B' ? delta : 0));
 
   await db
     .update(matchSets)
     .set({ scoreA: newScoreA, scoreB: newScoreB })
-    .where(eq(matchSets.id, activeSet.id));
+    .where(eq(matchSets.id, activeSet!.id));
 
   if (delta > 0) {
     await db
@@ -167,7 +185,6 @@ export async function addPoint(matchId: number, team: 'A' | 'B', delta: 1 | -1) 
       .where(eq(matches.id, matchId));
   }
 
-  // Check if set target is reached (requires explicit referee confirmation!)
   const effectiveBestOf = refreshedMatch.bestOf ?? tournament.bestOf;
   const effectiveRegular = refreshedMatch.regularSetPoints ?? tournament.regularSetPoints;
   const effectiveDeciding = refreshedMatch.decidingSetPoints ?? tournament.decidingSetPoints;
@@ -203,10 +220,56 @@ export async function addPoint(matchId: number, team: 'A' | 'B', delta: 1 | -1) 
   return state;
 }
 
-/**
- * Confirms closing the current set and either starts the next set
- * or finishes the match & advances the winner.
- */
+export async function adjustSetCounter(
+  matchId: number,
+  kind: 'timeout' | 'sub',
+  team: 'A' | 'B',
+  delta: 1 | -1
+) {
+  const match = await db.query.matches.findFirst({ where: eq(matches.id, matchId) });
+  if (!match) throw new Error('Pertandingan tidak ditemukan');
+  if (match.status !== 'live') {
+    throw new Error('Pertandingan harus berstatus LIVE untuk mencatat timeout/substitusi');
+  }
+
+  const activeSet = await db.query.matchSets.findFirst({
+    where: and(
+      eq(matchSets.matchId, matchId),
+      eq(matchSets.setNumber, match.currentSet)
+    ),
+  });
+  if (!activeSet) throw new Error('Set aktif tidak ditemukan');
+
+  const maxCap = kind === 'timeout' ? MAX_TIMEOUTS_PER_SET : MAX_SUBS_PER_SET;
+  const curVal =
+    kind === 'timeout'
+      ? team === 'A'
+        ? activeSet.timeoutsA
+        : activeSet.timeoutsB
+      : team === 'A'
+        ? activeSet.subsA
+        : activeSet.subsB;
+
+  const nextVal = Math.max(0, Math.min(maxCap, curVal + delta));
+  if (nextVal === curVal) {
+    return getMatchWithSets(matchId);
+  }
+
+  await pushUndoSnapshot(matchId);
+
+  const patch: Partial<typeof matchSets.$inferInsert> =
+    kind === 'timeout'
+      ? team === 'A'
+        ? { timeoutsA: nextVal }
+        : { timeoutsB: nextVal }
+      : team === 'A'
+        ? { subsA: nextVal }
+        : { subsB: nextVal };
+
+  await db.update(matchSets).set(patch).where(eq(matchSets.id, activeSet.id));
+  return getMatchWithSets(matchId);
+}
+
 export async function confirmCurrentSet(
   matchId: number,
   mode: 'next_set' | 'finish_match'
@@ -269,6 +332,10 @@ export async function confirmCurrentSet(
       setNumber: nextSetNum,
       scoreA: 0,
       scoreB: 0,
+      timeoutsA: 0,
+      timeoutsB: 0,
+      subsA: 0,
+      subsB: 0,
       isFinished: false,
     });
   }
@@ -302,6 +369,10 @@ export async function undoLastAction(matchId: number) {
       setNumber: s.setNumber,
       scoreA: s.scoreA,
       scoreB: s.scoreB,
+      timeoutsA: s.timeoutsA ?? 0,
+      timeoutsB: s.timeoutsB ?? 0,
+      subsA: s.subsA ?? 0,
+      subsB: s.subsB ?? 0,
       isFinished: s.isFinished,
       winnerId: s.winnerId,
     });
@@ -353,7 +424,6 @@ export async function addExtraSet(matchId: number) {
       ? Math.max(...existingSets.map((s) => s.setNumber)) + 1
       : match.currentSet + 1;
 
-  // If match had already advanced winner to nextMatch, clear that slot
   if (match.winnerId && match.nextMatchId && match.nextMatchSlot) {
     const clearField =
       match.nextMatchSlot === 'A' ? { teamAId: null } : { teamBId: null };
@@ -382,6 +452,10 @@ export async function addExtraSet(matchId: number) {
     setNumber: nextSetNum,
     scoreA: 0,
     scoreB: 0,
+    timeoutsA: 0,
+    timeoutsB: 0,
+    subsA: 0,
+    subsB: 0,
     isFinished: false,
   });
 

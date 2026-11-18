@@ -1,11 +1,19 @@
 import {
   Camera,
+  Download,
   GitBranch,
   Trophy,
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import type { Match, MatchReport, Team } from '../types';
+import { formatInternationalStageLabel } from '../../shared/stages';
+import type {
+  Match,
+  MatchReport,
+  SiteSettings,
+  Team,
+  Tournament,
+} from '../types';
 import { GalleryMediaCard } from './GalleryMediaCard';
 import { TeamAvatar } from './TeamAvatar';
 import { VolleyballIcon } from './VolleyballIcon';
@@ -15,6 +23,9 @@ interface MatchCenterModalProps {
   teamA?: Team | null;
   teamB?: Team | null;
   categoryName?: string;
+  tournament?: Tournament | null;
+  settings?: SiteSettings | null;
+  totalMainRounds?: number;
   reports: MatchReport[];
   onClose: () => void;
   onJumpToBracket?: (matchId: number) => void;
@@ -25,11 +36,15 @@ export function MatchCenterModal({
   teamA,
   teamB,
   categoryName,
+  tournament,
+  settings,
+  totalMainRounds,
   reports,
   onClose,
   onJumpToBracket,
 }: MatchCenterModalProps) {
   const [isClosing, setIsClosing] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const requestClose = useCallback(() => {
     setIsClosing((prev) => {
@@ -101,9 +116,7 @@ export function MatchCenterModal({
                 className="text-xs font-bold uppercase tracking-wider text-slate-200"
               >
                 {categoryName || 'SVC'} •{' '}
-                {match.bracketType === 'third_place'
-                  ? 'Perebutan Juara 3'
-                  : `Babak ${match.round}`}
+                {formatInternationalStageLabel(match, totalMainRounds ?? 3)}
               </h3>
               {isLive && (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-red-600 px-2.5 py-0.5 text-xs font-extrabold text-white">
@@ -113,7 +126,7 @@ export function MatchCenterModal({
               )}
               {isFinished && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-extrabold text-amber-300">
-                  <Trophy className="h-3 w-3" /> SELESAI
+                  <Trophy className="h-3 w-3" /> FINAL SCORE
                 </span>
               )}
             </div>
@@ -273,7 +286,7 @@ export function MatchCenterModal({
 
           {/* Quick Action Buttons */}
           <div className="flex flex-wrap gap-2">
-            {onJumpToBracket && (
+            {onJumpToBracket && match.bracketType !== 'pool' && (
               <button
                 type="button"
                 onClick={() => {
@@ -286,6 +299,39 @@ export function MatchCenterModal({
                 Lihat Posisi di Bagan
               </button>
             )}
+
+            {settings &&
+              settings.publicDocsEnabled !== false &&
+              (isFinished || isLive) && (
+                <button
+                  type="button"
+                  disabled={downloadingPdf}
+                  onClick={async () => {
+                    if (downloadingPdf || !settings) return;
+                    setDownloadingPdf(true);
+                    try {
+                      const { downloadMatchSummaryPdf } = await import(
+                        '../lib/pdfDocuments'
+                      );
+                      await downloadMatchSummaryPdf(match, {
+                        settings,
+                        tournament: tournament ?? undefined,
+                        teamA: teamA ?? undefined,
+                        teamB: teamB ?? undefined,
+                        totalMainRounds: totalMainRounds ?? 3,
+                      });
+                    } finally {
+                      setDownloadingPdf(false);
+                    }
+                  }}
+                  className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-extrabold text-slate-950 shadow-sm transition hover:bg-amber-400 disabled:opacity-50"
+                >
+                  <Download className="h-4 w-4" />
+                  {downloadingPdf
+                    ? 'Generating PDF...'
+                    : 'Match Summary (PDF)'}
+                </button>
+              )}
           </div>
 
           {/* Match Live Report Photos */}

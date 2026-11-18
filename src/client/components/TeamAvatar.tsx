@@ -1,8 +1,14 @@
 import { sanitizeAssetUrl, sanitizeHexColor } from '../../shared/sanitize';
-import type { Team } from '../types';
+
+export interface TeamAvatarData {
+  name: string;
+  shortCode: string;
+  logoUrl?: string | null;
+  color?: string;
+}
 
 interface TeamAvatarProps {
-  team?: Team | null;
+  team?: TeamAvatarData | null;
   size?: 'sm' | 'md' | 'lg';
 }
 

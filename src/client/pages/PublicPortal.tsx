@@ -1,6 +1,7 @@
 import {
   Calendar,
   Camera,
+  Download,
   GitBranch,
   Radio,
   ShieldCheck,
@@ -8,17 +9,20 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { SupportedErrorCode } from '../../shared/routes';
+import { formatInternationalStageLabel } from '../../shared/stages';
 import { BracketView } from '../components/BracketView';
 import { ErrorPage } from '../components/ErrorPage';
 import { GalleryMediaCard } from '../components/GalleryMediaCard';
 import { MatchCenterModal } from '../components/MatchCenterModal';
 import { PartnersFooter } from '../components/PartnersFooter';
+import { PoolStandingsView } from '../components/PoolStandingsView';
 import { PwaInstallButton } from '../components/PwaInstallButton';
 import { TeamAvatar } from '../components/TeamAvatar';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { VolleyballArena3D } from '../components/VolleyballArena3D';
 import { VolleyballIcon } from '../components/VolleyballIcon';
 import { ApiError, apiFetch } from '../lib/api';
+import { syncDocumentBranding } from '../lib/seo';
 import type { Match, OverviewData, Team } from '../types';
 
 type PublicTab = 'live' | 'bracket' | 'reports';
@@ -48,6 +52,7 @@ export function PublicPortal() {
   const [matchFilter, setMatchFilter] = useState<MatchFilter>('all');
   const [highlightedMatchId, setHighlightedMatchId] = useState<number | null>(null);
   const [detailMatchId, setDetailMatchId] = useState<number | null>(null);
+  const [downloadingBulletin, setDownloadingBulletin] = useState(false);
   const [syncMode, setSyncMode] = useState<'sse' | 'polling' | 'connecting'>('connecting');
   const [portalError, setPortalError] = useState<{
     code: SupportedErrorCode;
@@ -163,6 +168,10 @@ export function PublicPortal() {
   const tournaments = data?.tournaments ?? [];
   const activeTournament = tournaments.find((t) => t.id === selectedTournamentId) ?? tournaments[0];
 
+  useEffect(() => {
+    syncDocumentBranding(settings);
+  }, [settings]);
+
   const categoryTeams = (data?.teams ?? []).filter(
     (t) => t.tournamentId === activeTournament?.id
   );
@@ -171,6 +180,11 @@ export function PublicPortal() {
   const categoryMatches = (data?.matches ?? []).filter(
     (m) => m.tournamentId === activeTournament?.id
   );
+  const mainRoundNums = categoryMatches
+    .filter((m) => m.bracketType === 'main')
+    .map((m) => m.round);
+  const totalMainRounds =
+    mainRoundNums.length > 0 ? Math.max(...mainRoundNums) : 3;
   const liveMatches = categoryMatches.filter((m) => m.status === 'live');
   const scheduledMatches = categoryMatches.filter(
     (m) => m.status === 'scheduled' && (m.teamAId || m.teamBId)
@@ -254,9 +268,7 @@ export function PublicPortal() {
               <span className="sport-unskew">{match.courtName}</span>
             </span>
             <span className="font-bold uppercase tracking-wider">
-              {match.bracketType === 'third_place'
-                ? 'Perebutan Juara 3'
-                : `Babak ${match.round}`}
+              {formatInternationalStageLabel(match, totalMainRounds)}
             </span>
           </div>
 
@@ -269,10 +281,10 @@ export function PublicPortal() {
             </span>
           ) : isFinished ? (
             <span className="sport-skew inline-block rounded bg-amber-500/18 px-2 py-0.5 text-[11px] font-extrabold uppercase tracking-wider text-amber-800 dark:bg-amber-500/20 dark:text-amber-300">
-              <span className="sport-unskew">SELESAI</span>
+              <span className="sport-unskew">FINAL</span>
             </span>
           ) : (
-            <span className="text-xs font-semibold">{match.scheduledAt || 'Segera'}</span>
+            <span className="text-xs font-semibold">{match.scheduledAt || 'Upcoming'}</span>
           )}
         </div>
 
@@ -339,9 +351,9 @@ export function PublicPortal() {
               </>
             ) : (
               <>
-                <span className="mb-0.5 text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                  {isFinished ? 'Skor Akhir Set' : 'Skor Set'}
-                </span>
+                  <span className="mb-0.5 text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                    {isFinished ? 'Final Set Score' : 'Set Score'}
+                  </span>
                 <div className="flex items-center gap-2 font-display text-3xl font-extrabold tabular-nums sm:text-4xl">
                   <span
                     className={
@@ -770,7 +782,51 @@ export function PublicPortal() {
         )}
 
         {activeTab === 'bracket' && (
-          <div key="tab-bracket" className="animate-page-enter">
+          <div key="tab-bracket" className="animate-page-enter space-y-5">
+            {settings?.publicDocsEnabled !== false && data && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-xs dark:border-slate-800 dark:bg-slate-900">
+                <div>
+                  <p className="font-display text-sm font-extrabold uppercase tracking-wider text-slate-900 dark:text-white">
+                    Publikasi Buletin Resmi Turnamen
+                  </p>
+                  <p className="text-xs text-slate-600 dark:text-slate-400">
+                    Unduh dokumen PDF resmi berisi daftar kontingen, jadwal/hasil, dan bagan vektor.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={downloadingBulletin}
+                  onClick={async () => {
+                    if (downloadingBulletin || !data) return;
+                    setDownloadingBulletin(true);
+                    try {
+                      const { downloadTournamentBulletinPdf } = await import(
+                        '../lib/pdfDocuments'
+                      );
+                      await downloadTournamentBulletinPdf(data);
+                    } finally {
+                      setDownloadingBulletin(false);
+                    }
+                  }}
+                  className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-amber-500 px-4 py-2 text-xs font-extrabold text-slate-950 shadow-sm transition hover:bg-amber-400 disabled:opacity-50"
+                >
+                  <Download className="h-4 w-4" />
+                  {downloadingBulletin
+                    ? 'Menyiapkan PDF...'
+                    : 'Unduh Buletin Resmi (PDF)'}
+                </button>
+              </div>
+            )}
+
+            {activeTournament?.format === 'pool_knockout' && (
+              <PoolStandingsView
+                tournament={activeTournament}
+                teams={categoryTeams}
+                matches={categoryMatches}
+                onSelectMatch={(m) => setDetailMatchId(m.id)}
+              />
+            )}
+
             <BracketView
               matches={categoryMatches}
               teams={categoryTeams}
@@ -825,6 +881,9 @@ export function PublicPortal() {
               teamA={dTeamA}
               teamB={dTeamB}
               categoryName={activeTournament?.name}
+              tournament={activeTournament}
+              settings={settings}
+              totalMainRounds={totalMainRounds}
               reports={data?.reports ?? []}
               onClose={() => setDetailMatchId(null)}
               onJumpToBracket={(id) => {

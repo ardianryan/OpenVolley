@@ -1,12 +1,16 @@
 import {
   ArrowDown,
+  ArrowRight,
   ArrowUp,
+  ChevronDown,
+  Download,
   Eye,
   EyeOff,
   GitBranch,
   GripVertical,
   ImagePlus,
   KeyRound,
+  Layers,
   Palette,
   Plus,
   RotateCcw,
@@ -16,15 +20,24 @@ import {
   Users,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { formatInternationalStageLabel } from '../../shared/stages';
 import { BracketView } from '../components/BracketView';
 import { ConfirmDeleteCategoryModal } from '../components/ConfirmDeleteCategoryModal';
+import { PoolStandingsView } from '../components/PoolStandingsView';
 import { TeamAvatar } from '../components/TeamAvatar';
 import { apiFetch } from '../lib/api';
 import {
   IMAGE_INPUT_ACCEPT,
   normalizeImageInBrowser,
 } from '../lib/mediaConverter';
-import type { AuthUser, OverviewData, SponsorItem, Tournament } from '../types';
+import { parseJerseyColors } from '../lib/seo';
+import type {
+  AuthUser,
+  JerseyColorItem,
+  OverviewData,
+  SponsorItem,
+  Tournament,
+} from '../types';
 
 interface AdminDashboardProps {
   data: OverviewData;
@@ -56,17 +69,29 @@ export function AdminDashboard({
   const [useDeuce, setUseDeuce] = useState(true);
   const [hasThirdPlace, setHasThirdPlace] = useState(true);
 
-  // Team form
+  // Team form & optional detail drawer
   const [teamName, setTeamName] = useState('');
   const [teamSchool, setTeamSchool] = useState('');
   const [bulkLines, setBulkLines] = useState('');
   const [showBulk, setShowBulk] = useState(false);
+  const [expandedTeamId, setExpandedTeamId] = useState<number | null>(null);
+  const [newJerseyLabel, setNewJerseyLabel] = useState('');
+  const [newJerseyHex, setNewJerseyHex] = useState('#111827');
+  const [downloadingBulletin, setDownloadingBulletin] = useState(false);
+
+  // Pool stage config state
+  const [poolCountField, setPoolCountField] = useState<number>(4);
+  const [advancePerPoolField, setAdvancePerPoolField] = useState<number>(2);
 
   // Branding form
   const [eventName, setEventName] = useState(data.settings?.eventName || '');
   const [eventSubtitle, setEventSubtitle] = useState(data.settings?.eventSubtitle || '');
   const [eventMeta, setEventMeta] = useState(data.settings?.eventMeta || '');
+  const [seoDescription, setSeoDescription] = useState(
+    data.settings?.seoDescription || ''
+  );
   const [tvPinField, setTvPinField] = useState(data.settings?.tvPin || '4426');
+  const [ogPreviewBust, setOgPreviewBust] = useState<number>(() => Date.now());
 
   // Users state
   const [userList, setUserList] = useState<Array<AuthUser & { createdAt: number }>>([]);
@@ -96,7 +121,9 @@ export function AdminDashboard({
       setEventName(data.settings.eventName);
       setEventSubtitle(data.settings.eventSubtitle);
       setEventMeta(data.settings.eventMeta);
+      setSeoDescription(data.settings.seoDescription || '');
       if (data.settings.tvPin) setTvPinField(data.settings.tvPin);
+      setOgPreviewBust(Date.now());
     }
   }, [data.settings]);
 
@@ -115,6 +142,13 @@ export function AdminDashboard({
 
   const activeTournament: Tournament | undefined =
     data.tournaments.find((t) => t.id === selectedTid) ?? data.tournaments[0];
+
+  useEffect(() => {
+    if (activeTournament) {
+      setPoolCountField(activeTournament.poolCount ?? 4);
+      setAdvancePerPoolField(activeTournament.advancePerPool ?? 2);
+    }
+  }, [activeTournament?.id]);
   const categoryTeams = data.teams.filter(
     (t) => t.tournamentId === activeTournament?.id
   );
@@ -247,13 +281,71 @@ export function AdminDashboard({
 
   const handleInlineTeamUpdate = async (
     teamId: number,
-    fields: { name?: string; school?: string }
+    fields: {
+      name?: string;
+      school?: string;
+      poolName?: string | null;
+      coachName?: string;
+      managerName?: string;
+      jerseyColors?: JerseyColorItem[];
+    }
   ) => {
     await apiFetch(`/api/admin/teams/${teamId}`, {
       method: 'PATCH',
       body: JSON.stringify(fields),
     });
     await onRefresh();
+  };
+
+  const handleGeneratePools = async (shuffle: boolean) => {
+    if (!activeTournament) return;
+    try {
+      await apiFetch(`/api/admin/tournaments/${activeTournament.id}/generate-pools`, {
+        method: 'POST',
+        body: JSON.stringify({
+          poolCount: poolCountField,
+          advancePerPool: advancePerPoolField,
+          shuffle,
+        }),
+      });
+      await onRefresh();
+      flash(`Jadwal Fase Pool (${poolCountField} Pool) & Bagan Utama berhasil dibuat!`);
+    } catch (err) {
+      flash(`Gagal membuat Pool: ${(err as Error).message}`);
+    }
+  };
+
+  const handleAdvancePools = async () => {
+    if (!activeTournament) return;
+    try {
+      await apiFetch(`/api/admin/tournaments/${activeTournament.id}/advance-pools`, {
+        method: 'POST',
+      });
+      await onRefresh();
+      flash('Juara & Runner-up Pool berhasil ditempatkan ke Bagan Babak Utama!');
+    } catch (err) {
+      flash(`Gagal meloloskan tim Pool: ${(err as Error).message}`);
+    }
+  };
+
+  const handleDownloadBulletinPdf = async (onlyActiveCategory = false) => {
+    if (downloadingBulletin) return;
+    setDownloadingBulletin(true);
+    try {
+      const { downloadTournamentBulletinPdf } = await import(
+        '../lib/pdfDocuments'
+      );
+      await downloadTournamentBulletinPdf(data, {
+        tournamentIds:
+          onlyActiveCategory && activeTournament
+            ? [activeTournament.id]
+            : undefined,
+      });
+    } catch (err) {
+      flash(`Gagal mengunduh Buletin PDF: ${(err as Error).message}`);
+    } finally {
+      setDownloadingBulletin(false);
+    }
   };
 
   const handleMatchScheduleUpdate = async (
@@ -275,15 +367,21 @@ export function AdminDashboard({
         eventName,
         eventSubtitle,
         eventMeta,
-        tvPin: tvPinField.trim() || '4426',
+        seoDescription,
       }),
     });
+    if (tvPinField.trim().length >= 4) {
+      await apiFetch('/api/admin/tv-pin', {
+        method: 'PUT',
+        body: JSON.stringify({ tvPin: tvPinField.trim() }),
+      });
+    }
     await onRefresh();
-    flash('Identitas acara & PIN TV diperbarui');
+    flash('Identitas acara, SEO & PIN TV diperbarui');
   };
 
   const handleUploadBrandLogo = async (
-    target: 'main' | 'coBrand' | 'organizer',
+    target: 'main' | 'coBrand' | 'organizer' | 'social',
     rawFile: File
   ) => {
     try {
@@ -545,6 +643,16 @@ export function AdminDashboard({
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
+                    disabled={downloadingBulletin}
+                    onClick={() => handleDownloadBulletinPdf(false)}
+                    className="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-amber-500 px-3.5 py-1.5 text-xs font-extrabold text-slate-950 shadow-xs transition hover:bg-amber-400 disabled:opacity-50"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    {downloadingBulletin ? 'Menyiapkan...' : 'Unduh Buletin PDF'}
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => toggleCategoryEnabled(activeTournament)}
                     className={`inline-flex min-h-9 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition ${
                       activeTournament.isEnabled
@@ -784,105 +892,372 @@ export function AdminDashboard({
                   )}
 
                   <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-                    {categoryTeams.map((team, idx) => (
-                      <div
-                        key={team.id}
-                        className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 p-2.5 dark:border-slate-800"
-                      >
-                        <div className="flex min-w-0 flex-1 items-center gap-2.5">
-                          <span className="w-5 shrink-0 text-center text-xs font-extrabold text-amber-500">
-                            {String(idx + 1).padStart(2, '0')}
-                          </span>
-                          <TeamAvatar team={team} size="sm" />
-                          <div className="min-w-0 flex-1 space-y-1">
-                            <input
-                              type="text"
-                              defaultValue={team.name}
-                              aria-label={`Nama Tim ${idx + 1}`}
-                              onBlur={(e) => {
-                                const val = e.target.value.trim();
-                                if (val && val !== team.name) {
-                                  handleInlineTeamUpdate(team.id, { name: val });
+                    {categoryTeams.map((team, idx) => {
+                      const isExpanded = expandedTeamId === team.id;
+                      const jerseys = parseJerseyColors(team.jerseyColors);
+                      return (
+                        <div
+                          key={team.id}
+                          className="rounded-xl border border-slate-200 p-2.5 dark:border-slate-800"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                              <span className="w-5 shrink-0 text-center text-xs font-extrabold text-amber-500">
+                                {team.poolName
+                                  ? team.poolName
+                                  : String(idx + 1).padStart(2, '0')}
+                              </span>
+                              <TeamAvatar team={team} size="sm" />
+                              <div className="min-w-0 flex-1 space-y-1">
+                                <input
+                                  type="text"
+                                  defaultValue={team.name}
+                                  aria-label={`Nama Tim ${idx + 1}`}
+                                  onBlur={(e) => {
+                                    const val = e.target.value.trim();
+                                    if (val && val !== team.name) {
+                                      handleInlineTeamUpdate(team.id, { name: val });
+                                    }
+                                  }}
+                                  className="w-full truncate rounded bg-transparent px-1 py-0.5 text-sm font-bold hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-800 dark:focus:bg-slate-800"
+                                />
+                                <input
+                                  type="text"
+                                  defaultValue={team.school}
+                                  placeholder="Asal Kota / Sekolah"
+                                  onBlur={(e) => {
+                                    const val = e.target.value.trim();
+                                    if (val !== team.school) {
+                                      handleInlineTeamUpdate(team.id, { school: val });
+                                    }
+                                  }}
+                                  className="w-full truncate rounded bg-transparent px-1 py-0.5 text-xs text-slate-500 hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-800 dark:focus:bg-slate-800"
+                                />
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                type="button"
+                                title="Detail Opsional Buletin (Pool, Pelatih, Kostum)"
+                                onClick={() =>
+                                  setExpandedTeamId(isExpanded ? null : team.id)
                                 }
-                              }}
-                              className="w-full truncate rounded bg-transparent px-1 py-0.5 text-sm font-bold hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-800 dark:focus:bg-slate-800"
-                            />
-                            <input
-                              type="text"
-                              defaultValue={team.school}
-                              placeholder="Asal Kota / Sekolah"
-                              onBlur={(e) => {
-                                const val = e.target.value.trim();
-                                if (val !== team.school) {
-                                  handleInlineTeamUpdate(team.id, { school: val });
-                                }
-                              }}
-                              className="w-full truncate rounded bg-transparent px-1 py-0.5 text-xs text-slate-500 hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-800 dark:focus:bg-slate-800"
-                            />
+                                className={`rounded-lg p-1.5 transition ${
+                                  isExpanded
+                                    ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
+                                    : 'text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800'
+                                }`}
+                              >
+                                <ChevronDown
+                                  className={`h-4 w-4 transition-transform ${
+                                    isExpanded ? 'rotate-180' : ''
+                                  }`}
+                                />
+                              </button>
+                              <label
+                                title="Upload Logo Tim"
+                                className="cursor-pointer rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-amber-500 dark:hover:bg-slate-800"
+                              >
+                                <ImagePlus className="h-4 w-4" />
+                                <input
+                                  type="file"
+                                  accept={IMAGE_INPUT_ACCEPT}
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) handleUploadTeamLogo(team.id, f);
+                                    e.target.value = '';
+                                  }}
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await apiFetch(`/api/admin/teams/${team.id}`, {
+                                    method: 'DELETE',
+                                  });
+                                  await onRefresh();
+                                }}
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-red-500/10 hover:text-red-500"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
                           </div>
+
+                          {isExpanded && (
+                            <div className="mt-2.5 space-y-2 border-t border-slate-100 pt-2.5 text-xs dark:border-slate-800">
+                              <div className="grid grid-cols-3 gap-1.5">
+                                <input
+                                  type="text"
+                                  defaultValue={team.poolName || ''}
+                                  placeholder="Pool (A-H)"
+                                  maxLength={4}
+                                  onBlur={(e) => {
+                                    const v = e.target.value.trim().toUpperCase();
+                                    if (v !== (team.poolName || '')) {
+                                      handleInlineTeamUpdate(team.id, {
+                                        poolName: v || null,
+                                      });
+                                    }
+                                  }}
+                                  className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold uppercase dark:border-slate-700 dark:bg-slate-950"
+                                />
+                                <input
+                                  type="text"
+                                  defaultValue={team.coachName || ''}
+                                  placeholder="Pelatih (opsional)"
+                                  onBlur={(e) => {
+                                    const v = e.target.value.trim();
+                                    if (v !== (team.coachName || '')) {
+                                      handleInlineTeamUpdate(team.id, { coachName: v });
+                                    }
+                                  }}
+                                  className="col-span-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
+                                />
+                              </div>
+
+                              <input
+                                type="text"
+                                defaultValue={team.managerName || ''}
+                                placeholder="Manajer / Official (opsional)"
+                                onBlur={(e) => {
+                                  const v = e.target.value.trim();
+                                  if (v !== (team.managerName || '')) {
+                                    handleInlineTeamUpdate(team.id, { managerName: v });
+                                  }
+                                }}
+                                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
+                              />
+
+                              <div className="space-y-1.5">
+                                <div className="flex flex-wrap items-center gap-1">
+                                  {jerseys.map((jc, jIdx) => (
+                                    <span
+                                      key={`${jc.label}-${jIdx}`}
+                                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold dark:border-slate-700 dark:bg-slate-950"
+                                    >
+                                      <span
+                                        className="h-2.5 w-2.5 rounded-full border border-slate-400/40"
+                                        style={{ backgroundColor: jc.hex }}
+                                      />
+                                      {jc.label}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const next = jerseys.filter(
+                                            (_, idx2) => idx2 !== jIdx
+                                          );
+                                          handleInlineTeamUpdate(team.id, {
+                                            jerseyColors: next,
+                                          });
+                                        }}
+                                        className="ml-0.5 text-slate-400 hover:text-red-500"
+                                      >
+                                        ×
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+
+                                {jerseys.length < 4 && (
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="color"
+                                      value={newJerseyHex}
+                                      onChange={(e) => setNewJerseyHex(e.target.value)}
+                                      className="h-6 w-7 cursor-pointer rounded border border-slate-200 bg-transparent p-0"
+                                    />
+                                    <input
+                                      type="text"
+                                      value={newJerseyLabel}
+                                      onChange={(e) => setNewJerseyLabel(e.target.value)}
+                                      placeholder="Warna kostum (mis: Hitam)"
+                                      className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] dark:border-slate-700 dark:bg-slate-950"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (!newJerseyLabel.trim()) return;
+                                        handleInlineTeamUpdate(team.id, {
+                                          jerseyColors: [
+                                            ...jerseys,
+                                            {
+                                              label: newJerseyLabel.trim(),
+                                              hex: newJerseyHex,
+                                            },
+                                          ],
+                                        });
+                                        setNewJerseyLabel('');
+                                      }}
+                                      className="rounded-lg bg-slate-900 px-2 py-1 text-[11px] font-bold text-white dark:bg-amber-500 dark:text-slate-950"
+                                    >
+                                      + Kostum
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <div className="flex items-center gap-1">
-                          <label
-                            title="Upload Logo Tim"
-                            className="cursor-pointer rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-amber-500 dark:hover:bg-slate-800"
-                          >
-                            <ImagePlus className="h-4 w-4" />
-                            <input
-                              type="file"
-                              accept={IMAGE_INPUT_ACCEPT}
-                              className="hidden"
-                              onChange={(e) => {
-                                const f = e.target.files?.[0];
-                                if (f) handleUploadTeamLogo(team.id, f);
-                                e.target.value = '';
-                              }}
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              await apiFetch(`/api/admin/teams/${team.id}`, {
-                                method: 'DELETE',
-                              });
-                              await onRefresh();
-                            }}
-                            className="rounded-lg p-1.5 text-slate-400 hover:bg-red-500/10 hover:text-red-500"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
 
-              {/* STEP 2: BRACKET & SHUFFLE */}
+              {/* STEP 2: BRACKET & POOL STAGE */}
               {stepTab === 'bracket' && (
                 <div className="animate-page-enter space-y-5">
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 dark:bg-amber-500/10">
-                    <p className="text-xs font-medium text-slate-700 dark:text-slate-200">
-                      <strong>Panduan Langkah 2:</strong> Buat bagan otomatis dari daftar tim saat ini, atau acak undiannya.
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleGenerateBracket(true)}
-                        className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400"
-                      >
-                        <Shuffle className="h-3.5 w-3.5" />
-                        Acak &amp; Buat Bagan
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleGenerateBracket(false)}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900"
-                      >
-                        <GitBranch className="h-3.5 w-3.5" />
-                        Buat Sesuai Urutan
-                      </button>
+                  {/* Format Selector: Pure Knockout vs Pool Stage -> Knockout */}
+                  <div className="space-y-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 dark:bg-amber-500/10">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                        Format Kompetisi Kategori Ini
+                      </span>
+                      <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await apiFetch(
+                              `/api/admin/tournaments/${activeTournament.id}`,
+                              {
+                                method: 'PATCH',
+                                body: JSON.stringify({ format: 'knockout' }),
+                              }
+                            );
+                            await onRefresh();
+                          }}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                            (activeTournament.format || 'knockout') === 'knockout'
+                              ? 'bg-amber-500 text-slate-950'
+                              : 'text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          Sistem Gugur Langsung
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await apiFetch(
+                              `/api/admin/tournaments/${activeTournament.id}`,
+                              {
+                                method: 'PATCH',
+                                body: JSON.stringify({ format: 'pool_knockout' }),
+                              }
+                            );
+                            await onRefresh();
+                          }}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                            activeTournament.format === 'pool_knockout'
+                              ? 'bg-amber-500 text-slate-950'
+                              : 'text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          Fase Pool → Babak Gugur
+                        </button>
+                      </div>
                     </div>
+
+                    {activeTournament.format === 'pool_knockout' ? (
+                      <div className="flex flex-wrap items-end justify-between gap-3 border-t border-amber-500/20 pt-3">
+                        <div className="flex flex-wrap items-end gap-2.5">
+                          <div>
+                            <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-400">
+                              Jumlah Pool
+                            </label>
+                            <select
+                              value={poolCountField}
+                              onChange={(e) =>
+                                setPoolCountField(Number(e.target.value))
+                              }
+                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold dark:border-slate-700 dark:bg-slate-950"
+                            >
+                              {[2, 3, 4, 6, 8].map((n) => (
+                                <option key={n} value={n}>
+                                  {n} Pool (Pool A..{String.fromCharCode(64 + n)})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="mb-1 block text-[11px] font-bold text-slate-600 dark:text-slate-400">
+                              Tim Lolos / Pool
+                            </label>
+                            <select
+                              value={advancePerPoolField}
+                              onChange={(e) =>
+                                setAdvancePerPoolField(Number(e.target.value))
+                              }
+                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold dark:border-slate-700 dark:bg-slate-950"
+                            >
+                              <option value={1}>Juara Pool Saja (Top 1)</option>
+                              <option value={2}>Juara &amp; Runner-Up (Top 2)</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleGeneratePools(true)}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400"
+                          >
+                            <Shuffle className="h-3.5 w-3.5" />
+                            Acak Pool &amp; Buat Jadwal
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleGeneratePools(false)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900"
+                          >
+                            <Layers className="h-3.5 w-3.5" />
+                            Buat Sesuai Pool Tim
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleAdvancePools}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-500"
+                          >
+                            <ArrowRight className="h-3.5 w-3.5" />
+                            Loloskan Juara Pool ke Bagan Utama
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-amber-500/20 pt-3">
+                        <p className="text-xs font-medium text-slate-700 dark:text-slate-200">
+                          Buat bagan sistem gugur otomatis dari daftar tim saat ini, atau acak undiannya.
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleGenerateBracket(true)}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400"
+                          >
+                            <Shuffle className="h-3.5 w-3.5" />
+                            Acak &amp; Buat Bagan
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleGenerateBracket(false)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900"
+                          >
+                            <GitBranch className="h-3.5 w-3.5" />
+                            Buat Sesuai Urutan
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
+
+                  {activeTournament.format === 'pool_knockout' && (
+                    <PoolStandingsView
+                      tournament={activeTournament}
+                      teams={categoryTeams}
+                      matches={categoryMatches}
+                    />
+                  )}
 
                   <BracketView matches={categoryMatches} teams={categoryTeams} />
                 </div>
@@ -901,8 +1276,12 @@ export function AdminDashboard({
                   ) : (
                     <div className="grid gap-2.5 md:grid-cols-2">
                       {categoryMatches.map((m, idx) => {
-                        const tA = categoryTeams.find((t) => t.id === m.teamAId)?.name || 'Menunggu';
-                        const tB = categoryTeams.find((t) => t.id === m.teamBId)?.name || 'Menunggu';
+                        const tA = categoryTeams.find((t) => t.id === m.teamAId)?.name || 'TBD';
+                        const tB = categoryTeams.find((t) => t.id === m.teamBId)?.name || 'TBD';
+                        const mr = categoryMatches
+                          .filter((x) => x.bracketType === 'main')
+                          .map((x) => x.round);
+                        const tr = mr.length > 0 ? Math.max(...mr) : 3;
                         return (
                           <div
                             key={m.id}
@@ -911,9 +1290,7 @@ export function AdminDashboard({
                             <div className="flex items-center justify-between gap-2">
                               <span className="font-bold text-amber-500">
                                 Match {idx + 1} •{' '}
-                                {m.bracketType === 'third_place'
-                                  ? 'Juara 3'
-                                  : `Babak ${m.round}`}
+                                {formatInternationalStageLabel(m, tr)}
                               </span>
                               <span className="truncate font-semibold text-slate-600 dark:text-slate-300">
                                 {tA} vs {tB}
@@ -1008,6 +1385,19 @@ export function AdminDashboard({
 
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-500">
+                Deskripsi SEO &amp; Pratinjau Sosial (Meta Description)
+              </label>
+              <textarea
+                rows={2}
+                value={seoDescription}
+                onChange={(e) => setSeoDescription(e.target.value)}
+                placeholder="Kosongkan untuk deskripsi otomatis berdasarkan nama kompetisi &amp; subjudul..."
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">
                 PIN Keamanan Layar TV Arena (/tv)
               </label>
               <input
@@ -1025,8 +1415,67 @@ export function AdminDashboard({
               type="submit"
               className="rounded-xl bg-amber-500 px-5 py-2.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
             >
-              Simpan Perubahan Teks &amp; PIN TV
+              Simpan Perubahan Teks, SEO &amp; PIN TV
             </button>
+
+            {/* Auto-Generated Dynamic Social Image (1200x630 PNG) Preview & Optional Override */}
+            <div className="space-y-2.5 border-t border-slate-100 pt-4 dark:border-slate-800">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                    Social Share Card (WhatsApp / X / Telegram • 1200×630)
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {data.settings?.socialImageUrl
+                      ? 'Menggunakan banner kustom unggahan Anda.'
+                      : 'Dibuat otomatis dari engine web mengikuti Logo Crest SVC & teks kompetisi.'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <label className="cursor-pointer rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold hover:border-amber-500 dark:border-slate-700 dark:bg-slate-950">
+                    Unggah Kustom
+                    <input
+                      type="file"
+                      accept={IMAGE_INPUT_ACCEPT}
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleUploadBrandLogo('social', f);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                  {data.settings?.socialImageUrl && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await apiFetch('/api/admin/settings', {
+                          method: 'PUT',
+                          body: JSON.stringify({ resetSocialImage: true }),
+                        });
+                        await onRefresh();
+                        flash('Social image dikembalikan ke generator otomatis SVC.');
+                      }}
+                      className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:text-red-500 dark:border-slate-700 dark:text-slate-400"
+                    >
+                       Pakai Otomatis
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-950 dark:border-slate-800">
+                <img
+                  src={
+                    data.settings?.socialImageUrl
+                      ? data.settings.socialImageUrl
+                      : `/api/public/og-image.png?v=${ogPreviewBust}`
+                  }
+                  alt="Pratinjau OpenGraph Social Card"
+                  className="aspect-[1200/630] w-full object-cover"
+                />
+              </div>
+            </div>
           </form>
 
           <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">

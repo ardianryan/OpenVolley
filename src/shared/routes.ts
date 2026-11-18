@@ -20,6 +20,7 @@ const EXACT_SPA_PATHS = new Set([
   '/back-office/beranda',
   '/back-office/operator',
   '/back-office/bagan',
+  '/back-office/dokumen',
   '/back-office/media',
   '/back-office/branding',
   '/back-office/akun',

@@ -16,6 +16,11 @@ sqlite.exec('PRAGMA foreign_keys = ON;');
 
 export const db = drizzle(sqlite, { schema });
 
+function getColumnSet(tableName: string): Set<string> {
+  const cols = sqlite.query(`PRAGMA table_info('${tableName}')`).all() as Array<{ name: string }>;
+  return new Set(cols.map((c) => c.name));
+}
+
 export function initDatabase() {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS site_settings (
@@ -28,7 +33,11 @@ export function initDatabase() {
       organizer_logo_url TEXT NOT NULL DEFAULT '/brand/logo_smansage.png',
       sponsors_json TEXT NOT NULL DEFAULT '[]',
       tv_pin TEXT NOT NULL DEFAULT '4426',
-      accent_color TEXT NOT NULL DEFAULT '#E09D17'
+      accent_color TEXT NOT NULL DEFAULT '#E09D17',
+      seo_description TEXT NOT NULL DEFAULT '',
+      social_image_url TEXT NOT NULL DEFAULT '',
+      public_docs_enabled INTEGER NOT NULL DEFAULT 1,
+      doc_settings_json TEXT NOT NULL DEFAULT '{}'
     );
 
     CREATE TABLE IF NOT EXISTS users (
@@ -46,6 +55,9 @@ export function initDatabase() {
       slug TEXT NOT NULL UNIQUE,
       is_enabled INTEGER NOT NULL DEFAULT 1,
       status TEXT NOT NULL DEFAULT 'active',
+      format TEXT NOT NULL DEFAULT 'knockout',
+      pool_count INTEGER NOT NULL DEFAULT 4,
+      advance_per_pool INTEGER NOT NULL DEFAULT 2,
       best_of INTEGER NOT NULL DEFAULT 3,
       regular_set_points INTEGER NOT NULL DEFAULT 25,
       deciding_set_points INTEGER NOT NULL DEFAULT 15,
@@ -63,7 +75,11 @@ export function initDatabase() {
       school TEXT NOT NULL DEFAULT '',
       logo_url TEXT,
       color TEXT NOT NULL DEFAULT '#E09D17',
-      seed INTEGER NOT NULL DEFAULT 0
+      seed INTEGER NOT NULL DEFAULT 0,
+      pool_name TEXT,
+      coach_name TEXT NOT NULL DEFAULT '',
+      manager_name TEXT NOT NULL DEFAULT '',
+      jersey_colors TEXT NOT NULL DEFAULT '[]'
     );
 
     CREATE TABLE IF NOT EXISTS matches (
@@ -72,6 +88,8 @@ export function initDatabase() {
       round INTEGER NOT NULL,
       match_index INTEGER NOT NULL,
       bracket_type TEXT NOT NULL DEFAULT 'main',
+      pool_name TEXT,
+      stage_label TEXT,
       team_a_id INTEGER REFERENCES teams(id) ON DELETE SET NULL,
       team_b_id INTEGER REFERENCES teams(id) ON DELETE SET NULL,
       winner_id INTEGER REFERENCES teams(id) ON DELETE SET NULL,
@@ -98,6 +116,10 @@ export function initDatabase() {
       set_number INTEGER NOT NULL,
       score_a INTEGER NOT NULL DEFAULT 0,
       score_b INTEGER NOT NULL DEFAULT 0,
+      timeouts_a INTEGER NOT NULL DEFAULT 0,
+      timeouts_b INTEGER NOT NULL DEFAULT 0,
+      subs_a INTEGER NOT NULL DEFAULT 0,
+      subs_b INTEGER NOT NULL DEFAULT 0,
       is_finished INTEGER NOT NULL DEFAULT 0,
       winner_id INTEGER
     );
@@ -114,16 +136,8 @@ export function initDatabase() {
     );
   `);
 
-  // Safe column migration for existing DBs
-  const cols = sqlite.query("PRAGMA table_info('matches')").all() as Array<{ name: string }>;
-  const colNames = new Set(cols.map((c) => c.name));
-  if (!colNames.has('best_of')) sqlite.exec('ALTER TABLE matches ADD COLUMN best_of INTEGER;');
-  if (!colNames.has('regular_set_points')) sqlite.exec('ALTER TABLE matches ADD COLUMN regular_set_points INTEGER;');
-  if (!colNames.has('deciding_set_points')) sqlite.exec('ALTER TABLE matches ADD COLUMN deciding_set_points INTEGER;');
-  if (!colNames.has('use_deuce')) sqlite.exec('ALTER TABLE matches ADD COLUMN use_deuce INTEGER;');
-
-  const settingCols = sqlite.query("PRAGMA table_info('site_settings')").all() as Array<{ name: string }>;
-  const settingColNames = new Set(settingCols.map((c) => c.name));
+  // Safe idempotent column migrations for existing databases
+  const settingColNames = getColumnSet('site_settings');
   if (!settingColNames.has('organizer_logo_url')) {
     sqlite.exec("ALTER TABLE site_settings ADD COLUMN organizer_logo_url TEXT NOT NULL DEFAULT '/brand/logo_smansage.png';");
   }
@@ -133,9 +147,59 @@ export function initDatabase() {
   if (!settingColNames.has('tv_pin')) {
     sqlite.exec("ALTER TABLE site_settings ADD COLUMN tv_pin TEXT NOT NULL DEFAULT '4426';");
   }
+  if (!settingColNames.has('seo_description')) {
+    sqlite.exec("ALTER TABLE site_settings ADD COLUMN seo_description TEXT NOT NULL DEFAULT '';");
+  }
+  if (!settingColNames.has('social_image_url')) {
+    sqlite.exec("ALTER TABLE site_settings ADD COLUMN social_image_url TEXT NOT NULL DEFAULT '';");
+  }
+  if (!settingColNames.has('public_docs_enabled')) {
+    sqlite.exec('ALTER TABLE site_settings ADD COLUMN public_docs_enabled INTEGER NOT NULL DEFAULT 1;');
+  }
+  if (!settingColNames.has('doc_settings_json')) {
+    sqlite.exec("ALTER TABLE site_settings ADD COLUMN doc_settings_json TEXT NOT NULL DEFAULT '{}';");
+  }
 
-  const reportCols = sqlite.query("PRAGMA table_info('match_reports')").all() as Array<{ name: string }>;
-  const reportColNames = new Set(reportCols.map((c) => c.name));
+  const tournamentColNames = getColumnSet('tournaments');
+  if (!tournamentColNames.has('format')) {
+    sqlite.exec("ALTER TABLE tournaments ADD COLUMN format TEXT NOT NULL DEFAULT 'knockout';");
+  }
+  if (!tournamentColNames.has('pool_count')) {
+    sqlite.exec('ALTER TABLE tournaments ADD COLUMN pool_count INTEGER NOT NULL DEFAULT 4;');
+  }
+  if (!tournamentColNames.has('advance_per_pool')) {
+    sqlite.exec('ALTER TABLE tournaments ADD COLUMN advance_per_pool INTEGER NOT NULL DEFAULT 2;');
+  }
+
+  const teamColNames = getColumnSet('teams');
+  if (!teamColNames.has('pool_name')) {
+    sqlite.exec('ALTER TABLE teams ADD COLUMN pool_name TEXT;');
+  }
+  if (!teamColNames.has('coach_name')) {
+    sqlite.exec("ALTER TABLE teams ADD COLUMN coach_name TEXT NOT NULL DEFAULT '';");
+  }
+  if (!teamColNames.has('manager_name')) {
+    sqlite.exec("ALTER TABLE teams ADD COLUMN manager_name TEXT NOT NULL DEFAULT '';");
+  }
+  if (!teamColNames.has('jersey_colors')) {
+    sqlite.exec("ALTER TABLE teams ADD COLUMN jersey_colors TEXT NOT NULL DEFAULT '[]';");
+  }
+
+  const matchColNames = getColumnSet('matches');
+  if (!matchColNames.has('best_of')) sqlite.exec('ALTER TABLE matches ADD COLUMN best_of INTEGER;');
+  if (!matchColNames.has('regular_set_points')) sqlite.exec('ALTER TABLE matches ADD COLUMN regular_set_points INTEGER;');
+  if (!matchColNames.has('deciding_set_points')) sqlite.exec('ALTER TABLE matches ADD COLUMN deciding_set_points INTEGER;');
+  if (!matchColNames.has('use_deuce')) sqlite.exec('ALTER TABLE matches ADD COLUMN use_deuce INTEGER;');
+  if (!matchColNames.has('pool_name')) sqlite.exec('ALTER TABLE matches ADD COLUMN pool_name TEXT;');
+  if (!matchColNames.has('stage_label')) sqlite.exec('ALTER TABLE matches ADD COLUMN stage_label TEXT;');
+
+  const setColNames = getColumnSet('match_sets');
+  if (!setColNames.has('timeouts_a')) sqlite.exec('ALTER TABLE match_sets ADD COLUMN timeouts_a INTEGER NOT NULL DEFAULT 0;');
+  if (!setColNames.has('timeouts_b')) sqlite.exec('ALTER TABLE match_sets ADD COLUMN timeouts_b INTEGER NOT NULL DEFAULT 0;');
+  if (!setColNames.has('subs_a')) sqlite.exec('ALTER TABLE match_sets ADD COLUMN subs_a INTEGER NOT NULL DEFAULT 0;');
+  if (!setColNames.has('subs_b')) sqlite.exec('ALTER TABLE match_sets ADD COLUMN subs_b INTEGER NOT NULL DEFAULT 0;');
+
+  const reportColNames = getColumnSet('match_reports');
   if (!reportColNames.has('media_json')) {
     sqlite.exec("ALTER TABLE match_reports ADD COLUMN media_json TEXT NOT NULL DEFAULT '[]';");
   }
@@ -157,7 +221,16 @@ export async function seedDefaults() {
       sponsorsJson: '[]',
       tvPin: '4426',
       accentColor: '#E09D17',
+      seoDescription:
+        'Portal Resmi Live Score, Bagan Turnamen, Buletin Resmi, dan Galeri Pertandingan Smansage Volleyball Competition (AVERSA • Dies Natalis 44 SMA Negeri 1 Gedeg).',
+      socialImageUrl: '',
+      publicDocsEnabled: true,
+      docSettingsJson: '{}',
     });
+  } else if (existingSettings.logoUrl === '/brand/svc-standalone-color.svg') {
+    sqlite.exec(
+      "UPDATE site_settings SET logo_url = '/brand/svc-crest-color.svg' WHERE id = 'default' AND logo_url = '/brand/svc-standalone-color.svg';"
+    );
   }
 
   const existingAdmin = await db.query.users.findFirst();
@@ -199,6 +272,7 @@ export async function seedDefaults() {
         slug: 'putra',
         isEnabled: true,
         status: 'active',
+        format: 'knockout',
         bestOf: 3,
         regularSetPoints: 25,
         decidingSetPoints: 15,
@@ -212,6 +286,7 @@ export async function seedDefaults() {
         slug: 'putri',
         isEnabled: true,
         status: 'active',
+        format: 'knockout',
         bestOf: 3,
         regularSetPoints: 25,
         decidingSetPoints: 15,

@@ -11,6 +11,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { formatRoundColumnLabel } from '../../shared/stages';
 import type { Match, Team } from '../types';
 import { TeamAvatar } from './TeamAvatar';
 
@@ -21,16 +22,7 @@ interface BracketViewProps {
   onSelectMatch?: (match: Match) => void;
 }
 
-type PoolFilter = 'all' | 'poolA' | 'center' | 'poolB';
-
-function getRoundLabel(round: number, totalRounds: number, pool?: 'A' | 'B') {
-  const diff = totalRounds - round;
-  if (diff === 0) return 'Grand Final';
-  if (diff === 1) return pool ? `Semifinal ${pool}` : 'Semifinal';
-  if (diff === 2) return '8 Besar';
-  if (diff === 3) return pool ? `16 Besar (${pool})` : '16 Besar';
-  return `Babak ${round}`;
-}
+type WingFilter = 'all' | 'left' | 'center' | 'right';
 
 /**
  * Draws SVG bracket connector lines between N matches (left) and N/2 matches (right).
@@ -88,7 +80,7 @@ export function BracketView({
   highlightedMatchId,
   onSelectMatch,
 }: BracketViewProps) {
-  const [poolFilter, setPoolFilter] = useState<PoolFilter>('all');
+  const [wingFilter, setWingFilter] = useState<WingFilter>('all');
   const [compact, setCompact] = useState(true);
 
   // Interactive Semi-3D Map Pan & Zoom state
@@ -129,7 +121,7 @@ export function BracketView({
   useEffect(() => {
     const timer = setTimeout(fitToViewport, 60);
     return () => clearTimeout(timer);
-  }, [poolFilter, compact, matches.length]);
+  }, [wingFilter, compact, matches.length]);
 
   // Non-passive wheel listener so Ctrl/Cmd + Scroll & trackpad pinch zoom the bracket, not the browser page
   useEffect(() => {
@@ -273,6 +265,11 @@ export function BracketView({
   const renderMatchCard = (match: Match, badgeLabel?: string, delayIdx = 0) => {
     const teamA = match.teamAId ? teamMap.get(match.teamAId) : null;
     const teamB = match.teamBId ? teamMap.get(match.teamBId) : null;
+    const stagePlaceholders = match.stageLabel?.includes(' vs ')
+      ? match.stageLabel.split(' vs ')
+      : [null, null];
+    const placeholderA = stagePlaceholders[0] || 'TBD';
+    const placeholderB = stagePlaceholders[1] || 'TBD';
     const isLive = match.status === 'live';
     const isFinished = match.status === 'finished';
     const isBye = match.status === 'bye';
@@ -327,7 +324,7 @@ export function BracketView({
           )}
           {isFinished && (
             <span className="shrink-0 uppercase tracking-wider text-amber-800 dark:text-amber-400">
-              SELESAI
+              FINAL
             </span>
           )}
           {isBye && (
@@ -352,10 +349,14 @@ export function BracketView({
             />
             {!compact && <TeamAvatar team={teamA} size="sm" />}
             <p
-              title={teamA?.name}
-              className="truncate text-xs font-semibold text-slate-900 dark:text-slate-100"
+              title={teamA?.name || placeholderA}
+              className={`truncate text-xs font-semibold ${
+                teamA
+                  ? 'text-slate-900 dark:text-slate-100'
+                  : 'italic text-slate-500 dark:text-slate-400'
+              }`}
             >
-              {teamA ? teamA.name : isBye ? 'BYE' : 'Menunggu'}
+              {teamA ? teamA.name : isBye ? 'BYE' : placeholderA}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1 tabular-nums">
@@ -393,10 +394,14 @@ export function BracketView({
             />
             {!compact && <TeamAvatar team={teamB} size="sm" />}
             <p
-              title={teamB?.name}
-              className="truncate text-xs font-semibold text-slate-900 dark:text-slate-100"
+              title={teamB?.name || placeholderB}
+              className={`truncate text-xs font-semibold ${
+                teamB
+                  ? 'text-slate-900 dark:text-slate-100'
+                  : 'italic text-slate-500 dark:text-slate-400'
+              }`}
             >
-              {teamB ? teamB.name : isBye ? 'BYE' : 'Menunggu'}
+              {teamB ? teamB.name : isBye ? 'BYE' : placeholderB}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1 tabular-nums">
@@ -425,24 +430,24 @@ export function BracketView({
 
   return (
     <div className="space-y-4">
-      {/* Pool Filter Pills + Compact/Detail Toggle */}
+      {/* Wing Filter Pills + Compact/Detail Toggle */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         {totalRounds >= 2 && (
           <div className="flex flex-wrap gap-1.5">
             {(
               [
-                ['all', 'Semua Bagan'],
-                ['poolA', 'Pool A (Kiri)'],
-                ['center', 'Partai Puncak'],
-                ['poolB', 'Pool B (Kanan)'],
+                ['all', 'All Brackets'],
+                ['left', 'Left Bracket'],
+                ['center', 'Finals Stage'],
+                ['right', 'Right Bracket'],
               ] as const
             ).map(([key, label]) => (
               <button
                 key={key}
                 type="button"
-                onClick={() => setPoolFilter(key)}
+                onClick={() => setWingFilter(key)}
                 className={`min-h-11 rounded-full px-3.5 py-2 text-xs font-bold transition sm:min-h-8 sm:py-1.5 ${
-                  poolFilter === key
+                  wingFilter === key
                     ? 'bg-amber-500 text-slate-950 shadow-sm'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
                 }`}
@@ -461,12 +466,12 @@ export function BracketView({
           {compact ? (
             <>
               <Maximize2 className="h-3.5 w-3.5 text-amber-700 dark:text-amber-400" />
-              Perbesar Kartu
+              Detailed Cards
             </>
           ) : (
             <>
               <Minimize2 className="h-3.5 w-3.5 text-amber-700 dark:text-amber-400" />
-              Mode Ringkas (Full)
+              Compact View
             </>
           )}
         </button>
@@ -476,14 +481,14 @@ export function BracketView({
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-xl border border-slate-200/80 bg-white/80 px-3.5 py-2 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-300">
         <span className="inline-flex items-center gap-1.5 font-semibold">
           <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
-          Sedang Live
+          Live Match
         </span>
         <span className="inline-flex items-center gap-1.5 font-semibold">
           <span className="h-2.5 w-2.5 rounded-sm bg-amber-500" />
-          Pemenang Lolos
+          Advancing Winner
         </span>
         <span className="text-slate-600 dark:text-slate-400">
-          • Pool A (Kiri) &amp; Pool B (Kanan) bertemu di Grand Final tengah.
+          • Left Bracket &amp; Right Bracket converge at the Grand Final in the center.
         </span>
       </div>
 
@@ -557,8 +562,8 @@ export function BracketView({
               transformOrigin: 'center center',
             }}
           >
-          {/* POOL A (LEFT -> CENTER) */}
-          {(poolFilter === 'all' || poolFilter === 'poolA') &&
+          {/* LEFT BRACKET (LEFT -> CENTER) */}
+          {(wingFilter === 'all' || wingFilter === 'left') &&
             preFinalRounds.map((round, rIdx) => {
               const allInRound = mainMatches
                 .filter((m) => m.round === round)
@@ -586,7 +591,7 @@ export function BracketView({
                   <div className="flex flex-col">
                     <div className="sport-skew mb-3 flex items-center justify-between rounded bg-slate-900 px-2.5 py-1.5 text-xs font-extrabold uppercase tracking-wider text-amber-400 dark:bg-slate-800">
                       <span className="sport-unskew truncate">
-                        {getRoundLabel(round, totalRounds, 'A')}
+                        {formatRoundColumnLabel(round, totalRounds, 'L')}
                       </span>
                     </div>
                     <div className="flex flex-1 flex-col justify-around gap-3">
@@ -610,14 +615,14 @@ export function BracketView({
               );
             })}
 
-          {/* CENTER: PARTAI PUNCAK & PODIUM */}
-          {(poolFilter === 'all' || poolFilter === 'center') && (
+          {/* CENTER: FINALS STAGE & PODIUM */}
+          {(wingFilter === 'all' || wingFilter === 'center') && (
             <div className="flex flex-col items-center justify-center gap-3 px-2 sm:px-3">
               <div
                 className={`${cardWidth} inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-600 via-amber-500 to-amber-400 px-3 py-1.5 text-center text-xs font-extrabold uppercase tracking-widest text-slate-950 shadow-md shadow-amber-500/20`}
               >
                 <Crown className="h-3.5 w-3.5 shrink-0" />
-                <span>Partai Puncak</span>
+                <span>Finals Stage</span>
               </div>
 
               {/* Champion Card */}
@@ -626,17 +631,17 @@ export function BracketView({
               >
                 <Crown className="mx-auto h-5 w-5 text-amber-400" />
                 <p className="mt-1 text-[11px] font-bold uppercase tracking-widest text-amber-300">
-                  Juara 1 (Champion)
+                  1st Place • Champion
                 </p>
                 <p className="mt-0.5 truncate font-display text-base font-extrabold uppercase">
-                  {champion ? champion.name : '[ Menunggu Juara ]'}
+                  {champion ? champion.name : '[ TBD Champion ]'}
                 </p>
               </div>
 
               {finalMatch && renderMatchCard(finalMatch, 'GRAND FINAL')}
 
               {thirdPlaceMatch &&
-                renderMatchCard(thirdPlaceMatch, 'Perebutan Juara 3', 2)}
+                renderMatchCard(thirdPlaceMatch, '3RD PLACE MATCH', 2)}
 
               {/* Podium Recap */}
               <div
@@ -644,17 +649,17 @@ export function BracketView({
               >
                 <p className="mb-1.5 flex items-center gap-1.5 font-display text-xs font-extrabold uppercase tracking-wider text-amber-800 dark:text-amber-400">
                   <Award className="h-3.5 w-3.5" />
-                  Podium Juara
+                  Official Podium
                 </p>
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex shrink-0 items-center gap-1 font-semibold text-amber-800 dark:text-amber-400">
-                    <Medal className="h-3 w-3" /> 1
+                    <Medal className="h-3 w-3" /> 1st
                   </span>
                   <span className="truncate font-bold">{champion?.name || '-'}</span>
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex shrink-0 items-center gap-1 font-semibold text-slate-600 dark:text-slate-400">
-                    <Medal className="h-3 w-3" /> 2
+                    <Medal className="h-3 w-3" /> 2nd
                   </span>
                   <span className="truncate font-semibold">{runnerUp?.name || '-'}</span>
                 </div>
@@ -662,13 +667,13 @@ export function BracketView({
                   <>
                     <div className="flex items-center justify-between gap-2">
                       <span className="flex shrink-0 items-center gap-1 font-semibold text-amber-800 dark:text-amber-500">
-                        <Medal className="h-3 w-3" /> 3
+                        <Medal className="h-3 w-3" /> 3rd
                       </span>
                       <span className="truncate font-semibold">{thirdWinner?.name || '-'}</span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="shrink-0 font-semibold text-slate-600 dark:text-slate-400">
-                        4
+                        4th
                       </span>
                       <span className="truncate text-slate-600 dark:text-slate-400">
                         {fourthPlace?.name || '-'}
@@ -680,8 +685,8 @@ export function BracketView({
             </div>
           )}
 
-          {/* POOL B (CENTER <- RIGHT MIRRORED) */}
-          {(poolFilter === 'all' || poolFilter === 'poolB') &&
+          {/* RIGHT BRACKET (CENTER <- RIGHT MIRRORED) */}
+          {(wingFilter === 'all' || wingFilter === 'right') &&
             rightRounds.map((round, rIdx) => {
               const allInRound = mainMatches
                 .filter((m) => m.round === round)
@@ -720,7 +725,7 @@ export function BracketView({
                   <div className="flex flex-col">
                     <div className="sport-skew mb-3 flex items-center justify-between rounded bg-slate-900 px-2.5 py-1.5 text-xs font-extrabold uppercase tracking-wider text-sky-400 dark:bg-slate-800">
                       <span className="sport-unskew truncate">
-                        {getRoundLabel(round, totalRounds, 'B')}
+                        {formatRoundColumnLabel(round, totalRounds, 'R')}
                       </span>
                     </div>
                     <div className="flex flex-1 flex-col justify-around gap-3">
