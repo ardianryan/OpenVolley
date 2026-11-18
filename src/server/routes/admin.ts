@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { sanitizeHexColor, sanitizePlainText } from '../../shared/sanitize';
 import { db } from '../db';
-import { matches, siteSettings, teams, tournaments } from '../db/schema';
+import { matchReports, matches, siteSettings, teams, tournaments } from '../db/schema';
 import { type AuthUser, requireAuth } from '../middleware/auth';
 import { generateBracket, initializeDrawBracket } from '../services/bracket';
 import { getFullOverview } from '../services/overview';
@@ -17,7 +17,11 @@ import {
   undoLastAction,
 } from '../services/scoring';
 import { broadcastEvent } from '../services/sse';
-import { deleteUploadedImage, saveUploadedImage } from '../services/upload';
+import {
+  deleteUploadedImage,
+  deleteUploadedReportAssets,
+  saveUploadedImage,
+} from '../services/upload';
 
 export const adminRoutes = new Hono<{ Variables: { user: AuthUser } }>();
 
@@ -321,9 +325,51 @@ adminRoutes.patch('/tournaments/:id', async (c) => {
 
 adminRoutes.delete('/tournaments/:id', async (c) => {
   const id = Number(c.req.param('id'));
+  const existing = await db.query.tournaments.findFirst({
+    where: eq(tournaments.id, id),
+  });
+  if (!existing) {
+    return c.json({ error: 'Kategori pertandingan tidak ditemukan' }, 404);
+  }
+
+  // Collect uploaded team logos & gallery report media before SQLite ON DELETE CASCADE wipes rows
+  const catTeams = await db
+    .select({ logoUrl: teams.logoUrl })
+    .from(teams)
+    .where(eq(teams.tournamentId, id));
+
+  const catMatches = await db
+    .select({ id: matches.id })
+    .from(matches)
+    .where(eq(matches.tournamentId, id));
+  const matchIds = catMatches.map((m) => m.id);
+
+  const catReports =
+    matchIds.length > 0
+      ? await db
+          .select({ imagePath: matchReports.imagePath, mediaJson: matchReports.mediaJson })
+          .from(matchReports)
+          .where(inArray(matchReports.matchId, matchIds))
+      : [];
+
+  // Delete tournament (cascades teams, matches, match_sets, and match_reports)
   await db.delete(tournaments).where(eq(tournaments.id, id));
+
+  // Best-effort cleanup of S3 / local disk assets
+  for (const t of catTeams) {
+    if (t.logoUrl) await deleteUploadedImage(t.logoUrl);
+  }
+  for (const rep of catReports) {
+    await deleteUploadedReportAssets(rep.imagePath, rep.mediaJson);
+  }
+
   await broadcastEvent('tournament_updated', { id, deleted: true });
-  return c.json({ ok: true });
+  return c.json({
+    ok: true,
+    deletedTeams: catTeams.length,
+    deletedMatches: catMatches.length,
+    deletedReports: catReports.length,
+  });
 });
 
 // Teams

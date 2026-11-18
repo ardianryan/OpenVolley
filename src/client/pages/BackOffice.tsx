@@ -5,6 +5,7 @@ import {
   ExternalLink,
   GitBranch,
   Home,
+  KeyRound,
   LayoutGrid,
   LogOut,
   Monitor,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { SupportedErrorCode } from '../../shared/routes';
+import { ChangePasswordModal } from '../components/ChangePasswordModal';
 import { ErrorPage } from '../components/ErrorPage';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { VolleyballIcon } from '../components/VolleyballIcon';
@@ -82,6 +84,7 @@ export function BackOffice() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [data, setData] = useState<OverviewData | null>(null);
   const [loadError, setLoadError] = useState<SupportedErrorCode | null>(null);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const [section, setSectionState] = useState<BackOfficeSection>(() => getInitialSection());
 
   const setSection = useCallback((next: BackOfficeSection) => {
@@ -503,15 +506,26 @@ export function BackOffice() {
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={handleLogout}
-              aria-label="Keluar sesi"
-              title="Keluar"
-              className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-500/10 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
+            <div className="flex shrink-0 items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => setShowChangePassword(true)}
+                aria-label="Ubah password akun"
+                title="Ubah Password"
+                className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-amber-500/15 hover:text-amber-800 dark:text-slate-400 dark:hover:text-amber-300"
+              >
+                <KeyRound className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handleLogout}
+                aria-label="Keluar sesi"
+                title="Keluar"
+                className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-red-500/10 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
       </aside>
@@ -552,6 +566,15 @@ export function BackOffice() {
               </button>
             )}
             <ThemeToggle />
+            <button
+              type="button"
+              onClick={() => setShowChangePassword(true)}
+              aria-label="Ubah password akun"
+              title="Ubah Password Saya"
+              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-700 shadow-xs transition hover:border-amber-600 hover:text-amber-800 sm:h-9 sm:w-9 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-amber-400 dark:hover:text-amber-300"
+            >
+              <KeyRound className="h-4 w-4" />
+            </button>
             <button
               type="button"
               onClick={handleLogout}
@@ -820,6 +843,13 @@ export function BackOffice() {
           })}
         </div>
       </nav>
+
+      {showChangePassword && (
+        <ChangePasswordModal
+          user={user}
+          onClose={() => setShowChangePassword(false)}
+        />
+      )}
     </div>
   );
 }

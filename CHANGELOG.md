@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] - 2026-11-18
+
+### Added
+- **Dashboard Password Management & Self-Service Security**:
+  - Added `POST /api/auth/change-password` (rate-limited, verifies current Argon2id password) and `ChangePasswordModal` accessible to all authenticated roles (`admin`, `panitia`, `media`) from the Back-Office top bar and sidebar.
+  - Added `PUT /api/auth/users/:id` and inline **Ubah Password / Edit** controls in **Manajemen Akun** (`/back-office/akun`) allowing administrators to reset any staff password, update display names/roles, and prevent accidental self-demotion.
+  - Exposed Arena TV security PIN (`tvPin`) configuration directly inside **Branding & Logo** in addition to the Operator Console.
+- **Category Deletion with Responsive Cascade Warning (`ConfirmDeleteCategoryModal`)**:
+  - Added **Hapus Kategori** in **Kategori & Bagan** (`/back-office/turnamen`) guarded by a responsive confirmation dialog (centered modal on desktop, slide-up bottom sheet on mobile) detailing the exact count of teams, matches/schedules/scores, and gallery media that will be permanently removed, plus automatic S3/local asset cleanup on cascade delete.
+
+---
+
 ## [0.1.0] - 2026-11-18
 
 ### Added
@@ -50,5 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **DevOps, CI/CD & Documentation**:
   - Multi-stage Alpine `Dockerfile`, `docker-compose.yml`, GitHub Actions (`CI`, `CodeQL`, multi-arch `GHCR` Docker package publishing, and automated GitHub Releases), `CITATION.cff`, BibTeX metadata, GitHub Custom Properties schema, and English documentation suite under `docs/`.
 
-[Unreleased]: https://github.com/ardianryan/OpenVolley/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ardianryan/OpenVolley/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/ardianryan/OpenVolley/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ardianryan/OpenVolley/releases/tag/v0.1.0

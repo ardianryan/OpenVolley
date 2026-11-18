@@ -25,9 +25,10 @@ All API endpoints are served under `/api/*` and return UTF-8 JSON (except SSE st
 | `POST` | `/api/auth/login` | Rate-Limited | Authenticates `{ "username", "password" }` and sets the `HttpOnly` `ov_token` JWT cookie (`7-day` TTL). Returns `429` + `Retry-After` after `8` failed attempts in `5` minutes. |
 | `POST` | `/api/auth/logout` | Public | Clears the `ov_token` cookie. |
 | `GET` | `/api/auth/me` | Authenticated | Returns the active user profile (`id`, `username`, `name`, `role`). |
+| `POST` | `/api/auth/change-password` | Authenticated + Rate-Limited | Self-service password update (`{ "currentPassword", "newPassword" }`, min. 6 chars) for any logged-in user (`admin`, `panitia`, `media`). |
 | `GET` | `/api/auth/users` | `admin` | Lists all registered staff accounts (without password hashes). |
 | `POST` | `/api/auth/users` | `admin` | Creates a new staff account (`role`: `'admin' \| 'panitia' \| 'media'`). |
-| `PUT` | `/api/auth/users/:id` | `admin` | Updates account display name, role, or password. |
+| `PUT` | `/api/auth/users/:id` | `admin` | Updates account display `name`, `role`, or resets `password` (blocks self-demotion of the active admin). |
 | `DELETE` | `/api/auth/users/:id` | `admin` | Deletes a staff account (prevents self-deletion of the active admin). |
 
 ---

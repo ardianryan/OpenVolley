@@ -22,6 +22,12 @@ export const loginRateLimiter = createRateLimiter({
   namespace: 'auth_login',
 });
 
+export const passwordChangeLimiter = createRateLimiter({
+  windowMs: 5 * 60 * 1000,
+  maxAttempts: 8,
+  namespace: 'auth_pwd_change',
+});
+
 authRoutes.post('/login', async (c) => {
   const limit = loginRateLimiter.check(c);
   if (!limit.allowed) {
@@ -90,6 +96,53 @@ authRoutes.get('/me', requireAuth(), (c) => {
   return c.json({ user: c.get('user') });
 });
 
+// Self-service password change for any authenticated user (admin, panitia, media)
+authRoutes.post('/change-password', requireAuth(), async (c) => {
+  const limit = passwordChangeLimiter.check(c);
+  if (!limit.allowed) {
+    c.header('Retry-After', String(limit.retryAfterSec));
+    return c.json(
+      { error: `Terlalu banyak percobaan. Coba lagi dalam ${limit.retryAfterSec} detik.` },
+      429
+    );
+  }
+
+  const body = await c
+    .req.json<{ currentPassword?: string; newPassword?: string }>()
+    .catch(() => ({ currentPassword: '', newPassword: '' }));
+
+  const currentPassword = body.currentPassword ?? '';
+  const newPassword = body.newPassword ?? '';
+
+  if (!currentPassword || !newPassword) {
+    return c.json({ error: 'Password saat ini dan password baru wajib diisi' }, 400);
+  }
+
+  if (newPassword.length < 6 || newPassword.length > 128) {
+    return c.json({ error: 'Password baru minimal 6 karakter (maksimal 128 karakter)' }, 400);
+  }
+
+  const authUser = c.get('user');
+  const dbUser = await db.query.users.findFirst({
+    where: eq(users.id, authUser.id),
+  });
+
+  if (!dbUser || !(await Bun.password.verify(currentPassword, dbUser.passwordHash))) {
+    passwordChangeLimiter.recordFailure(c);
+    return c.json({ error: 'Password saat ini tidak sesuai' }, 401);
+  }
+
+  passwordChangeLimiter.reset(c);
+
+  const nextHash = await Bun.password.hash(newPassword);
+  await db
+    .update(users)
+    .set({ passwordHash: nextHash })
+    .where(eq(users.id, dbUser.id));
+
+  return c.json({ ok: true });
+});
+
 // Admin-only user management
 authRoutes.get('/users', requireAuth(['admin']), async (c) => {
   const list = await db
@@ -117,6 +170,10 @@ authRoutes.post('/users', requireAuth(['admin']), async (c) => {
   const cleanName = sanitizePlainText(body.name, 100);
   if (!cleanUsername || !cleanName || !body.password) {
     return c.json({ error: 'Username, nama, dan password wajib diisi' }, 400);
+  }
+
+  if (body.password.length < 6 || body.password.length > 128) {
+    return c.json({ error: 'Password minimal 6 karakter (maksimal 128 karakter)' }, 400);
   }
 
   const role = body.role ?? 'panitia';
@@ -150,6 +207,93 @@ authRoutes.post('/users', requireAuth(['admin']), async (c) => {
     });
 
   return c.json({ user: created }, 201);
+});
+
+authRoutes.put('/users/:id', requireAuth(['admin']), async (c) => {
+  const id = Number(c.req.param('id'));
+  const currentUser = c.get('user');
+
+  const existing = await db.query.users.findFirst({
+    where: eq(users.id, id),
+  });
+  if (!existing) {
+    return c.json({ error: 'Akun tidak ditemukan' }, 404);
+  }
+
+  const body = await c
+    .req.json<{
+      name?: string;
+      role?: 'admin' | 'panitia' | 'media';
+      password?: string;
+    }>()
+    .catch(() => ({} as { name?: string; role?: 'admin' | 'panitia' | 'media'; password?: string }));
+
+  const updates: Partial<typeof users.$inferInsert> = {};
+
+  if (body.name !== undefined) {
+    const cleanName = sanitizePlainText(body.name, 100);
+    if (!cleanName) {
+      return c.json({ error: 'Nama lengkap tidak boleh kosong' }, 400);
+    }
+    updates.name = cleanName;
+  }
+
+  if (body.role !== undefined) {
+    if (!VALID_ROLES.includes(body.role)) {
+      return c.json({ error: 'Role pengguna tidak valid' }, 400);
+    }
+    if (id === currentUser.id && body.role !== 'admin') {
+      return c.json({ error: 'Tidak dapat menurunkan role akun admin yang sedang dipakai' }, 400);
+    }
+    updates.role = body.role;
+  }
+
+  if (body.password !== undefined && body.password !== '') {
+    if (body.password.length < 6 || body.password.length > 128) {
+      return c.json({ error: 'Password baru minimal 6 karakter (maksimal 128 karakter)' }, 400);
+    }
+    updates.passwordHash = await Bun.password.hash(body.password);
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return c.json({ error: 'Tidak ada perubahan yang dikirim' }, 400);
+  }
+
+  const [updated] = await db
+    .update(users)
+    .set(updates)
+    .where(eq(users.id, id))
+    .returning({
+      id: users.id,
+      username: users.username,
+      name: users.name,
+      role: users.role,
+      createdAt: users.createdAt,
+    });
+
+  // Refresh active session cookie if admin updated their own display name
+  if (id === currentUser.id && updated) {
+    const token = await sign(
+      {
+        id: updated.id,
+        username: updated.username,
+        name: updated.name,
+        role: updated.role,
+        exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
+      },
+      JWT_SECRET,
+      'HS256'
+    );
+    setCookie(c, AUTH_COOKIE_NAME, token, {
+      httpOnly: true,
+      secure: isSecureRequest(c),
+      sameSite: 'Lax',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 7,
+    });
+  }
+
+  return c.json({ user: updated });
 });
 
 authRoutes.delete('/users/:id', requireAuth(['admin']), async (c) => {

@@ -158,12 +158,26 @@ describe('Feature Suite — Tournament Lifecycle, Role Matrix & Production Routi
     expect(confirmedMatch.setsWonA).toBe(1);
     expect(confirmedMatch.currentSet).toBe(2);
 
-    // Cleanup test tournament
+    // Cleanup test tournament & verify full cascade deletion of teams + matches + sets
     const delCat = await app.request(`/api/admin/tournaments/${tournament.id}`, {
       method: 'DELETE',
       headers: { Cookie: adminCookie },
     });
     expect(delCat.status).toBe(200);
+    const delSummary = await delCat.json();
+    expect(delSummary.deletedTeams).toBe(8);
+    expect(delSummary.deletedMatches).toBe(8);
+
+    const ovAfterDel = await (await app.request('/api/public/overview')).json();
+    expect(
+      ovAfterDel.tournaments.some((t: { id: number }) => t.id === tournament.id)
+    ).toBe(false);
+    expect(
+      ovAfterDel.teams.some((t: { tournamentId: number }) => t.tournamentId === tournament.id)
+    ).toBe(false);
+    expect(
+      ovAfterDel.matches.some((m: { tournamentId: number }) => m.tournamentId === tournament.id)
+    ).toBe(false);
   });
 
   test('Feature 3: Health Endpoint & ETag Conditional 304 Caching', async () => {
@@ -182,5 +196,99 @@ describe('Feature Suite — Tournament Lifecycle, Role Matrix & Production Routi
       headers: { 'If-None-Match': etag! },
     });
     expect(cachedOverview.status).toBe(304);
+  });
+
+  test('Feature 4: Self-Service Password Change & Admin User Password Reset', async () => {
+    // Create a temporary account via Admin
+    const createRes = await app.request('/api/auth/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        username: `pwd_tester_${Date.now()}`,
+        name: 'Password Tester',
+        password: 'initialPassword1',
+        role: 'panitia',
+      }),
+    });
+    expect(createRes.status).toBe(201);
+    const { user: createdUser } = await createRes.json();
+
+    const testerCookie = await loginAs(createdUser.username, 'initialPassword1');
+
+    // 1. Self-service password change rejects wrong current password
+    const wrongOldRes = await app.request('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: testerCookie },
+      body: JSON.stringify({
+        currentPassword: 'wrongOldPassword',
+        newPassword: 'newSecurePassword2',
+      }),
+    });
+    expect(wrongOldRes.status).toBe(401);
+
+    // 2. Self-service password change rejects too-short password (< 6 chars)
+    const shortRes = await app.request('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: testerCookie },
+      body: JSON.stringify({
+        currentPassword: 'initialPassword1',
+        newPassword: '123',
+      }),
+    });
+    expect(shortRes.status).toBe(400);
+
+    // 3. Valid self-service password change succeeds & updates login credential
+    const validChangeRes = await app.request('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: testerCookie },
+      body: JSON.stringify({
+        currentPassword: 'initialPassword1',
+        newPassword: 'newSecurePassword2',
+      }),
+    });
+    expect(validChangeRes.status).toBe(200);
+    await loginAs(createdUser.username, 'newSecurePassword2');
+
+    // 4. Non-admin cannot reset other users via PUT /api/auth/users/:id
+    const nonAdminReset = await app.request(`/api/auth/users/${createdUser.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: panitiaCookie },
+      body: JSON.stringify({ password: 'hackedPassword9' }),
+    });
+    expect(nonAdminReset.status).toBe(403);
+
+    // 5. Admin can reset user password & update display name
+    const adminResetRes = await app.request(`/api/auth/users/${createdUser.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        name: 'Updated Operator Name',
+        role: 'media',
+        password: 'adminResetPassword3',
+      }),
+    });
+    expect(adminResetRes.status).toBe(200);
+    const updatedJson = await adminResetRes.json();
+    expect(updatedJson.user.name).toBe('Updated Operator Name');
+    expect(updatedJson.user.role).toBe('media');
+    await loginAs(createdUser.username, 'adminResetPassword3');
+
+    // 6. Admin cannot demote their own active admin role
+    const meRes = await (
+      await app.request('/api/auth/me', { headers: { Cookie: adminCookie } })
+    ).json();
+    const selfDemoteRes = await app.request(`/api/auth/users/${meRes.user.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({ role: 'panitia' }),
+    });
+    expect(selfDemoteRes.status).toBe(400);
+
+    // Cleanup temporary user
+    const delRes = await app.request(`/api/auth/users/${createdUser.id}`, {
+      method: 'DELETE',
+      headers: { Cookie: adminCookie },
+    });
+    expect(delRes.status).toBe(200);
   });
 });

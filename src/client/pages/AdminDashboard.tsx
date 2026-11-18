@@ -6,6 +6,7 @@ import {
   GitBranch,
   GripVertical,
   ImagePlus,
+  KeyRound,
   Palette,
   Plus,
   RotateCcw,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { BracketView } from '../components/BracketView';
+import { ConfirmDeleteCategoryModal } from '../components/ConfirmDeleteCategoryModal';
 import { TeamAvatar } from '../components/TeamAvatar';
 import { apiFetch } from '../lib/api';
 import {
@@ -42,6 +44,8 @@ export function AdminDashboard({
   );
   const [stepTab, setStepTab] = useState<'teams' | 'bracket' | 'schedule'>('teams');
   const [showNewCat, setShowNewCat] = useState(false);
+  const [pendingDeleteTournament, setPendingDeleteTournament] = useState<Tournament | null>(null);
+  const [deletingCategory, setDeletingCategory] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   // New Category form
@@ -62,6 +66,7 @@ export function AdminDashboard({
   const [eventName, setEventName] = useState(data.settings?.eventName || '');
   const [eventSubtitle, setEventSubtitle] = useState(data.settings?.eventSubtitle || '');
   const [eventMeta, setEventMeta] = useState(data.settings?.eventMeta || '');
+  const [tvPinField, setTvPinField] = useState(data.settings?.tvPin || '4426');
 
   // Users state
   const [userList, setUserList] = useState<Array<AuthUser & { createdAt: number }>>([]);
@@ -69,6 +74,16 @@ export function AdminDashboard({
   const [newFullName, setNewFullName] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState<'admin' | 'panitia' | 'media'>('panitia');
+  const [showNewUserPwd, setShowNewUserPwd] = useState(false);
+
+  // Inline Edit / Reset Password state for existing accounts
+  const [editingUserId, setEditingUserId] = useState<number | null>(null);
+  const [editUserName, setEditUserName] = useState('');
+  const [editUserRole, setEditUserRole] = useState<'admin' | 'panitia' | 'media'>('panitia');
+  const [editUserPassword, setEditUserPassword] = useState('');
+  const [showEditUserPwd, setShowEditUserPwd] = useState(false);
+  const [savingUserEdit, setSavingUserEdit] = useState(false);
+  const [userError, setUserError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedTid && data.tournaments[0]) {
@@ -81,6 +96,7 @@ export function AdminDashboard({
       setEventName(data.settings.eventName);
       setEventSubtitle(data.settings.eventSubtitle);
       setEventMeta(data.settings.eventMeta);
+      if (data.settings.tvPin) setTvPinField(data.settings.tvPin);
     }
   }, [data.settings]);
 
@@ -105,6 +121,31 @@ export function AdminDashboard({
   const categoryMatches = data.matches.filter(
     (m) => m.tournamentId === activeTournament?.id
   );
+  const categoryMatchIdSet = new Set(categoryMatches.map((m) => m.id));
+  const categoryReportCount = data.reports.filter((r) =>
+    categoryMatchIdSet.has(r.matchId)
+  ).length;
+
+  const handleConfirmDeleteCategory = async () => {
+    if (!pendingDeleteTournament || deletingCategory) return;
+    setDeletingCategory(true);
+    try {
+      const targetId = pendingDeleteTournament.id;
+      const targetName = pendingDeleteTournament.name;
+      await apiFetch(`/api/admin/tournaments/${targetId}`, {
+        method: 'DELETE',
+      });
+      const remaining = data.tournaments.filter((t) => t.id !== targetId);
+      setSelectedTid(remaining[0]?.id ?? null);
+      setPendingDeleteTournament(null);
+      await onRefresh();
+      flash(`Kategori "${targetName}" beserta seluruh tim, jadwal & pertandingan berhasil dihapus.`);
+    } catch (err) {
+      flash(`Gagal menghapus kategori: ${(err as Error).message}`);
+    } finally {
+      setDeletingCategory(false);
+    }
+  };
 
   const handleCreateCategory = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -230,10 +271,15 @@ export function AdminDashboard({
     e.preventDefault();
     await apiFetch('/api/admin/settings', {
       method: 'PUT',
-      body: JSON.stringify({ eventName, eventSubtitle, eventMeta }),
+      body: JSON.stringify({
+        eventName,
+        eventSubtitle,
+        eventMeta,
+        tvPin: tvPinField.trim() || '4426',
+      }),
     });
     await onRefresh();
-    flash('Identitas acara diperbarui');
+    flash('Identitas acara & PIN TV diperbarui');
   };
 
   const handleUploadBrandLogo = async (
@@ -368,29 +414,90 @@ export function AdminDashboard({
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await apiFetch<{ user: AuthUser & { createdAt: number } }>(
-      '/api/auth/users',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          username: newUsername,
-          name: newFullName,
-          password: newPassword,
-          role: newRole,
-        }),
+    setUserError(null);
+    try {
+      const res = await apiFetch<{ user: AuthUser & { createdAt: number } }>(
+        '/api/auth/users',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            username: newUsername,
+            name: newFullName,
+            password: newPassword,
+            role: newRole,
+          }),
+        }
+      );
+      setUserList((prev) => [...prev, res.user]);
+      setNewUsername('');
+      setNewFullName('');
+      setNewPassword('');
+      flash('Akun baru berhasil dibuat');
+    } catch (err) {
+      setUserError((err as Error).message);
+    }
+  };
+
+  const startEditUser = (target: AuthUser & { createdAt: number }) => {
+    setUserError(null);
+    setEditingUserId(target.id);
+    setEditUserName(target.name);
+    setEditUserRole(target.role);
+    setEditUserPassword('');
+    setShowEditUserPwd(false);
+  };
+
+  const handleSaveUserEdit = async (e: React.FormEvent, id: number) => {
+    e.preventDefault();
+    setUserError(null);
+    setSavingUserEdit(true);
+    try {
+      const payload: {
+        name: string;
+        role?: 'admin' | 'panitia' | 'media';
+        password?: string;
+      } = {
+        name: editUserName,
+      };
+      if (id !== currentUser.id) {
+        payload.role = editUserRole;
       }
-    );
-    setUserList((prev) => [...prev, res.user]);
-    setNewUsername('');
-    setNewFullName('');
-    setNewPassword('');
-    flash('Akun baru dibuat');
+      if (editUserPassword.trim() !== '') {
+        payload.password = editUserPassword;
+      }
+
+      const res = await apiFetch<{ user: AuthUser & { createdAt: number } }>(
+        `/api/auth/users/${id}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        }
+      );
+      setUserList((prev) => prev.map((u) => (u.id === id ? res.user : u)));
+      setEditingUserId(null);
+      setEditUserPassword('');
+      flash(
+        payload.password
+          ? `Password & profil @${res.user.username} berhasil diperbarui!`
+          : `Profil @${res.user.username} berhasil diperbarui!`
+      );
+    } catch (err) {
+      setUserError((err as Error).message);
+    } finally {
+      setSavingUserEdit(false);
+    }
   };
 
   const handleDeleteUser = async (id: number) => {
-    await apiFetch(`/api/auth/users/${id}`, { method: 'DELETE' });
-    setUserList((prev) => prev.filter((u) => u.id !== id));
-    flash('Akun dihapus');
+    setUserError(null);
+    try {
+      await apiFetch(`/api/auth/users/${id}`, { method: 'DELETE' });
+      setUserList((prev) => prev.filter((u) => u.id !== id));
+      if (editingUserId === id) setEditingUserId(null);
+      flash('Akun dihapus');
+    } catch (err) {
+      setUserError((err as Error).message);
+    }
   };
 
   return (
@@ -435,25 +542,38 @@ export function AdminDashboard({
               </div>
 
               {activeTournament && (
-                <button
-                  type="button"
-                  onClick={() => toggleCategoryEnabled(activeTournament)}
-                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition ${
-                    activeTournament.isEnabled
-                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                      : 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-                  }`}
-                >
-                  {activeTournament.isEnabled ? (
-                    <>
-                      <Eye className="h-3.5 w-3.5" /> Tampil di Publik
-                    </>
-                  ) : (
-                    <>
-                      <EyeOff className="h-3.5 w-3.5" /> Disembunyikan
-                    </>
-                  )}
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleCategoryEnabled(activeTournament)}
+                    className={`inline-flex min-h-9 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                      activeTournament.isEnabled
+                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+                        : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                    }`}
+                  >
+                    {activeTournament.isEnabled ? (
+                      <>
+                        <Eye className="h-3.5 w-3.5" /> Tampil di Publik
+                      </>
+                    ) : (
+                      <>
+                        <EyeOff className="h-3.5 w-3.5" /> Disembunyikan
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPendingDeleteTournament(activeTournament)}
+                    aria-label={`Hapus kategori ${activeTournament.name}`}
+                    title={`Hapus kategori ${activeTournament.name}`}
+                    className="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-red-200 bg-red-500/8 px-3 py-1.5 text-xs font-bold text-red-600 transition hover:border-red-500 hover:bg-red-500/15 dark:border-red-900/60 dark:text-red-400"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Hapus Kategori</span>
+                  </button>
+                </div>
               )}
             </div>
 
@@ -529,6 +649,19 @@ export function AdminDashboard({
               </form>
             )}
           </div>
+
+          {/* Empty State if all categories have been deleted */}
+          {!activeTournament && !showNewCat && (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white/70 p-8 text-center dark:border-slate-800 dark:bg-slate-900/40">
+              <GitBranch className="mx-auto mb-2.5 h-8 w-8 text-amber-500" />
+              <p className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                Belum Ada Kategori Pertandingan
+              </p>
+              <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                Klik tombol <strong>+ Kategori Baru</strong> di atas untuk mulai membuat kategori, mendaftarkan tim, dan menyusun bagan.
+              </p>
+            </div>
+          )}
 
           {/* 3-Step Guided Workflow for Selected Category */}
           {activeTournament && (
@@ -873,11 +1006,26 @@ export function AdminDashboard({
               />
             </div>
 
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">
+                PIN Keamanan Layar TV Arena (/tv)
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={12}
+                value={tvPinField}
+                onChange={(e) => setTvPinField(e.target.value)}
+                placeholder="4426"
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm font-bold tracking-widest dark:border-slate-700 dark:bg-slate-950"
+              />
+            </div>
+
             <button
               type="submit"
               className="rounded-xl bg-amber-500 px-5 py-2.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
             >
-              Simpan Perubahan Teks
+              Simpan Perubahan Teks &amp; PIN TV
             </button>
           </form>
 
@@ -1155,94 +1303,279 @@ export function AdminDashboard({
       )}
 
       {section === 'users' && currentUser.role === 'admin' && (
-        <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-3 flex items-center gap-2">
-              <Users className="h-5 w-5 text-amber-500" />
-              <h2 className="font-display text-lg font-extrabold uppercase tracking-wider">
-                Daftar Akun Panitia &amp; Tim Media
-              </h2>
+        <div className="space-y-4">
+          {userError && (
+            <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-xs font-semibold text-red-600 dark:text-red-400">
+              {userError}
             </div>
-            <div className="space-y-2">
-              {userList.map((u) => (
-                <div
-                  key={u.id}
-                  className="flex items-center justify-between rounded-xl border border-slate-200 p-3 dark:border-slate-800"
-                >
-                  <div>
-                    <p className="text-sm font-bold">{u.name}</p>
-                    <p className="text-xs text-slate-600 dark:text-slate-400">
-                      @{u.username} •{' '}
-                      <span className="font-semibold uppercase text-amber-800 dark:text-amber-400">
-                        {u.role}
-                      </span>
-                    </p>
-                  </div>
-                  {u.id !== currentUser.id && (
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteUser(u.id)}
-                      className="rounded-lg p-2 text-slate-400 hover:bg-red-500/10 hover:text-red-500"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
+          )}
 
-          <form
-            onSubmit={handleCreateUser}
-            className="space-y-3 rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
-          >
-            <div className="flex items-center gap-2">
-              <UserPlus className="h-5 w-5 text-amber-500" />
-              <h3 className="font-display text-base font-extrabold uppercase tracking-wider">
-                Buat Akun Baru
-              </h3>
+          <div className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Users className="h-5 w-5 text-amber-500" />
+                  <h2 className="font-display text-lg font-extrabold uppercase tracking-wider">
+                    Daftar Akun Admin, Panitia &amp; Media
+                  </h2>
+                </div>
+              </div>
+              <p className="mb-3 text-xs text-slate-600 dark:text-slate-400">
+                Klik tombol <strong>Ubah Password / Edit</strong> pada akun mana pun untuk mengganti password default, nama tampilan, atau peran akses.
+              </p>
+
+              <div className="space-y-2.5">
+                {userList.map((u) => {
+                  const isEditing = editingUserId === u.id;
+                  const isSelf = u.id === currentUser.id;
+                  return (
+                    <div
+                      key={u.id}
+                      className={`rounded-xl border p-3.5 transition ${
+                        isEditing
+                          ? 'border-amber-500/60 bg-amber-500/5 dark:border-amber-400/50 dark:bg-amber-500/5'
+                          : 'border-slate-200 dark:border-slate-800'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-bold">{u.name}</p>
+                            {isSelf && (
+                              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-extrabold uppercase text-emerald-700 dark:text-emerald-400">
+                                Anda
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-600 dark:text-slate-400">
+                            @{u.username} •{' '}
+                            <span className="font-semibold uppercase text-amber-800 dark:text-amber-400">
+                              {u.role}
+                            </span>
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              isEditing ? setEditingUserId(null) : startEditUser(u)
+                            }
+                            className={`inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold transition sm:min-h-8 ${
+                              isEditing
+                                ? 'border-amber-500 bg-amber-500 text-slate-950'
+                                : 'border-slate-300 text-slate-700 hover:border-amber-600 hover:text-amber-800 dark:border-slate-700 dark:text-slate-200 dark:hover:border-amber-400 dark:hover:text-amber-300'
+                            }`}
+                          >
+                            <KeyRound className="h-3.5 w-3.5" />
+                            <span>{isEditing ? 'Tutup' : 'Ubah Password / Edit'}</span>
+                          </button>
+
+                          {!isSelf && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteUser(u.id)}
+                              aria-label={`Hapus akun ${u.username}`}
+                              title="Hapus Akun"
+                              className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-lg text-slate-400 hover:bg-red-500/10 hover:text-red-500 sm:min-h-8 sm:min-w-8"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {isEditing && (
+                        <form
+                          onSubmit={(e) => handleSaveUserEdit(e, u.id)}
+                          className="mt-3 space-y-2.5 border-t border-slate-200/80 pt-3 dark:border-slate-800"
+                        >
+                          <div className="grid gap-2.5 sm:grid-cols-2">
+                            <div>
+                              <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                                Nama Lengkap
+                              </label>
+                              <input
+                                type="text"
+                                required
+                                value={editUserName}
+                                onChange={(e) => setEditUserName(e.target.value)}
+                                className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
+                              />
+                            </div>
+                            <div>
+                              <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                                Peran Akses {isSelf ? '(Terkunci Akun Sendiri)' : ''}
+                              </label>
+                              <select
+                                disabled={isSelf}
+                                value={editUserRole}
+                                onChange={(e) =>
+                                  setEditUserRole(
+                                    e.target.value as 'admin' | 'panitia' | 'media'
+                                  )
+                                }
+                                className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950"
+                              >
+                                <option value="panitia">Panitia (Skor &amp; Bagan)</option>
+                                <option value="media">Tim Media (Studio)</option>
+                                <option value="admin">Admin Penuh</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                              Password Baru (Min. 6 Karakter • Kosongkan jika tidak diganti)
+                            </label>
+                            <div className="relative">
+                              <input
+                                type={showEditUserPwd ? 'text' : 'password'}
+                                minLength={6}
+                                autoComplete="new-password"
+                                value={editUserPassword}
+                                onChange={(e) => setEditUserPassword(e.target.value)}
+                                placeholder="Ketik password baru untuk mengganti..."
+                                className="min-h-10 w-full rounded-lg border border-slate-200 bg-white py-1.5 pr-10 pl-3 text-xs dark:border-slate-700 dark:bg-slate-950"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowEditUserPwd((v) => !v)}
+                                aria-label={
+                                  showEditUserPwd
+                                    ? 'Sembunyikan password'
+                                    : 'Tampilkan password'
+                                }
+                                className="absolute right-1.5 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                              >
+                                {showEditUserPwd ? (
+                                  <EyeOff className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Eye className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-end gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => setEditingUserId(null)}
+                              className="min-h-9 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                            >
+                              Batal
+                            </button>
+                            <button
+                              type="submit"
+                              disabled={savingUserEdit}
+                              className="min-h-9 rounded-lg bg-amber-500 px-4 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-amber-400 disabled:opacity-50"
+                            >
+                              {savingUserEdit ? 'Menyimpan...' : 'Simpan Perubahan'}
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <input
-              type="text"
-              required
-              placeholder="Username (tanpa spasi)"
-              value={newUsername}
-              onChange={(e) => setNewUsername(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
-            />
-            <input
-              type="text"
-              required
-              placeholder="Nama Lengkap"
-              value={newFullName}
-              onChange={(e) => setNewFullName(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
-            />
-            <input
-              type="password"
-              required
-              placeholder="Password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
-            />
-            <select
-              value={newRole}
-              onChange={(e) => setNewRole(e.target.value as 'admin' | 'panitia' | 'media')}
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold dark:border-slate-700 dark:bg-slate-950"
+
+            <form
+              onSubmit={handleCreateUser}
+              className="space-y-3 self-start rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
             >
-              <option value="panitia">Panitia (Operator Skor &amp; Bagan)</option>
-              <option value="media">Tim Media (Media Studio)</option>
-              <option value="admin">Admin Penuh</option>
-            </select>
-            <button
-              type="submit"
-              className="w-full rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
-            >
-              Tambah Akun
-            </button>
-          </form>
+              <div className="flex items-center gap-2">
+                <UserPlus className="h-5 w-5 text-amber-500" />
+                <h3 className="font-display text-base font-extrabold uppercase tracking-wider">
+                  Buat Akun Baru
+                </h3>
+              </div>
+              <input
+                type="text"
+                required
+                placeholder="Username (tanpa spasi)"
+                value={newUsername}
+                onChange={(e) => setNewUsername(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
+              />
+              <input
+                type="text"
+                required
+                placeholder="Nama Lengkap"
+                value={newFullName}
+                onChange={(e) => setNewFullName(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
+              />
+              <div className="relative">
+                <input
+                  type={showNewUserPwd ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  placeholder="Password (min. 6 karakter)"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pr-10 pl-3 text-sm dark:border-slate-700 dark:bg-slate-950"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewUserPwd((v) => !v)}
+                  aria-label={
+                    showNewUserPwd ? 'Sembunyikan password' : 'Tampilkan password'
+                  }
+                  className="absolute right-1.5 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                >
+                  {showNewUserPwd ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
+              <select
+                value={newRole}
+                onChange={(e) => setNewRole(e.target.value as 'admin' | 'panitia' | 'media')}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold dark:border-slate-700 dark:bg-slate-950"
+              >
+                <option value="panitia">Panitia (Operator Skor &amp; Bagan)</option>
+                <option value="media">Tim Media (Media Studio)</option>
+                <option value="admin">Admin Penuh</option>
+              </select>
+              <button
+                type="submit"
+                className="w-full rounded-xl bg-amber-500 px-4 py-2.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
+              >
+                Tambah Akun
+              </button>
+            </form>
+          </div>
         </div>
+      )}
+      {pendingDeleteTournament && (
+        <ConfirmDeleteCategoryModal
+          tournament={pendingDeleteTournament}
+          teamCount={
+            data.teams.filter((t) => t.tournamentId === pendingDeleteTournament.id).length
+          }
+          matchCount={
+            data.matches.filter((m) => m.tournamentId === pendingDeleteTournament.id).length
+          }
+          reportCount={
+            pendingDeleteTournament.id === activeTournament?.id
+              ? categoryReportCount
+              : data.reports.filter((r) =>
+                  data.matches.some(
+                    (m) =>
+                      m.id === r.matchId && m.tournamentId === pendingDeleteTournament.id
+                  )
+                ).length
+          }
+          deleting={deletingCategory}
+          onConfirm={handleConfirmDeleteCategory}
+          onClose={() => {
+            if (!deletingCategory) setPendingDeleteTournament(null);
+          }}
+        />
       )}
     </div>
   );
