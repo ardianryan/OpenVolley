@@ -1,0 +1,40 @@
+name: Feature Request
+description: Propose an enhancement for tournament operations, Arena TV, or Broadcast Media Studio.
+title: "[Feat]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Target Module
+      options:
+        - Live Scoring & Match Rules
+        - Brackets, Group Stages & Standings
+        - Arena TV / OBS Broadcast Overlay
+        - Media Studio & Moments Gallery
+        - Back-Office & Administration
+        - Deployment, Backup & Integrations
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Tournament Use Case / Problem Statement
+      placeholder: "Describe the real-world court, media, or spectator scenario this solves."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      placeholder: "Outline how the feature should work from a user and/or API perspective."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      placeholder: "Any workarounds or alternative designs considered."

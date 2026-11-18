@@ -1,0 +1,80 @@
+{
+  "repository": "ardianryan/OpenVolley",
+  "version": "0.1.0",
+  "recommended_topics": [
+    "volleyball",
+    "live-score",
+    "scoreboard",
+    "tournament-bracket",
+    "broadcast-graphics",
+    "server-sent-events",
+    "bun",
+    "hono",
+    "sqlite",
+    "pwa",
+    "docker"
+  ],
+  "schema": [
+    {
+      "property_name": "project_tier",
+      "value_type": "single_select",
+      "required": true,
+      "default_value": "flagship",
+      "description": "Operational criticality and maintenance tier of the repository.",
+      "allowed_values": ["flagship", "production", "experimental", "archived"]
+    },
+    {
+      "property_name": "domain_category",
+      "value_type": "single_select",
+      "required": true,
+      "default_value": "sports-tech",
+      "description": "Primary application domain.",
+      "allowed_values": ["sports-tech", "media-broadcast", "platform-infra", "developer-tooling"]
+    },
+    {
+      "property_name": "primary_runtime",
+      "value_type": "single_select",
+      "required": true,
+      "default_value": "bun",
+      "description": "Primary server execution runtime.",
+      "allowed_values": ["bun", "node", "cloudflare-workers", "go", "rust"]
+    },
+    {
+      "property_name": "deployment_target",
+      "value_type": "multi_select",
+      "required": false,
+      "description": "Supported production deployment targets.",
+      "allowed_values": ["docker", "ghcr", "bare-metal-bun", "nginx-cloudflare"]
+    },
+    {
+      "property_name": "license_model",
+      "value_type": "string",
+      "required": true,
+      "default_value": "Apache-2.0 WITH Commons-Clause",
+      "description": "Governing software license identifier."
+    },
+    {
+      "property_name": "ui_locale",
+      "value_type": "string",
+      "required": false,
+      "default_value": "id-ID",
+      "description": "Default shipped UI language tag (BCP 47)."
+    },
+    {
+      "property_name": "security_scanning",
+      "value_type": "true_false",
+      "required": true,
+      "default_value": "true",
+      "description": "Whether automated CodeQL and Dependabot security checks are enforced."
+    }
+  ],
+  "values": {
+    "project_tier": "flagship",
+    "domain_category": "sports-tech",
+    "primary_runtime": "bun",
+    "deployment_target": ["docker", "ghcr", "bare-metal-bun", "nginx-cloudflare"],
+    "license_model": "Apache-2.0 WITH Commons-Clause",
+    "ui_locale": "id-ID",
+    "security_scanning": "true"
+  }
+}

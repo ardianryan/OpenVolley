@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <radialGradient id="vbShade" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="55%" stop-color="#FDE68A" />
+      <stop offset="88%" stop-color="#E09D17" />
+      <stop offset="100%" stop-color="#92400E" />
+    </radialGradient>
+    <clipPath id="vbClip">
+      <circle cx="100" cy="100" r="92" />
+    </clipPath>
+  </defs>
+
+  <!-- Base Sphere -->
+  <circle cx="100" cy="100" r="92" fill="url(#vbShade)" />
+
+  <!-- Classic 3-Section Curved Volleyball Panel Bands + Seams -->
+  <g clip-path="url(#vbClip)" fill="none" stroke="#1E293B" stroke-width="5.5" stroke-linecap="round">
+    <!-- Coloured Gold Accent Panels (Mikasa / Pro Volleyball look) -->
+    <path
+      d="M 100 100 C 65 72, 32 76, 4 108 L 4 68 C 38 40, 78 44, 118 76 Z"
+      fill="#F5C538"
+      stroke="none"
+    />
+    <path
+      d="M 100 100 C 138 82, 168 104, 186 146 L 198 110 C 176 68, 140 50, 98 68 Z"
+      fill="#1E293B"
+      fill-opacity="0.88"
+      stroke="none"
+    />
+    <path
+      d="M 100 100 C 94 142, 62 172, 22 184 L 62 196 C 104 180, 132 146, 134 98 Z"
+      fill="#F5C538"
+      stroke="none"
+    />
+
+    <!-- Center Tri-Point Y Seams -->
+    <path d="M 100 100 C 86 60, 56 28, 18 16" />
+    <path d="M 100 100 C 142 94, 176 116, 194 152" />
+    <path d="M 100 100 C 80 138, 46 164, 8 170" />
+
+    <!-- Parallel Panel Seams Section 1 (Top-Left) -->
+    <path d="M 118 74 C 98 38, 68 12, 34 4" stroke-width="4.5" />
+    <path d="M 78 120 C 56 84, 28 60, -2 50" stroke-width="4.5" />
+
+    <!-- Parallel Panel Seams Section 2 (Right) -->
+    <path d="M 106 68 C 146 64, 180 86, 198 120" stroke-width="4.5" />
+    <path d="M 88 128 C 128 124, 162 146, 182 180" stroke-width="4.5" />
+
+    <!-- Parallel Panel Seams Section 3 (Bottom) -->
+    <path d="M 128 112 C 110 150, 78 178, 38 190" stroke-width="4.5" />
+    <path d="M 74 86 C 54 124, 24 148, -6 156" stroke-width="4.5" />
+  </g>
+
+  <!-- Crisp Outer Rim -->
+  <circle cx="100" cy="100" r="92" fill="none" stroke="#1E293B" stroke-width="6" />
+</svg>

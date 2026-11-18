@@ -1,0 +1,66 @@
+name: Bug Report
+description: Report a reproducible defect in scoring, brackets, Arena TV, Media Studio, or deployment.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please **do not** report security vulnerabilities here — see [`SECURITY.md`](../SECURITY.md) instead.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Area
+      options:
+        - Public Portal & Live Score
+        - Tournament Bracket & Seeding
+        - Operator Scoring Console
+        - Arena TV Display (/tv)
+        - Broadcast Media Studio & Audio/Video Export
+        - Moments Gallery (Multi-Slide / Video)
+        - Authentication, RBAC & Security
+        - Docker / Deployment / CI
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OpenVolley Version / Commit
+      placeholder: "v0.1.0 (or Docker tag / commit SHA)"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Runtime & Browser / Device
+      placeholder: "e.g. Docker on Ubuntu 24.04 • iPhone 15 Safari iOS 18"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Navigate to '...'
+        2. Click '...'
+        3. Observe '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs Actual Behavior
+      placeholder: "Describe what should have happened vs what occurred."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Screenshots
+      description: Paste server/browser console output (ensure secrets are redacted).

@@ -1,0 +1,236 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="ov-banner-title ov-banner-desc">
+  <title id="ov-banner-title">OpenVolley — Self-Hosted Volleyball Live Score, Symmetric Bracket, Arena TV &amp; Broadcast Studio</title>
+  <desc id="ov-banner-desc">Official OpenVolley open-source project banner featuring obsidian court geometry, championship gold broadcast ribbons, isometric volleyball arena scoreboard graphic, and feature badges.</desc>
+
+  <defs>
+    <linearGradient id="bg-obsidian" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#070A12" />
+      <stop offset="52%" stop-color="#0B0F19" />
+      <stop offset="100%" stop-color="#111827" />
+    </linearGradient>
+
+    <linearGradient id="gold-primary" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE68A" />
+      <stop offset="45%" stop-color="#F5C538" />
+      <stop offset="100%" stop-color="#D97706" />
+    </linearGradient>
+
+    <linearGradient id="gold-ribbon" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#F5C538" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#B45309" stop-opacity="0.85" />
+    </linearGradient>
+
+    <radialGradient id="arena-spotlight" cx="76%" cy="46%" r="44%">
+      <stop offset="0%" stop-color="#F5C538" stop-opacity="0.22" />
+      <stop offset="55%" stop-color="#D97706" stop-opacity="0.06" />
+      <stop offset="100%" stop-color="#0B0F19" stop-opacity="0" />
+    </radialGradient>
+
+    <radialGradient id="ball-shade" cx="36%" cy="30%" r="68%">
+      <stop offset="0%" stop-color="#FFFBEB" />
+      <stop offset="38%" stop-color="#F5C538" />
+      <stop offset="78%" stop-color="#D97706" />
+      <stop offset="100%" stop-color="#78350F" />
+    </radialGradient>
+
+    <linearGradient id="card-surface" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" stop-opacity="0.92" />
+      <stop offset="100%" stop-color="#0F172A" stop-opacity="0.96" />
+    </linearGradient>
+
+    <pattern id="court-grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M 48 0 L 0 0 0 48" fill="none" stroke="#F5C538" stroke-opacity="0.045" stroke-width="1" />
+    </pattern>
+
+    <pattern id="net-mesh" width="14" height="14" patternUnits="userSpaceOnUse">
+      <path d="M 14 0 L 0 0 0 14" fill="none" stroke="#CBD5E1" stroke-opacity="0.32" stroke-width="1.1" />
+    </pattern>
+
+    <clipPath id="ball-clip">
+      <circle cx="0" cy="0" r="64" />
+    </clipPath>
+  </defs>
+
+  <!-- Base Obsidian Canvas & Subtle Court Grid -->
+  <rect width="1280" height="640" fill="url(#bg-obsidian)" />
+  <rect width="1280" height="640" fill="url(#court-grid)" />
+  <rect width="1280" height="640" fill="url(#arena-spotlight)" />
+
+  <!-- Top & Bottom Broadcast Diagonal Gold Slashes (Matching OpenVolley Web & Studio Identity) -->
+  <polygon points="0,0 520,0 468,14 0,14" fill="url(#gold-ribbon)" />
+  <polygon points="840,640 1280,640 1280,626 892,626" fill="url(#gold-ribbon)" />
+  <polygon points="730,0 758,0 598,640 570,640" fill="#F5C538" fill-opacity="0.04" />
+  <polygon points="774,0 790,0 630,640 614,640" fill="#F5C538" fill-opacity="0.025" />
+
+  <!-- RIGHT STAGE: Isometric Arena Court, Net & Live Broadcast Scorebug Preview -->
+  <g transform="translate(760, 88)">
+    <!-- Ambient Isometric Court Floor -->
+    <polygon
+      points="220,250 456,338 220,446 -16,338"
+      fill="#0F172A"
+      stroke="#F5C538"
+      stroke-opacity="0.42"
+      stroke-width="2"
+    />
+    <polygon
+      points="220,266 424,338 220,426 16,338"
+      fill="#1E293B"
+      fill-opacity="0.55"
+      stroke="#FDE68A"
+      stroke-opacity="0.24"
+      stroke-width="1.5"
+    />
+    <!-- Attack 3m Lines -->
+    <line x1="146" y1="292" x2="350" y2="365" stroke="#F5C538" stroke-opacity="0.3" stroke-width="1.4" />
+    <line x1="90" y1="312" x2="294" y2="385" stroke="#F5C538" stroke-opacity="0.3" stroke-width="1.4" />
+
+    <!-- Isometric Volleyball Net Across Center Line -->
+    <g>
+      <line x1="102" y1="226" x2="102" y2="310" stroke="#94A3B8" stroke-width="4" stroke-linecap="round" />
+      <line x1="338" y1="308" x2="338" y2="394" stroke="#94A3B8" stroke-width="4" stroke-linecap="round" />
+      <polygon
+        points="102,232 338,314 338,366 102,284"
+        fill="url(#net-mesh)"
+        stroke="#E2E8F0"
+        stroke-opacity="0.55"
+        stroke-width="1.5"
+      />
+      <!-- Top White Tape & Red-White Antennae -->
+      <line x1="102" y1="232" x2="338" y2="314" stroke="#F8FAFC" stroke-width="4" />
+      <line x1="114" y1="214" x2="114" y2="286" stroke="#EF4444" stroke-width="2.5" stroke-dasharray="6 5" />
+      <line x1="326" y1="288" x2="326" y2="362" stroke="#EF4444" stroke-width="2.5" stroke-dasharray="6 5" />
+    </g>
+
+    <!-- Floating Live Broadcast Scoreboard Card -->
+    <g transform="translate(26, 18)">
+      <rect
+        x="0"
+        y="0"
+        width="392"
+        height="214"
+        rx="20"
+        fill="url(#card-surface)"
+        stroke="#334155"
+        stroke-width="1.5"
+      />
+      <!-- Card Top Status Strip -->
+      <rect x="0" y="0" width="392" height="42" rx="20" fill="#090D16" />
+      <rect x="0" y="22" width="392" height="20" fill="#090D16" />
+      <line x1="0" y1="42" x2="392" y2="42" stroke="#1E293B" stroke-width="1" />
+
+      <!-- Skewed Court Pill -->
+      <g transform="translate(18, 10) skewX(-10)">
+        <rect width="74" height="22" rx="4" fill="#F5C538" />
+        <text x="37" y="15" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" font-weight="800" fill="#0B0F19" letter-spacing="0.6">COURT 1</text>
+      </g>
+
+      <!-- Live Indicator Pill -->
+      <rect x="274" y="10" width="100" height="22" rx="11" fill="#DC2626" />
+      <circle cx="288" cy="21" r="3.5" fill="#FFFFFF" />
+      <text x="334" y="25" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="10" font-weight="800" fill="#FFFFFF" letter-spacing="0.7">LIVE • SET 3</text>
+
+      <!-- Team A Badge -->
+      <circle cx="56" cy="108" r="26" fill="#F5C538" fill-opacity="0.14" stroke="#F5C538" stroke-width="2" />
+      <text x="56" y="113" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="14" font-weight="800" fill="#FDE68A">FAL</text>
+      <text x="56" y="156" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" font-weight="700" fill="#F8FAFC">FALCONS</text>
+
+      <!-- Center Score Readout -->
+      <text x="196" y="72" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="10" font-weight="700" fill="#94A3B8" letter-spacing="1.4">DEUCE ACTIVE</text>
+      <text x="168" y="122" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="42" font-weight="900" fill="#F5C538">24</text>
+      <text x="196" y="117" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="26" font-weight="700" fill="#475569">:</text>
+      <text x="224" y="122" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="42" font-weight="900" fill="#F8FAFC">23</text>
+
+      <!-- Set History Pills -->
+      <rect x="132" y="140" width="58" height="20" rx="5" fill="#1E293B" />
+      <text x="161" y="154" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="10.5" font-weight="700" fill="#CBD5E1">25 - 21</text>
+      <rect x="198" y="140" width="58" height="20" rx="5" fill="#1E293B" />
+      <text x="227" y="154" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="10.5" font-weight="700" fill="#CBD5E1">22 - 25</text>
+
+      <!-- Team B Badge -->
+      <circle cx="336" cy="108" r="26" fill="#38BDF8" fill-opacity="0.14" stroke="#38BDF8" stroke-width="2" />
+      <text x="336" y="113" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="14" font-weight="800" fill="#BAE6FD">TTN</text>
+      <text x="336" y="156" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11.5" font-weight="700" fill="#F8FAFC">TITANS</text>
+
+      <!-- Bottom Telemetry Strip -->
+      <line x1="18" y1="178" x2="374" y2="178" stroke="#1E293B" stroke-width="1" />
+      <circle cx="28" cy="195" r="4" fill="#10B981" />
+      <text x="40" y="199" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" font-weight="600" fill="#6EE7B7">SSE STREAM • 0ms PUSH</text>
+      <text x="374" y="199" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" font-weight="600" fill="#F5C538">SETS 1 - 1</text>
+    </g>
+
+    <!-- 3D Championship Volleyball Emblem -->
+    <g transform="translate(384, 248)">
+      <circle cx="4" cy="10" r="64" fill="#000000" fill-opacity="0.45" />
+      <circle cx="0" cy="0" r="64" fill="url(#ball-shade)" stroke="#FEF3C7" stroke-opacity="0.55" stroke-width="2" />
+      <g clip-path="url(#ball-clip)" fill="none" stroke="#0B0F19" stroke-opacity="0.68" stroke-width="3.2">
+        <path d="M -68 -12 Q -8 -44 68 -8" />
+        <path d="M -66 16 Q -4 -16 68 18" />
+        <path d="M -18 -68 Q 28 -10 -8 68" />
+        <path d="M 14 -68 Q 52 -6 22 68" />
+        <path d="M -56 -42 Q -22 14 -42 66" />
+      </g>
+    </g>
+  </g>
+
+  <!-- LEFT STAGE: Project Identity, Wordmark, Tagline & Architecture Pills -->
+  <g transform="translate(76, 108)">
+    <!-- Top Release Eyebrow Pill -->
+    <rect x="0" y="0" width="318" height="32" rx="16" fill="#F5C538" fill-opacity="0.12" stroke="#F5C538" stroke-opacity="0.45" stroke-width="1.2" />
+    <circle cx="18" cy="16" r="4.5" fill="#F5C538" />
+    <text x="32" y="20.5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="700" fill="#FDE68A" letter-spacing="1.0">RELEASE v0.1.0 • SELF-HOSTED SUITE</text>
+
+    <!-- Primary Project Title: OPENVOLLEY -->
+    <text
+      x="-2"
+      y="114"
+      font-family="'Barlow Condensed', 'Arial Narrow', system-ui, -apple-system, 'Segoe UI', sans-serif"
+      font-size="74"
+      font-weight="900"
+      letter-spacing="1"
+      fill="#FFFFFF"
+    >OPEN<tspan fill="url(#gold-primary)">VOLLEY</tspan></text>
+
+    <!-- Crisp Accent Rule -->
+    <rect x="0" y="144" width="116" height="5" rx="2.5" fill="url(#gold-primary)" />
+
+    <!-- Project Value Proposition -->
+    <text x="0" y="190" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="22" font-weight="700" fill="#F1F5F9">
+      Real-Time Volleyball Scoreboard, Bracket &amp; Broadcast Suite
+    </text>
+    <text x="0" y="224" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="500" fill="#94A3B8">
+      Lightweight single-server tournament engine with instant SSE live sync,
+    </text>
+    <text x="0" y="248" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="16" font-weight="500" fill="#94A3B8">
+      symmetric brackets, PIN-gated Arena TV, and in-browser Media Studio.
+    </text>
+
+    <!-- Core Capability Pills Row 1 -->
+    <g transform="translate(0, 286)" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12.5" font-weight="700">
+      <rect x="0" y="0" width="164" height="36" rx="10" fill="#1E293B" stroke="#334155" stroke-width="1.2" />
+      <text x="82" y="22.5" text-anchor="middle" fill="#FDE68A">SSE + ETag Sync</text>
+
+      <rect x="176" y="0" width="184" height="36" rx="10" fill="#1E293B" stroke="#334155" stroke-width="1.2" />
+      <text x="268" y="22.5" text-anchor="middle" fill="#E2E8F0">Symmetric Bracket</text>
+
+      <rect x="372" y="0" width="168" height="36" rx="10" fill="#1E293B" stroke="#334155" stroke-width="1.2" />
+      <text x="456" y="22.5" text-anchor="middle" fill="#E2E8F0">Arena TV Display</text>
+    </g>
+
+    <!-- Core Capability Pills Row 2 -->
+    <g transform="translate(0, 334)" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12.5" font-weight="700">
+      <rect x="0" y="0" width="212" height="36" rx="10" fill="#1E293B" stroke="#334155" stroke-width="1.2" />
+      <text x="106" y="22.5" text-anchor="middle" fill="#E2E8F0">Client-Side Media Studio</text>
+
+      <rect x="224" y="0" width="154" height="36" rx="10" fill="#1E293B" stroke="#334155" stroke-width="1.2" />
+      <text x="301" y="22.5" text-anchor="middle" fill="#E2E8F0">3-Role Back-Office</text>
+
+      <rect x="390" y="0" width="150" height="36" rx="10" fill="#F5C538" fill-opacity="0.14" stroke="#F5C538" stroke-opacity="0.5" stroke-width="1.2" />
+      <text x="465" y="22.5" text-anchor="middle" fill="#F5C538">Bun + SQLite + Docker</text>
+    </g>
+
+    <!-- Bottom Tech & Repo Signature -->
+    <text x="0" y="418" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="600" fill="#64748B">
+      github.com/ardianryan/OpenVolley  •  Apache-2.0 + Commons Clause  •  PWA
+    </text>
+  </g>
+</svg>

@@ -1,0 +1,26 @@
+# Dependencies & Build Outputs
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Runtime Database & Local Uploads
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-*
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# OS & Editor Metadata
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json

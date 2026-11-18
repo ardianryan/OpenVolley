@@ -1,0 +1,16 @@
+.git
+.github
+node_modules
+dist
+data
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+docs
+*.md
+coverage

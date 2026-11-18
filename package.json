@@ -1,0 +1,62 @@
+{
+  "name": "openvolley",
+  "version": "0.1.0",
+  "description": "Self-hosted real-time volleyball live score, symmetric tournament bracket, PIN-gated Arena TV display, and client-side broadcast Media Studio built on Bun, Hono, React 19, and SQLite.",
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Ardian Ryan <https://github.com/ardianryan>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ardianryan/OpenVolley.git"
+  },
+  "homepage": "https://github.com/ardianryan/OpenVolley#readme",
+  "bugs": {
+    "url": "https://github.com/ardianryan/OpenVolley/issues"
+  },
+  "keywords": [
+    "volleyball",
+    "scoreboard",
+    "live-score",
+    "tournament-bracket",
+    "broadcast-graphics",
+    "sse",
+    "bun",
+    "hono",
+    "sqlite",
+    "pwa"
+  ],
+  "scripts": {
+    "dev": "bun --watch src/server/index.ts & vite",
+    "dev:server": "bun --watch src/server/index.ts",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "NODE_ENV=production bun src/server/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "test:unit": "bun test src/shared src/server/services",
+    "test:feature": "bun test src/server/features.test.ts",
+    "test:e2e": "bun test src/server/e2e.test.ts"
+  },
+  "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
+    "drizzle-orm": "^0.41.0",
+    "heic2any": "^0.0.4",
+    "hono": "^4.7.5",
+    "lucide-react": "^0.483.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.15",
+    "@types/bun": "^1.4.4",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@types/three": "^0.187.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.0.15",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.2"
+  }
+}

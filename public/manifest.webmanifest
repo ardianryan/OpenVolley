@@ -1,0 +1,60 @@
+{
+  "id": "/",
+  "name": "SVC • AVERSA Volleyball Sport Center",
+  "short_name": "SVC Voli",
+  "description": "Portal Resmi Live Score, Bagan Turnamen, dan Galeri Pertandingan Smansage Volleyball Competition (AVERSA Dies Natalis 44 SMA Negeri 1 Gedeg).",
+  "lang": "id",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0f19",
+  "theme_color": "#0b0f19",
+  "categories": ["sports", "entertainment"],
+  "icons": [
+    {
+      "src": "/brand/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/brand/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Skor & Jadwal Live",
+      "short_name": "Live Score",
+      "url": "/",
+      "icons": [{ "src": "/brand/pwa-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Bagan Turnamen",
+      "short_name": "Bagan",
+      "url": "/bagan",
+      "icons": [{ "src": "/brand/pwa-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Layar Skor TV Arena",
+      "short_name": "Layar TV",
+      "url": "/tv",
+      "icons": [{ "src": "/brand/pwa-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

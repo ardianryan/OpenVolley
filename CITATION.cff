@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+title: "OpenVolley: A Self-Hosted Real-Time Volleyball Scoreboard, Symmetric Tournament Bracket, and Client-Side Broadcast Media Suite"
+message: "If you use or reference OpenVolley in academic research, sports informatics studies, or technical documentation, please cite it using the metadata below."
+type: software
+authors:
+  - family-names: "Ryan"
+    given-names: "Ardian"
+    alias: "ardianryan"
+repository-code: "https://github.com/ardianryan/OpenVolley"
+url: "https://github.com/ardianryan/OpenVolley"
+version: "0.1.0"
+date-released: "2026-11-18"
+license-url: "https://github.com/ardianryan/OpenVolley/blob/main/LICENSE"
+keywords:
+  - volleyball
+  - live-scoreboard
+  - tournament-bracket
+  - sports-broadcast-graphics
+  - server-sent-events
+  - progressive-web-app
+  - bun
+  - hono
+  - sqlite
+abstract: >-
+  OpenVolley is a lightweight, self-hosted volleyball competition platform built
+  on Bun, Hono, React 19, Three.js, and SQLite WAL. It integrates a real-time
+  rally scoring engine with adaptive Server-Sent Events and ETag fallback,
+  symmetric single-elimination tournament brackets with third-place routing, a
+  PIN-gated Arena TV venue scoreboard, role-based tournament administration, and
+  an in-browser broadcast Media Studio for multi-ratio posters and animated
+  match highlight videos.

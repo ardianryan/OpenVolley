@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability Disclosure
+    url: https://github.com/ardianryan/OpenVolley/security/advisories/new
+    about: Privately report security issues under our Coordinated Disclosure policy (do not open public issues).
+  - name: Documentation & Deployment Guides
+    url: https://github.com/ardianryan/OpenVolley/blob/main/docs/INDEX.md
+    about: Read architecture, API, Docker, and Nginx/Cloudflare setup documentation first.

@@ -1,0 +1,259 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --bg-canvas: #f8fafc;
+    --bg-card: #ffffff;
+    --bg-elevated: #f1f5f9;
+    --text-primary: #0f172a;
+    --text-muted: #475569;
+    --border-subtle: #cbd5e1;
+    --brand-gold: #b45309;
+    --brand-gold-bright: #d97706;
+    --focus-ring: #b45309;
+  }
+
+  .dark {
+    --bg-canvas: #0b0f19;
+    --bg-card: #0f172a;
+    --bg-elevated: #1e293b;
+    --text-primary: #f8fafc;
+    --text-muted: #94a3b8;
+    --border-subtle: #1e293b;
+    --brand-gold: #e09d17;
+    --brand-gold-bright: #f5c538;
+    --focus-ring: #fbbf24;
+  }
+
+  html {
+    font-size: 16px;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    font-size: 0.9375rem;
+    line-height: 1.5;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  /* High-contrast accessible keyboard focus ring across Light & Dark Mode */
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+}
+
+.font-display {
+  font-family: 'Barlow Condensed', 'Plus Jakarta Sans', sans-serif;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Subtle volleyball court grid backdrop */
+.court-pattern {
+  background-image:
+    linear-gradient(to right, rgba(224, 157, 23, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(224, 157, 23, 0.05) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.gold-gradient-text {
+  background: linear-gradient(135deg, #92400e 0%, #b45309 40%, #d97706 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.dark .gold-gradient-text {
+  background: linear-gradient(135deg, #d48911 0%, #f5c538 65%, #fde68a 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Sport Broadcast Skewed Badges & Diagonal Stripes */
+.sport-skew {
+  transform: skewX(-10deg);
+}
+
+.sport-unskew {
+  display: inline-block;
+  transform: skewX(10deg);
+}
+
+.sport-diagonal-bg {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(245, 197, 56, 0.04),
+    rgba(245, 197, 56, 0.04) 10px,
+    transparent 10px,
+    transparent 20px
+  );
+}
+
+@keyframes bracketSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-bracket-card {
+  animation: bracketSlideIn 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes pageEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.994);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-page-enter {
+  animation: pageEnter 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes backdropIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes backdropOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.animate-backdrop-in {
+  animation: backdropIn 0.22s ease-out both;
+}
+
+.animate-backdrop-out {
+  animation: backdropOut 0.2s ease-in both;
+}
+
+@keyframes sheetUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes sheetDown {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(22px) scale(0.985);
+  }
+}
+
+.animate-sheet-up {
+  animation: sheetUp 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-sheet-down {
+  animation: sheetDown 0.2s cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(148, 163, 184, 0.14) 25%,
+    rgba(224, 157, 23, 0.18) 50%,
+    rgba(148, 163, 184, 0.14) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite linear;
+}
+
+/* Respect user motion preferences (WCAG 2.3.3 & antislop-human) */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .animate-bracket-card,
+  .animate-page-enter,
+  .animate-backdrop-in,
+  .animate-backdrop-out,
+  .animate-sheet-up,
+  .animate-sheet-down,
+  .skeleton-shimmer {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Custom Sleek Scrollbar (Light & Dark Mode) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(180, 83, 9, 0.45) transparent;
+}
+
+.dark * {
+  scrollbar-color: rgba(224, 157, 23, 0.4) rgba(15, 23, 42, 0.6);
+}
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(226, 232, 240, 0.45);
+  border-radius: 9999px;
+}
+
+.dark ::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.75);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.65);
+  border-radius: 9999px;
+  border: 1px solid transparent;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(51, 65, 85, 0.85);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(180, 83, 9, 0.75);
+}
