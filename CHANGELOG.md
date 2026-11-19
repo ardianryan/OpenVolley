@@ -16,9 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Gesture Direct Crop & Pinch-to-Zoom (`MediaCropBox.tsx`, `media-framing.ts`)**:
   - Implemented intuitive gesture-based media framing: 1-finger / mouse drag, 2-finger pinch-to-zoom, non-passive mouse wheel / trackpad zoom, and double-click reset for photo covers and collage slots.
   - Rule-of-thirds 3x3 alignment grid and compact zoom pill bar (`-`, zoom %, `+`, reset, done) replacing unintuitive range sliders.
-- **Media Studio Wizard Simplification & OBS Relocation**:
-  - Cleaned up wizard UI: replaced dense text blocks with subtle tooltips and an optional collapsible accordion guide.
-  - Relocated OBS Broadcast Overlay management directly into the Media section.
+- **Expanded Audio Library for Pre-Match Upcoming Scenes (`audio-library.ts`)**:
+  - Added 5 new high-energy BGM tracks (`Warmup Rhythm & Spikes`, `Rivalry Countdown`, `Morning Court Kickoff`, `Arena Pulse & Hype`, `Locker Room Focus`) hosted on S3 CDN storage, enriching the upcoming template pool to 9 tracks.
+- **Mobile Bottom Navigation & OBS Broadcast Enhancements**:
+  - Compact thumb-accessible mobile bottom navigation bar with active route indicators and grouped shortcuts.
+  - OBS Broadcast transitions, stinger bumpers, brand strip, and dedicated dock/Lua plugin integration.
 
 ### Fixed
 - **Match Reset & Bracket Advancement Retraction (`bracket.ts`, `scoring.ts`, `LiveOperator.tsx`)**:
@@ -26,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Implemented `retractAdvancement(matchId)` which cleanly clears qualified team slots in downstream matches (`nextMatchId` and `loserNextMatchId`) and cascades recursively.
   - Integrated retraction into `resetMatchScore`, `undoLastAction`, `finishMatchManually`, and `addExtraSet`.
   - Added explicit **"Reset Permainan"** controls in Live Operator with informative confirmation dialog and real-time SSE broadcasts.
+- **Media Studio Video Export Frame Flicker (`MediaStudio.tsx`)**:
+  - Resolved canvas flickering during 60fps MP4/WebM video export by maintaining persistent offscreen video buffer rendering.
 
 ---
 
