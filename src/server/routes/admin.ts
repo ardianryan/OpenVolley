@@ -2065,8 +2065,48 @@ const VALID_OBS_LAYOUTS = new Set([
   'match_intro',
   'timeout_break',
   'winner_card',
+  'lineup_roster',
+  'standby_schedule',
+]);
+const VALID_OBS_TRANSITIONS = new Set([
+  'broadcast_wipe',
+  'slide_edge',
+  'zoom_pop',
+  'fade_smooth',
+  'cut',
 ]);
 const VALID_OBS_THEMES = new Set(['dark', 'light', 'glass']);
+
+function sanitizeObsSceneMappingJson(raw: unknown): string {
+  let obj: Record<string, unknown> = {};
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return '{}';
+    }
+  } else if (raw && typeof raw === 'object') {
+    obj = raw as Record<string, unknown>;
+  }
+  const clean: Record<string, { obsSceneName?: string; obsTransitionName?: string }> = {};
+  for (const [preset, val] of Object.entries(obj)) {
+    if (!VALID_OBS_LAYOUTS.has(preset) || !val || typeof val !== 'object') continue;
+    const entry = val as Record<string, unknown>;
+    const obsSceneName =
+      typeof entry.obsSceneName === 'string' ? sanitizePlainText(entry.obsSceneName, 80).trim() : '';
+    const obsTransitionName =
+      typeof entry.obsTransitionName === 'string'
+        ? sanitizePlainText(entry.obsTransitionName, 80).trim()
+        : '';
+    if (obsSceneName || obsTransitionName) {
+      clean[preset] = {
+        ...(obsSceneName ? { obsSceneName } : {}),
+        ...(obsTransitionName ? { obsTransitionName } : {}),
+      };
+    }
+  }
+  return JSON.stringify(clean);
+}
 
 adminRoutes.get('/obs-overlays', async (c) => {
   const list = await db.select().from(obsOverlays).orderBy(asc(obsOverlays.id));
@@ -2094,6 +2134,9 @@ adminRoutes.post('/obs-overlays', async (c) => {
   const layoutPreset = VALID_OBS_LAYOUTS.has(String(body.layoutPreset))
     ? (String(body.layoutPreset) as typeof obsOverlays.$inferInsert.layoutPreset)
     : 'lower_third';
+  const transitionPreset = VALID_OBS_TRANSITIONS.has(String(body.transitionPreset))
+    ? (String(body.transitionPreset) as typeof obsOverlays.$inferInsert.transitionPreset)
+    : 'broadcast_wipe';
   const themeMode = VALID_OBS_THEMES.has(String(body.themeMode))
     ? (String(body.themeMode) as typeof obsOverlays.$inferInsert.themeMode)
     : 'dark';
@@ -2106,17 +2149,20 @@ adminRoutes.post('/obs-overlays', async (c) => {
       slug,
       accessToken,
       layoutPreset,
+      transitionPreset,
       themeMode,
       matchId: typeof body.matchId === 'number' ? body.matchId : null,
       courtName: sanitizePlainText(String(body.courtName || ''), 60).trim(),
       autoFollowCourt: body.autoFollowCourt !== false,
       showSponsorTicker: body.showSponsorTicker !== false,
+      showBrandBug: body.showBrandBug !== false,
       showSetHistory: body.showSetHistory !== false,
       showTimeoutSub: body.showTimeoutSub !== false,
       isVisible: body.isVisible !== false,
       customBadgeText:
         sanitizePlainText(String(body.customBadgeText || 'LIVE BROADCAST'), 40).trim() ||
         'LIVE BROADCAST',
+      sceneMappingJson: sanitizeObsSceneMappingJson(body.sceneMappingJson),
       createdAt: now,
       updatedAt: now,
     })
@@ -2145,6 +2191,13 @@ adminRoutes.patch('/obs-overlays/:id', async (c) => {
   if (typeof body.layoutPreset === 'string' && VALID_OBS_LAYOUTS.has(body.layoutPreset)) {
     patch.layoutPreset = body.layoutPreset as typeof obsOverlays.$inferInsert.layoutPreset;
   }
+  if (
+    typeof body.transitionPreset === 'string' &&
+    VALID_OBS_TRANSITIONS.has(body.transitionPreset)
+  ) {
+    patch.transitionPreset =
+      body.transitionPreset as typeof obsOverlays.$inferInsert.transitionPreset;
+  }
   if (typeof body.themeMode === 'string' && VALID_OBS_THEMES.has(body.themeMode)) {
     patch.themeMode = body.themeMode as typeof obsOverlays.$inferInsert.themeMode;
   }
@@ -2156,11 +2209,15 @@ adminRoutes.patch('/obs-overlays/:id', async (c) => {
   }
   if (typeof body.autoFollowCourt === 'boolean') patch.autoFollowCourt = body.autoFollowCourt;
   if (typeof body.showSponsorTicker === 'boolean') patch.showSponsorTicker = body.showSponsorTicker;
+  if (typeof body.showBrandBug === 'boolean') patch.showBrandBug = body.showBrandBug;
   if (typeof body.showSetHistory === 'boolean') patch.showSetHistory = body.showSetHistory;
   if (typeof body.showTimeoutSub === 'boolean') patch.showTimeoutSub = body.showTimeoutSub;
   if (typeof body.isVisible === 'boolean') patch.isVisible = body.isVisible;
   if (typeof body.customBadgeText === 'string') {
     patch.customBadgeText = sanitizePlainText(body.customBadgeText, 40).trim();
+  }
+  if (body.sceneMappingJson !== undefined) {
+    patch.sceneMappingJson = sanitizeObsSceneMappingJson(body.sceneMappingJson);
   }
 
   const [updated] = await db
@@ -2187,6 +2244,183 @@ adminRoutes.post('/obs-overlays/:id/regenerate-token', async (c) => {
 
   await broadcastEvent('obs_overlay_updated', { slug: updated!.slug, id: updated!.id });
   return c.json({ overlay: updated });
+});
+
+adminRoutes.post('/obs-overlays/:id/stinger', async (c) => {
+  const id = Number(c.req.param('id'));
+  const existing = await db.query.obsOverlays.findFirst({ where: eq(obsOverlays.id, id) });
+  if (!existing) return c.json({ error: 'Profil OBS tidak ditemukan' }, 404);
+
+  const body = await c.req
+    .json<{ label?: string }>()
+    .catch(() => ({} as { label?: string }));
+  const label = sanitizePlainText(body.label || 'LIVE BROADCAST', 40).trim() || 'LIVE BROADCAST';
+  const timestamp = Date.now();
+
+  await broadcastEvent('obs_stinger_triggered', {
+    id: existing.id,
+    slug: existing.slug,
+    label,
+    timestamp,
+  });
+  return c.json({ ok: true, label, timestamp });
+});
+
+adminRoutes.get('/obs-overlays/:id/lua-script', async (c) => {
+  const id = Number(c.req.param('id'));
+  const existing = await db.query.obsOverlays.findFirst({ where: eq(obsOverlays.id, id) });
+  if (!existing) return c.json({ error: 'Profil OBS tidak ditemukan' }, 404);
+
+  const reqOrigin =
+    process.env.PUBLIC_ORIGIN?.trim() ||
+    (() => {
+      try {
+        return new URL(c.req.url).origin;
+      } catch {
+        return 'http://localhost:3000';
+      }
+    })();
+
+  const overlayUrl = `${reqOrigin}/obs?overlay=${encodeURIComponent(existing.slug)}&token=${encodeURIComponent(existing.accessToken)}`;
+  const dockUrl = `${reqOrigin}/obs-dock?overlay=${encodeURIComponent(existing.slug)}&token=${encodeURIComponent(existing.accessToken)}`;
+
+  const luaContent = `--[[
+  OpenVolley OBS Studio Plug & Play Helper Script
+  Profile : ${existing.name} (${existing.slug})
+  Dock URL: ${dockUrl}
+  Install : OBS Studio -> Tools -> Scripts -> (+) -> Pilih file ini
+--]]
+
+obs = obslua
+
+local source_name = "OpenVolley Overlay (${existing.slug})"
+local overlay_url = "${overlayUrl}"
+local hk_toggle_id = obs.OBS_INVALID_HOTKEY_ID
+local hk_refresh_id = obs.OBS_INVALID_HOTKEY_ID
+
+function script_description()
+  return [[
+<h3>OpenVolley Broadcast Overlay Helper</h3>
+<p>Membantu membuat Browser Source <b>1920x1080 (60 FPS)</b> secara otomatis di Scene aktif serta menyediakan Hotkey Show/Hide &amp; Refresh.</p>
+<p><b>Tip Custom Browser Dock:</b> Tempel URL berikut pada menu <i>Docks &rarr; Custom Browser Docks</i>:</p>
+<p><code>${dockUrl}</code></p>
+]]
+end
+
+function script_properties()
+  local props = obs.obs_properties_create()
+  obs.obs_properties_add_text(props, "source_name", "Nama Browser Source", obs.OBS_TEXT_DEFAULT)
+  obs.obs_properties_add_text(props, "overlay_url", "URL Overlay (Token)", obs.OBS_TEXT_DEFAULT)
+  obs.obs_properties_add_button(props, "btn_setup", "Buat / Update Browser Source (1920x1080)", on_create_or_update_source)
+  obs.obs_properties_add_button(props, "btn_toggle", "Tampilkan / Sembunyikan Overlay", on_toggle_click)
+  return props
+end
+
+function script_defaults(settings)
+  obs.obs_data_set_default_string(settings, "source_name", source_name)
+  obs.obs_data_set_default_string(settings, "overlay_url", overlay_url)
+end
+
+function script_update(settings)
+  local sn = obs.obs_data_get_string(settings, "source_name")
+  local ou = obs.obs_data_get_string(settings, "overlay_url")
+  if sn ~= "" then source_name = sn end
+  if ou ~= "" then overlay_url = ou end
+end
+
+function on_create_or_update_source(props, prop)
+  local current_scene_source = obs.obs_frontend_get_current_scene()
+  if current_scene_source == nil then return true end
+  local scene = obs.obs_scene_from_source(current_scene_source)
+  local existing_source = obs.obs_get_source_by_name(source_name)
+
+  local settings = obs.obs_data_create()
+  obs.obs_data_set_string(settings, "url", overlay_url)
+  obs.obs_data_set_int(settings, "width", 1920)
+  obs.obs_data_set_int(settings, "height", 1080)
+  obs.obs_data_set_bool(settings, "fps_custom", true)
+  obs.obs_data_set_int(settings, "fps", 60)
+  obs.obs_data_set_bool(settings, "shutdown", false)
+  obs.obs_data_set_bool(settings, "restart_when_active", false)
+
+  if existing_source ~= nil then
+    obs.obs_source_update(existing_source, settings)
+    local item = obs.obs_scene_find_source(scene, source_name)
+    if item == nil then
+      obs.obs_scene_add(scene, existing_source)
+    end
+    obs.obs_source_release(existing_source)
+  else
+    local new_source = obs.obs_source_create("browser_source", source_name, settings, nil)
+    if new_source ~= nil then
+      obs.obs_scene_add(scene, new_source)
+      obs.obs_source_release(new_source)
+    end
+  end
+
+  obs.obs_data_release(settings)
+  obs.obs_source_release(current_scene_source)
+  return true
+end
+
+function toggle_overlay_visibility()
+  local current_scene_source = obs.obs_frontend_get_current_scene()
+  if current_scene_source == nil then return end
+  local scene = obs.obs_scene_from_source(current_scene_source)
+  local item = obs.obs_scene_find_source(scene, source_name)
+  if item ~= nil then
+    local visible = obs.obs_sceneitem_visible(item)
+    obs.obs_sceneitem_set_visible(item, not visible)
+  end
+  obs.obs_source_release(current_scene_source)
+end
+
+function on_toggle_click(props, prop)
+  toggle_overlay_visibility()
+  return true
+end
+
+function refresh_overlay_source()
+  local src = obs.obs_get_source_by_name(source_name)
+  if src ~= nil then
+    local cd = obs.calldata_create()
+    obs.proc_handler_call(obs.obs_source_get_proc_handler(src), "refresh", cd)
+    obs.calldata_destroy(cd)
+    obs.obs_source_release(src)
+  end
+end
+
+function script_load(settings)
+  hk_toggle_id = obs.obs_hotkey_register_frontend("openvolley_toggle_" .. "${existing.slug}", "OpenVolley: Toggle Overlay (${existing.slug})", function(pressed)
+    if pressed then toggle_overlay_visibility() end
+  end)
+  hk_refresh_id = obs.obs_hotkey_register_frontend("openvolley_refresh_" .. "${existing.slug}", "OpenVolley: Refresh Overlay (${existing.slug})", function(pressed)
+    if pressed then refresh_overlay_source() end
+  end)
+  local ht1 = obs.obs_data_get_array(settings, "hk_toggle")
+  obs.obs_hotkey_load(hk_toggle_id, ht1)
+  obs.obs_data_array_release(ht1)
+  local ht2 = obs.obs_data_get_array(settings, "hk_refresh")
+  obs.obs_hotkey_load(hk_refresh_id, ht2)
+  obs.obs_data_array_release(ht2)
+end
+
+function script_save(settings)
+  local ht1 = obs.obs_hotkey_save(hk_toggle_id)
+  obs.obs_data_set_array(settings, "hk_toggle", ht1)
+  obs.obs_data_array_release(ht1)
+  local ht2 = obs.obs_hotkey_save(hk_refresh_id)
+  obs.obs_data_set_array(settings, "hk_refresh", ht2)
+  obs.obs_data_array_release(ht2)
+end
+`;
+
+  c.header('Content-Type', 'text/x-lua; charset=utf-8');
+  c.header(
+    'Content-Disposition',
+    `attachment; filename="openvolley-obs-${existing.slug}.lua"`
+  );
+  return c.body(luaContent);
 });
 
 adminRoutes.delete('/obs-overlays/:id', async (c) => {

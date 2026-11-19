@@ -14,6 +14,9 @@ const ArenaTvDisplay = lazy(() =>
 const ObsOverlayDisplay = lazy(() =>
   import('./pages/ObsOverlayDisplay').then((m) => ({ default: m.ObsOverlayDisplay }))
 );
+const ObsDockPanel = lazy(() =>
+  import('./pages/ObsDockPanel').then((m) => ({ default: m.ObsDockPanel }))
+);
 const BackOffice = lazy(() =>
   import('./pages/BackOffice').then((m) => ({ default: m.BackOffice }))
 );
@@ -45,6 +48,10 @@ export function App() {
       ) : cleanPath === '/obs' ? (
         <Suspense fallback={<div className="min-h-screen bg-transparent" />}>
           <ObsOverlayDisplay />
+        </Suspense>
+      ) : cleanPath === '/obs-dock' ? (
+        <Suspense fallback={<div className="min-h-screen bg-slate-950" />}>
+          <ObsDockPanel />
         </Suspense>
       ) : cleanPath.startsWith('/back-office') ? (
         <Suspense fallback={<div className="min-h-screen bg-slate-50 dark:bg-slate-950" />}>

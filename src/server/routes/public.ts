@@ -5,6 +5,7 @@ import { streamSSE } from 'hono/streaming';
 import { asc, desc, eq } from 'drizzle-orm';
 import { AUDIO_TRACKS } from '../../shared/audio-library';
 import { hasAnyPermission } from '../../shared/rbac';
+import { sanitizePlainText } from '../../shared/sanitize';
 import { db } from '../db';
 import { matchReports, obsOverlays, teamPlayers, tvScreens } from '../db/schema';
 import { authenticateRequestUser, JWT_SECRET } from '../middleware/auth';
@@ -20,6 +21,7 @@ import { getTurnstileConfig, verifyTurnstileToken } from '../services/turnstile'
 import {
   MAX_SSE_CLIENTS,
   addSseClient,
+  broadcastEvent,
   canAcceptSseClient,
   getClientIp,
   getOverviewVersion,
@@ -551,6 +553,41 @@ publicRoutes.get('/obs-state', async (c) => {
     ? overview.tournaments.find((t) => t.id === activeMatch.tournamentId) ?? null
     : null;
 
+  const rosterA = teamA
+    ? await db
+        .select()
+        .from(teamPlayers)
+        .where(eq(teamPlayers.teamId, teamA.id))
+        .orderBy(asc(teamPlayers.jerseyNumber), asc(teamPlayers.id))
+    : [];
+  const rosterB = teamB
+    ? await db
+        .select()
+        .from(teamPlayers)
+        .where(eq(teamPlayers.teamId, teamB.id))
+        .orderBy(asc(teamPlayers.jerseyNumber), asc(teamPlayers.id))
+    : [];
+
+  const courtFilter = overlay.courtName?.trim().toLowerCase();
+  const upcomingMatches = allMatches
+    .filter(
+      (m) =>
+        m.status === 'scheduled' &&
+        m.id !== activeMatch?.id &&
+        (!courtFilter || (m.courtName || '').trim().toLowerCase() === courtFilter)
+    )
+    .slice(0, 3)
+    .map((m) => ({
+      id: m.id,
+      courtName: m.courtName,
+      scheduledAt: m.scheduledAt,
+      stageLabel: m.stageLabel,
+      teamAName: m.teamAId ? overview.teams.find((t) => t.id === m.teamAId)?.name || 'TBD' : 'TBD',
+      teamBName: m.teamBId ? overview.teams.find((t) => t.id === m.teamBId)?.name || 'TBD' : 'TBD',
+      teamALogo: m.teamAId ? overview.teams.find((t) => t.id === m.teamAId)?.logoUrl ?? null : null,
+      teamBLogo: m.teamBId ? overview.teams.find((t) => t.id === m.teamBId)?.logoUrl ?? null : null,
+    }));
+
   const { accessToken: _hiddenToken, ...safeOverlay } = overlay;
   return c.json({
     overlay: safeOverlay,
@@ -558,8 +595,83 @@ publicRoutes.get('/obs-state', async (c) => {
     teamA,
     teamB,
     tournament,
+    rosterA,
+    rosterB,
+    upcomingMatches,
     settings: overview.settings,
   });
+});
+
+const DOCK_VALID_LAYOUTS = new Set([
+  'scorebug_corner',
+  'lower_third',
+  'match_intro',
+  'timeout_break',
+  'winner_card',
+  'lineup_roster',
+  'standby_schedule',
+]);
+const DOCK_VALID_TRANSITIONS = new Set([
+  'broadcast_wipe',
+  'slide_edge',
+  'zoom_pop',
+  'fade_smooth',
+  'cut',
+]);
+const DOCK_VALID_THEMES = new Set(['dark', 'light', 'glass']);
+
+publicRoutes.post('/obs-dock-control', async (c) => {
+  const overlay = await resolveAuthorizedObsOverlay(c);
+  if (!overlay) {
+    return c.json({ error: 'Token OBS tidak valid atau overlay tidak ditemukan' }, 403);
+  }
+
+  const body = await c.req
+    .json<Record<string, unknown>>()
+    .catch(() => ({} as Record<string, unknown>));
+
+  if (body.triggerStinger === true) {
+    const label =
+      typeof body.stingerLabel === 'string' && body.stingerLabel.trim()
+        ? sanitizePlainText(body.stingerLabel, 40).trim()
+        : overlay.customBadgeText || 'LIVE BROADCAST';
+    const timestamp = Date.now();
+    await broadcastEvent('obs_stinger_triggered', {
+      id: overlay.id,
+      slug: overlay.slug,
+      label,
+      timestamp,
+    });
+    return c.json({ ok: true, stingerTriggered: true, label, timestamp });
+  }
+
+  const patch: Partial<typeof obsOverlays.$inferInsert> = { updatedAt: Date.now() };
+  if (typeof body.layoutPreset === 'string' && DOCK_VALID_LAYOUTS.has(body.layoutPreset)) {
+    patch.layoutPreset = body.layoutPreset as typeof obsOverlays.$inferInsert.layoutPreset;
+  }
+  if (
+    typeof body.transitionPreset === 'string' &&
+    DOCK_VALID_TRANSITIONS.has(body.transitionPreset)
+  ) {
+    patch.transitionPreset =
+      body.transitionPreset as typeof obsOverlays.$inferInsert.transitionPreset;
+  }
+  if (typeof body.themeMode === 'string' && DOCK_VALID_THEMES.has(body.themeMode)) {
+    patch.themeMode = body.themeMode as typeof obsOverlays.$inferInsert.themeMode;
+  }
+  if (typeof body.isVisible === 'boolean') patch.isVisible = body.isVisible;
+  if (typeof body.showBrandBug === 'boolean') patch.showBrandBug = body.showBrandBug;
+  if (typeof body.showSponsorTicker === 'boolean') patch.showSponsorTicker = body.showSponsorTicker;
+
+  const [updated] = await db
+    .update(obsOverlays)
+    .set(patch)
+    .where(eq(obsOverlays.id, overlay.id))
+    .returning();
+
+  await broadcastEvent('obs_overlay_updated', { slug: updated!.slug, id: updated!.id });
+  const { accessToken: _hiddenToken, ...safeOverlay } = updated!;
+  return c.json({ overlay: safeOverlay });
 });
 
 publicRoutes.get('/obs-stream', async (c) => {

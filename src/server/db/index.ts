@@ -207,15 +207,18 @@ export function initDatabase() {
       slug TEXT NOT NULL UNIQUE,
       access_token TEXT NOT NULL,
       layout_preset TEXT NOT NULL DEFAULT 'lower_third',
+      transition_preset TEXT NOT NULL DEFAULT 'broadcast_wipe',
       theme_mode TEXT NOT NULL DEFAULT 'dark',
       match_id INTEGER REFERENCES matches(id) ON DELETE SET NULL,
       court_name TEXT NOT NULL DEFAULT '',
       auto_follow_court INTEGER NOT NULL DEFAULT 1,
       show_sponsor_ticker INTEGER NOT NULL DEFAULT 1,
+      show_brand_bug INTEGER NOT NULL DEFAULT 1,
       show_set_history INTEGER NOT NULL DEFAULT 1,
       show_timeout_sub INTEGER NOT NULL DEFAULT 1,
       is_visible INTEGER NOT NULL DEFAULT 1,
       custom_badge_text TEXT NOT NULL DEFAULT 'LIVE BROADCAST',
+      scene_mapping_json TEXT NOT NULL DEFAULT '{}',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -335,6 +338,17 @@ export function initDatabase() {
   const userColNames = getColumnSet('users');
   if (!userColNames.has('permissions_json')) {
     sqlite.exec('ALTER TABLE users ADD COLUMN permissions_json TEXT;');
+  }
+
+  const obsColNames = getColumnSet('obs_overlays');
+  if (!obsColNames.has('transition_preset')) {
+    sqlite.exec("ALTER TABLE obs_overlays ADD COLUMN transition_preset TEXT NOT NULL DEFAULT 'broadcast_wipe';");
+  }
+  if (!obsColNames.has('show_brand_bug')) {
+    sqlite.exec('ALTER TABLE obs_overlays ADD COLUMN show_brand_bug INTEGER NOT NULL DEFAULT 1;');
+  }
+  if (!obsColNames.has('scene_mapping_json')) {
+    sqlite.exec("ALTER TABLE obs_overlays ADD COLUMN scene_mapping_json TEXT NOT NULL DEFAULT '{}';");
   }
 
   seedDefaultRoles();

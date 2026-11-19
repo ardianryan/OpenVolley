@@ -147,15 +147,23 @@ export async function normalizeImageInBrowser(
     // Proceed to Tier 2 on-demand browser HEIC decoder
   }
 
-  // Tier 2: Lazy On-Demand Client-Side HEIC Decoder (`heic2any`)
+  // Tier 2: Lazy On-Demand Client-Side HEIC Decoder (`heic2any`) with safety timeout
   options?.onStatus?.('Mengonversi foto HEIC iPhone di browser...');
   const { default: heic2any } = await import('heic2any');
   const targetMime = preserveAlpha ? 'image/png' : 'image/jpeg';
-  const converted = await heic2any({
-    blob: file,
-    toType: targetMime,
-    quality: 0.92,
-  });
+  const converted = await Promise.race([
+    heic2any({
+      blob: file,
+      toType: targetMime,
+      quality: 0.92,
+    }),
+    new Promise<never>((_, reject) =>
+      window.setTimeout(
+        () => reject(new Error('Waktu konversi foto HEIC habis. Silakan coba ulang atau gunakan format JPG/PNG.')),
+        35000
+      )
+    ),
+  ]);
   const firstBlob = Array.isArray(converted) ? converted[0] : converted;
   if (!firstBlob) {
     throw new Error('Gagal mengonversi file HEIC di browser');

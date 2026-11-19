@@ -1,14 +1,19 @@
 import {
   Check,
   Copy,
+  Download,
   Eye,
   EyeOff,
+  HelpCircle,
   KeyRound,
   LayoutTemplate,
+  MonitorPlay,
+  PlugZap,
   Plus,
   RefreshCw,
   Trash2,
   Tv2,
+  Zap,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -16,7 +21,9 @@ import { apiFetch } from '../lib/api';
 import type {
   ObsLayoutPreset,
   ObsOverlay,
+  ObsSceneMapping,
   ObsThemeMode,
+  ObsTransitionPreset,
   OverviewData,
 } from '../types';
 
@@ -29,11 +36,24 @@ const LAYOUT_PRESETS: Array<{
   label: string;
   desc: string;
 }> = [
-  { id: 'lower_third', label: 'Lower-Third Broadcast', desc: 'Bar bawah penuh dengan logo, skor & sponsor' },
-  { id: 'scorebug_corner', label: 'Scorebug Corner', desc: 'Pill skor ringkas di sudut kiri atas siaran' },
+  { id: 'lower_third', label: 'Lower-Third Broadcast', desc: 'Bar bawah penuh dengan logo acara, skor & sponsor' },
+  { id: 'scorebug_corner', label: 'Scorebug Corner', desc: 'Pill skor kiri atas + Corner Brand & Sponsor Bug kanan atas' },
   { id: 'match_intro', label: 'Match Intro / VS Card', desc: 'Kartu perkenalan kedua tim sebelum laga' },
+  { id: 'lineup_roster', label: 'Lineup / Starting Roster', desc: 'Daftar pemain & nomor punggung kedua tim' },
   { id: 'timeout_break', label: 'Timeout / Set-Break', desc: 'Kartu papan skor penuh saat jeda set/TO' },
+  { id: 'standby_schedule', label: 'Starting Soon / Jeda', desc: 'Layar tunggu menampilkan jadwal berikutnya & sponsor penuh' },
   { id: 'winner_card', label: 'Winner Celebration', desc: 'Kartu pemenang akhir setelah pertandingan selesai' },
+];
+
+const TRANSITION_PRESETS: Array<{
+  id: ObsTransitionPreset;
+  label: string;
+}> = [
+  { id: 'broadcast_wipe', label: 'Broadcast Wipe (Rekomendasi TV)' },
+  { id: 'slide_edge', label: 'Slide Edge (Geser Halus)' },
+  { id: 'zoom_pop', label: 'Zoom Pop (Cepat & Tegas)' },
+  { id: 'fade_smooth', label: 'Fade Smooth (Lembut)' },
+  { id: 'cut', label: 'Cut (Langsung Tanpa Animasi)' },
 ];
 
 export function ObsControllerManager({ data }: ObsControllerManagerProps) {
@@ -44,6 +64,10 @@ export function ObsControllerManager({ data }: ObsControllerManagerProps) {
   const [newCustomToken, setNewCustomToken] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedDockUrl, setCopiedDockUrl] = useState(false);
+  const [stingerLabel, setStingerLabel] = useState('REPLAY / HIGHLIGHT');
+  const [showPreview, setShowPreview] = useState(true);
+  const [showGuide, setShowGuide] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [confirmRegen, setConfirmRegen] = useState<ObsOverlay | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ObsOverlay | null>(null);
@@ -76,6 +100,44 @@ export function ObsControllerManager({ data }: ObsControllerManagerProps) {
   const buildObsUrl = (ov: ObsOverlay) => {
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     return `${origin}/obs?overlay=${encodeURIComponent(ov.slug)}&token=${encodeURIComponent(ov.accessToken)}`;
+  };
+
+  const buildDockUrl = (ov: ObsOverlay) => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${origin}/obs-dock?overlay=${encodeURIComponent(ov.slug)}&token=${encodeURIComponent(ov.accessToken)}`;
+  };
+
+  const triggerStinger = async (label?: string) => {
+    if (!activeOverlay) return;
+    await apiFetch(`/api/admin/obs-overlays/${activeOverlay.id}/stinger`, {
+      method: 'POST',
+      body: JSON.stringify({ label: label || stingerLabel || 'LIVE BROADCAST' }),
+    });
+    flash('Stinger Bumper diputar di OBS!');
+  };
+
+  const parsedSceneMapping: ObsSceneMapping = (() => {
+    if (!activeOverlay?.sceneMappingJson) return {};
+    try {
+      return JSON.parse(activeOverlay.sceneMappingJson) as ObsSceneMapping;
+    } catch {
+      return {};
+    }
+  })();
+
+  const handleUpdateSceneMapping = (
+    preset: ObsLayoutPreset,
+    field: 'obsSceneName' | 'obsTransitionName',
+    value: string
+  ) => {
+    const next: ObsSceneMapping = {
+      ...parsedSceneMapping,
+      [preset]: {
+        ...(parsedSceneMapping[preset] || {}),
+        [field]: value,
+      },
+    };
+    void patchOverlay({ sceneMappingJson: JSON.stringify(next) });
   };
 
   const patchOverlay = async (patch: Partial<ObsOverlay>) => {
@@ -271,14 +333,121 @@ export function ObsControllerManager({ data }: ObsControllerManagerProps) {
                 </>
               )}
             </button>
+
+            {/* Stinger Bumper Trigger */}
+            <div className="space-y-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                  <Zap className="h-3.5 w-3.5" /> Stinger Transition Bumper
+                </span>
+              </div>
+              <input
+                type="text"
+                value={stingerLabel}
+                onChange={(e) => setStingerLabel(e.target.value)}
+                placeholder="Label Bumper (mis: REPLAY / JEDA)"
+                className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
+              />
+              <div className="flex flex-wrap gap-1">
+                {['REPLAY / HIGHLIGHT', 'PERPINDAHAN KAMERA', 'JEDA PERTANDINGAN'].map((lbl) => (
+                  <button
+                    key={lbl}
+                    type="button"
+                    onClick={() => {
+                      setStingerLabel(lbl);
+                      void triggerStinger(lbl);
+                    }}
+                    className="rounded-md bg-white px-2 py-1 text-[10px] font-bold text-slate-700 ring-1 ring-slate-200 hover:bg-amber-500 hover:text-slate-950 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700"
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => void triggerStinger()}
+                className="flex min-h-10 w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-3 py-2 text-xs font-extrabold uppercase tracking-wider text-slate-950 hover:bg-amber-400"
+              >
+                <Zap className="h-4 w-4" />
+                Putar Stinger Bumper (1.2s)
+              </button>
+            </div>
+
+            {/* Plug & Play OBS Integration (Dock URL + Lua Plugin) */}
+            <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                  <PlugZap className="h-3.5 w-3.5 text-sky-500" />
+                  OBS Plug &amp; Play Plugin
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowGuide(!showGuide)}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-600 hover:underline dark:text-amber-400"
+                >
+                  <HelpCircle className="h-3.5 w-3.5" />
+                  {showGuide ? 'Tutup Panduan' : 'Cara Pasang'}
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(buildDockUrl(activeOverlay));
+                    setCopiedDockUrl(true);
+                    window.setTimeout(() => setCopiedDockUrl(false), 2000);
+                  }}
+                  className="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 hover:border-amber-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  {copiedDockUrl ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-emerald-500" /> URL Dock Disalin
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3.5 w-3.5" /> Salin URL Custom Browser Dock
+                    </>
+                  )}
+                </button>
+
+                <a
+                  href={`/api/admin/obs-overlays/${activeOverlay.id}/lua-script`}
+                  download
+                  className="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-sky-500/15 px-3 py-1.5 text-xs font-extrabold text-sky-700 hover:bg-sky-500 hover:text-slate-950 dark:text-sky-300"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Unduh Script Plugin OBS (.lua)
+                </a>
+              </div>
+
+              {showGuide && (
+                <ol className="list-decimal space-y-1 pl-4 text-[11px] leading-relaxed text-slate-600 dark:text-slate-400">
+                  <li>
+                    <strong>Cara Termudah (Dock + WebSocket):</strong> Di OBS Studio, buka{' '}
+                    <em>Docks → Custom Browser Docks</em>, tempel URL Dock di atas, lalu hubungkan ke{' '}
+                    <code>ws://127.0.0.1:4455</code> (pastikan <em>Tools → WebSocket Server</em> aktif). Klik{' '}
+                    <strong>1-Klik Setup</strong> untuk otomatis membuat Browser Source 1920×1080 60FPS!
+                  </li>
+                  <li>
+                    <strong>Alternatif Script Lua:</strong> Unduh file <code>.lua</code> di atas, lalu di OBS buka{' '}
+                    <em>Tools → Scripts → (+)</em> dan pilih file tersebut untuk membuat source &amp; hotkey instan.
+                  </li>
+                  <li>
+                    <strong>Penting:</strong> Pastikan opsi <em>Shutdown source when not visible</em> dalam keadaan{' '}
+                    <strong>nonaktif (uncheck)</strong> agar animasi transisi tidak berkedip.
+                  </li>
+                </ol>
+              )}
+            </div>
           </div>
 
-          {/* Right: 5 Layout Variations & Broadcast Controls */}
+          {/* Right: Layout Variations, Transition Presets & Live Mini Preview */}
           <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900 lg:col-span-2">
             <div>
               <h3 className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-500">
                 <LayoutTemplate className="h-3.5 w-3.5 text-amber-500" />
-                Pilih Variasi Overlay (5 Preset)
+                Pilih Variasi Overlay ({LAYOUT_PRESETS.length} Preset Siaran)
               </h3>
               <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
                 {LAYOUT_PRESETS.map((preset) => (
@@ -303,7 +472,25 @@ export function ObsControllerManager({ data }: ObsControllerManagerProps) {
               </div>
             </div>
 
-            <div className="grid gap-3 border-t border-slate-100 pt-4 dark:border-slate-800 sm:grid-cols-3">
+            <div className="grid gap-3 border-t border-slate-100 pt-4 dark:border-slate-800 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label className="mb-1 block text-[11px] font-bold uppercase text-slate-500">
+                  Preset Transisi
+                </label>
+                <select
+                  value={activeOverlay.transitionPreset || 'broadcast_wipe'}
+                  onChange={(e) =>
+                    patchOverlay({ transitionPreset: e.target.value as ObsTransitionPreset })
+                  }
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
+                >
+                  {TRANSITION_PRESETS.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div>
                 <label className="mb-1 block text-[11px] font-bold uppercase text-slate-500">
                   Tema Visual
@@ -322,7 +509,7 @@ export function ObsControllerManager({ data }: ObsControllerManagerProps) {
               </div>
               <div>
                 <label className="mb-1 block text-[11px] font-bold uppercase text-slate-500">
-                  Target Lapangan (Auto-Live)
+                  Target Lapangan
                 </label>
                 <select
                   value={activeOverlay.courtName}
@@ -339,7 +526,7 @@ export function ObsControllerManager({ data }: ObsControllerManagerProps) {
               </div>
               <div>
                 <label className="mb-1 block text-[11px] font-bold uppercase text-slate-500">
-                  Atau Kunci ke Pertandingan
+                  Kunci Pertandingan
                 </label>
                 <select
                   value={activeOverlay.matchId ?? ''}
@@ -371,12 +558,22 @@ export function ObsControllerManager({ data }: ObsControllerManagerProps) {
               <label className="inline-flex items-center gap-2 font-semibold">
                 <input
                   type="checkbox"
+                  checked={activeOverlay.showBrandBug !== false}
+                  onChange={(e) =>
+                    patchOverlay({ showBrandBug: e.target.checked })
+                  }
+                />
+                Logo Acara &amp; Penyelenggara
+              </label>
+              <label className="inline-flex items-center gap-2 font-semibold">
+                <input
+                  type="checkbox"
                   checked={activeOverlay.showSponsorTicker}
                   onChange={(e) =>
                     patchOverlay({ showSponsorTicker: e.target.checked })
                   }
                 />
-                Tampilkan Sponsor
+                Sponsor &amp; Media Partner
               </label>
               <label className="inline-flex items-center gap-2 font-semibold">
                 <input
@@ -394,6 +591,75 @@ export function ObsControllerManager({ data }: ObsControllerManagerProps) {
                 />
                 Badge Time-Out &amp; Sub
               </label>
+            </div>
+
+            {/* Scene Mapping 2-Arah */}
+            <div className="space-y-2 border-t border-slate-100 pt-4 dark:border-slate-800">
+              <h4 className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                Pemetaan Scene Kamera OBS (Opsional — Sinkronisasi 2-Arah di Dock)
+              </h4>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Isi nama Scene OBS (harus persis seperti di OBS, misal: <code>Kamera Utama</code>,{' '}
+                <code>Scene Jeda</code>) agar perpindahan Scene kamera &amp; preset berjalan otomatis.
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {LAYOUT_PRESETS.map((preset) => {
+                  const curMap = parsedSceneMapping[preset.id] || {};
+                  return (
+                    <div
+                      key={preset.id}
+                      className="flex items-center gap-2 rounded-xl border border-slate-200/80 bg-slate-50/70 px-3 py-2 text-xs dark:border-slate-800 dark:bg-slate-950/50"
+                    >
+                      <span className="w-32 shrink-0 truncate font-bold text-slate-700 dark:text-slate-200">
+                        {preset.label}
+                      </span>
+                      <input
+                        type="text"
+                        defaultValue={curMap.obsSceneName || ''}
+                        placeholder="Nama Scene OBS"
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          if (v !== (curMap.obsSceneName || '')) {
+                            handleUpdateSceneMapping(preset.id, 'obsSceneName', v);
+                          }
+                        }}
+                        className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] dark:border-slate-700 dark:bg-slate-900"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Live Mini Preview */}
+            <div className="space-y-2 border-t border-slate-100 pt-4 dark:border-slate-800">
+              <div className="flex items-center justify-between">
+                <h4 className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                  <MonitorPlay className="h-3.5 w-3.5 text-amber-500" />
+                  Live Mini Preview (Simulasi 16:9 di Atas Video Lapangan)
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setShowPreview(!showPreview)}
+                  className="text-xs font-bold text-amber-600 hover:underline dark:text-amber-400"
+                >
+                  {showPreview ? 'Sembunyikan Preview' : 'Tampilkan Preview'}
+                </button>
+              </div>
+              {showPreview && (
+                <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-slate-300 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-slate-700 via-slate-800 to-slate-950 dark:border-slate-700">
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-15">
+                    <span className="font-display text-2xl font-black uppercase tracking-widest text-white">
+                      CAMERA FEED SIMULATION (1920×1080)
+                    </span>
+                  </div>
+                  <iframe
+                    src={buildObsUrl(activeOverlay)}
+                    title="OBS Live Mini Preview"
+                    className="h-[200%] w-[200%] origin-top-left scale-50 border-0 bg-transparent"
+                  />
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -218,6 +218,148 @@
   animation: tvMarquee 26s linear infinite;
 }
 
+/* OBS Sport Broadcast Overlay Transitions */
+@keyframes obsWipeIn {
+  0% {
+    opacity: 0;
+    clip-path: inset(0 100% 0 0);
+    transform: translateX(-18px);
+  }
+  100% {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+    transform: translateX(0);
+  }
+}
+
+@keyframes obsWipeOut {
+  0% {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+    transform: translateX(0);
+  }
+  100% {
+    opacity: 0;
+    clip-path: inset(0 0 0 100%);
+    transform: translateX(18px);
+  }
+}
+
+@keyframes obsSlideIn {
+  0% {
+    opacity: 0;
+    transform: translateY(28px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes obsSlideOut {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+}
+
+@keyframes obsZoomIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes obsZoomOut {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+
+@keyframes obsFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes obsFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes obsStingerSweep {
+  0% {
+    transform: translateX(-120%) skewX(-12deg);
+    opacity: 0.95;
+  }
+  32%, 58% {
+    transform: translateX(0%) skewX(-12deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(120%) skewX(-12deg);
+    opacity: 0.95;
+  }
+}
+
+@keyframes obsStingerBadge {
+  0%, 15% {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  32%, 62% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  82%, 100% {
+    opacity: 0;
+    transform: scale(1.06);
+  }
+}
+
+.obs-enter-broadcast_wipe {
+  animation: obsWipeIn 380ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.obs-exit-broadcast_wipe {
+  animation: obsWipeOut 250ms cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+.obs-enter-slide_edge {
+  animation: obsSlideIn 360ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.obs-exit-slide_edge {
+  animation: obsSlideOut 240ms cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+.obs-enter-zoom_pop {
+  animation: obsZoomIn 340ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.obs-exit-zoom_pop {
+  animation: obsZoomOut 230ms cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+.obs-enter-fade_smooth {
+  animation: obsFadeIn 340ms ease-out forwards;
+}
+.obs-exit-fade_smooth {
+  animation: obsFadeOut 240ms ease-in forwards;
+}
+.obs-stinger-sweep {
+  animation: obsStingerSweep 1200ms cubic-bezier(0.76, 0, 0.24, 1) forwards;
+}
+.obs-stinger-badge {
+  animation: obsStingerBadge 1200ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
 /* Respect user motion preferences (WCAG 2.3.3 & antislop-human) */
 @media (prefers-reduced-motion: reduce) {
   html {

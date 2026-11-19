@@ -83,9 +83,25 @@ export type ObsLayoutPreset =
   | 'lower_third'
   | 'match_intro'
   | 'timeout_break'
-  | 'winner_card';
+  | 'winner_card'
+  | 'lineup_roster'
+  | 'standby_schedule';
+
+export type ObsTransitionPreset =
+  | 'broadcast_wipe'
+  | 'slide_edge'
+  | 'zoom_pop'
+  | 'fade_smooth'
+  | 'cut';
 
 export type ObsThemeMode = 'dark' | 'light' | 'glass';
+
+export interface ObsSceneMappingEntry {
+  obsSceneName?: string;
+  obsTransitionName?: string;
+}
+
+export type ObsSceneMapping = Partial<Record<ObsLayoutPreset, ObsSceneMappingEntry>>;
 
 export interface ObsOverlay {
   id: number;
@@ -93,15 +109,18 @@ export interface ObsOverlay {
   slug: string;
   accessToken: string;
   layoutPreset: ObsLayoutPreset;
+  transitionPreset: ObsTransitionPreset;
   themeMode: ObsThemeMode;
   matchId?: number | null;
   courtName: string;
   autoFollowCourt: boolean;
   showSponsorTicker: boolean;
+  showBrandBug: boolean;
   showSetHistory: boolean;
   showTimeoutSub: boolean;
   isVisible: boolean;
   customBadgeText: string;
+  sceneMappingJson: string;
   createdAt?: number;
   updatedAt?: number;
 }

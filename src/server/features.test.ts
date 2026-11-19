@@ -1270,14 +1270,55 @@ describe('Feature Suite — Tournament Lifecycle, Role Matrix & Production Routi
     expect(obsData.overlay.layoutPreset).toBe('scorebug_corner');
     expect(obsData.overlay.accessToken).toBeUndefined();
 
-    // Update layout variation + hide overlay
+    // Update layout variation + transition + scene mapping + hide overlay
     const patchObs = await app.request(`/api/admin/obs-overlays/${overlay.id}`, {
       method: 'PATCH',
       headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ layoutPreset: 'winner_card', isVisible: false }),
+      body: JSON.stringify({
+        layoutPreset: 'standby_schedule',
+        transitionPreset: 'zoom_pop',
+        showBrandBug: true,
+        sceneMappingJson: JSON.stringify({
+          scorebug_corner: { obsSceneName: 'Kamera Utama' },
+          standby_schedule: { obsSceneName: 'Scene Jeda' },
+        }),
+        isVisible: false,
+      }),
     });
     expect(patchObs.status).toBe(200);
-    expect((await patchObs.json()).overlay.isVisible).toBe(false);
+    const patchedOv = (await patchObs.json()).overlay;
+    expect(patchedOv.isVisible).toBe(false);
+    expect(patchedOv.transitionPreset).toBe('zoom_pop');
+    expect(patchedOv.layoutPreset).toBe('standby_schedule');
+    expect(patchedOv.sceneMappingJson).toContain('Kamera Utama');
+
+    // Trigger Stinger Bumper & Download Lua Script
+    const stingerRes = await app.request(`/api/admin/obs-overlays/${overlay.id}/stinger`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: 'REPLAY' }),
+    });
+    expect(stingerRes.status).toBe(200);
+
+    const luaRes = await app.request(`/api/admin/obs-overlays/${overlay.id}/lua-script`, {
+      headers: { Cookie: adminCookie },
+    });
+    expect(luaRes.status).toBe(200);
+    const luaText = await luaRes.text();
+    expect(luaText).toContain('obslua');
+    expect(luaText).toContain(overlay.accessToken);
+
+    // Token-gated Dock Control
+    const dockRes = await app.request(
+      `/api/public/obs-dock-control?overlay=${overlay.slug}&token=${overlay.accessToken}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ layoutPreset: 'lineup_roster', isVisible: true }),
+      }
+    );
+    expect(dockRes.status).toBe(200);
+    expect((await dockRes.json()).overlay.layoutPreset).toBe('lineup_roster');
 
     // Regenerate token invalidates old URL immediately
     const regenObs = await app.request(

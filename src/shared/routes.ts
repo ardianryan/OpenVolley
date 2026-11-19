@@ -17,6 +17,7 @@ const EXACT_SPA_PATHS = new Set([
   '/galeri',
   '/tv',
   '/obs',
+  '/obs-dock',
   '/back-office',
   '/back-office/beranda',
   '/back-office/kontingen',

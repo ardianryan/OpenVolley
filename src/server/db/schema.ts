@@ -213,10 +213,23 @@ export const obsOverlays = sqliteTable('obs_overlays', {
   slug: text('slug').notNull().unique(),
   accessToken: text('access_token').notNull(),
   layoutPreset: text('layout_preset', {
-    enum: ['scorebug_corner', 'lower_third', 'match_intro', 'timeout_break', 'winner_card'],
+    enum: [
+      'scorebug_corner',
+      'lower_third',
+      'match_intro',
+      'timeout_break',
+      'winner_card',
+      'lineup_roster',
+      'standby_schedule',
+    ],
   })
     .notNull()
     .default('lower_third'),
+  transitionPreset: text('transition_preset', {
+    enum: ['broadcast_wipe', 'slide_edge', 'zoom_pop', 'fade_smooth', 'cut'],
+  })
+    .notNull()
+    .default('broadcast_wipe'),
   themeMode: text('theme_mode', { enum: ['dark', 'light', 'glass'] })
     .notNull()
     .default('dark'),
@@ -224,10 +237,12 @@ export const obsOverlays = sqliteTable('obs_overlays', {
   courtName: text('court_name').notNull().default(''),
   autoFollowCourt: integer('auto_follow_court', { mode: 'boolean' }).notNull().default(true),
   showSponsorTicker: integer('show_sponsor_ticker', { mode: 'boolean' }).notNull().default(true),
+  showBrandBug: integer('show_brand_bug', { mode: 'boolean' }).notNull().default(true),
   showSetHistory: integer('show_set_history', { mode: 'boolean' }).notNull().default(true),
   showTimeoutSub: integer('show_timeout_sub', { mode: 'boolean' }).notNull().default(true),
   isVisible: integer('is_visible', { mode: 'boolean' }).notNull().default(true),
   customBadgeText: text('custom_badge_text').notNull().default('LIVE BROADCAST'),
+  sceneMappingJson: text('scene_mapping_json').notNull().default('{}'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
