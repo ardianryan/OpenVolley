@@ -130,9 +130,9 @@ export function BackOffice() {
     tournaments: 'master',
     operator: 'arena',
     tv_screens: 'arena',
-    obs_overlays: 'arena',
     documents: 'media_pub',
     media: 'media_pub',
+    obs_overlays: 'media_pub',
     branding: 'system',
     integrations: 'system',
     users: 'system',
@@ -704,12 +704,12 @@ export function BackOffice() {
                 {
                   key: 'arena',
                   title: 'Arena & Layar TV',
-                  ids: ['operator', 'tv_screens', 'obs_overlays'] as BackOfficeSection[],
+                  ids: ['operator', 'tv_screens'] as BackOfficeSection[],
                 },
                 {
                   key: 'media_pub',
                   title: 'Publikasi & Media',
-                  ids: ['documents', 'media'] as BackOfficeSection[],
+                  ids: ['documents', 'media', 'obs_overlays'] as BackOfficeSection[],
                 },
                 {
                   key: 'system',

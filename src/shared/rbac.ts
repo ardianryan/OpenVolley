@@ -71,7 +71,7 @@ export const PERMISSION_CATALOG: PermissionMeta[] = [
     label: 'OBS Broadcast & Remote',
     shortLabel: 'OBS',
     description: 'Kelola link OBS Browser Source bertoken, variasi overlay & kontrol siaran.',
-    group: 'Arena & Layar TV',
+    group: 'Publikasi & Media',
   },
   {
     key: 'documents',
