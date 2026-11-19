@@ -6,12 +6,17 @@ import {
 } from './audio-library';
 
 describe('Audio Library & Smart Auto-Pick', () => {
-  it('contains all 18 S3-hosted tracks with valid https URLs', () => {
-    expect(AUDIO_TRACKS.length).toBe(18);
+  it('contains all 23 S3-hosted tracks with valid https URLs', () => {
+    expect(AUDIO_TRACKS.length).toBe(23);
     for (const track of AUDIO_TRACKS) {
       expect(track.url).toStartWith('https://is3-storage.smage.my.id/svc-media/audio/');
       expect(track.url).toEndWith('.mp3');
     }
+  });
+
+  it('provides a rich pool of upcoming pre-match tracks', () => {
+    const upcomingPool = getTracksForTemplate('upcoming');
+    expect(upcomingPool.length).toBeGreaterThanOrEqual(8);
   });
 
   it('picks tracks within the requested template pool and avoids repeating excludeId', () => {

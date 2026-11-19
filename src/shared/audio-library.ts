@@ -126,6 +126,47 @@ export const AUDIO_TRACKS: AudioTrackMeta[] = [
     categories: ['upcoming'],
     url: `${S3_AUDIO_BASE}/tunnel-walk.mp3`,
   },
+  {
+    id: 'warmup-rhythm',
+    title: 'Warmup Rhythm & Spikes',
+    vibe: 'Jersey Club • Fast Spike Drills',
+    bpm: 130,
+    categories: ['upcoming'],
+    url: `${S3_AUDIO_BASE}/warmup-rhythm.mp3`,
+  },
+  {
+    id: 'rivalry-countdown',
+    title: 'Rivalry Countdown',
+    vibe: 'Hybrid Cinematic Trap • Derby Clash',
+    bpm: 105,
+    categories: ['upcoming'],
+    highStakes: true,
+    url: `${S3_AUDIO_BASE}/rivalry-countdown.mp3`,
+  },
+  {
+    id: 'morning-court-kickoff',
+    title: 'Morning Court Kickoff',
+    vibe: 'Nu-Disco & Funk Pop • Day Kickoff',
+    bpm: 118,
+    categories: ['upcoming', 'ambient'],
+    url: `${S3_AUDIO_BASE}/morning-court-kickoff.mp3`,
+  },
+  {
+    id: 'arena-pulse',
+    title: 'Arena Pulse & Hype',
+    vibe: 'Dark Electro Cyber Sport • Anticipation',
+    bpm: 124,
+    categories: ['upcoming'],
+    url: `${S3_AUDIO_BASE}/arena-pulse.mp3`,
+  },
+  {
+    id: 'locker-room-focus',
+    title: 'Locker Room Focus',
+    vibe: 'Lo-Fi Chill Drill • Tactical Determination',
+    bpm: 92,
+    categories: ['upcoming'],
+    url: `${S3_AUDIO_BASE}/locker-room-focus.mp3`,
+  },
 
   // HIGHLIGHT POOL
   {
