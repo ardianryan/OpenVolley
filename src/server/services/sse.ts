@@ -8,6 +8,7 @@ export type SseEventType =
   | 'master_teams_updated'
   | 'courts_updated'
   | 'tv_screen_updated'
+  | 'obs_overlay_updated'
   | 'report_added'
   | 'report_deleted'
   | 'tournament_updated'

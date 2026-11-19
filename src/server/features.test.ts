@@ -1233,4 +1233,121 @@ describe('Feature Suite — Tournament Lifecycle, Role Matrix & Production Routi
       delete process.env.TURNSTILE_SECRET_KEY;
     }
   });
+
+  test('Feature 13: v0.3.0 OBS Token Gate & Variations, Roster/Set Duration, i18n, Webhooks & SQLite Backup', async () => {
+    // 1. OBS Overlays CRUD + Token Gate
+    const createObs = await app.request('/api/admin/obs-overlays', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Stream Court 1',
+        layoutPreset: 'scorebug_corner',
+        themeMode: 'glass',
+      }),
+    });
+    expect(createObs.status).toBe(201);
+    const { overlay } = await createObs.json();
+    expect(overlay.accessToken.length).toBeGreaterThanOrEqual(12);
+    expect(overlay.layoutPreset).toBe('scorebug_corner');
+
+    // Missing or wrong token -> 403 Forbidden
+    const unauthObsState = await app.request(
+      `/api/public/obs-state?overlay=${overlay.slug}`
+    );
+    expect(unauthObsState.status).toBe(403);
+
+    const badObsStream = await app.request(
+      `/api/public/obs-stream?overlay=${overlay.slug}&token=wrong-token`
+    );
+    expect(badObsStream.status).toBe(403);
+
+    // Valid token -> 200 OK (and accessToken is never leaked in public response)
+    const okObsState = await app.request(
+      `/api/public/obs-state?overlay=${overlay.slug}&token=${overlay.accessToken}`
+    );
+    expect(okObsState.status).toBe(200);
+    const obsData = await okObsState.json();
+    expect(obsData.overlay.layoutPreset).toBe('scorebug_corner');
+    expect(obsData.overlay.accessToken).toBeUndefined();
+
+    // Update layout variation + hide overlay
+    const patchObs = await app.request(`/api/admin/obs-overlays/${overlay.id}`, {
+      method: 'PATCH',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ layoutPreset: 'winner_card', isVisible: false }),
+    });
+    expect(patchObs.status).toBe(200);
+    expect((await patchObs.json()).overlay.isVisible).toBe(false);
+
+    // Regenerate token invalidates old URL immediately
+    const regenObs = await app.request(
+      `/api/admin/obs-overlays/${overlay.id}/regenerate-token`,
+      { method: 'POST', headers: { Cookie: adminCookie } }
+    );
+    expect(regenObs.status).toBe(200);
+    const rotated = (await regenObs.json()).overlay;
+    expect(rotated.accessToken).not.toBe(overlay.accessToken);
+
+    const staleObsCheck = await app.request(
+      `/api/public/obs-state?overlay=${overlay.slug}&token=${overlay.accessToken}`
+    );
+    expect(staleObsCheck.status).toBe(403);
+
+    // 2. FIVB Form O-2 Optional Roster + Set Timestamps
+    const catRes = await app.request('/api/admin/tournaments', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'O-2 Test Div', bestOf: 3 }),
+    });
+    const cat = (await catRes.json()).tournament;
+
+    const teamRes = await app.request('/api/admin/teams', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tournamentId: cat.id, name: 'Tim O2', school: 'Mojokerto' }),
+    });
+    const team = (await teamRes.json()).team;
+
+    const addPlayer = await app.request(`/api/admin/teams/${team.id}/players`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jerseyNumber: 7, name: 'Bima', role: 'captain' }),
+    });
+    expect(addPlayer.status).toBe(201);
+    const playersRes = await app.request(`/api/admin/teams/${team.id}/players`, {
+      headers: { Cookie: adminCookie },
+    });
+    expect((await playersRes.json()).players.length).toBe(1);
+
+    // 3. i18n dictionary parity
+    const { DICTIONARY, translate } = await import('../shared/i18n');
+    expect(Object.keys(DICTIONARY.id)).toEqual(Object.keys(DICTIONARY.en));
+    expect(translate('en', 'nav_live')).toBe('Live Scores');
+
+    // 4. Webhooks Anti-SSRF & HMAC signing
+    const { isSafeWebhookUrl, signWebhookPayload } = await import('./services/webhook');
+    expect(await isSafeWebhookUrl('http://127.0.0.1:8080/hook')).toBe(false);
+    expect(await isSafeWebhookUrl('https://discord.com/api/webhooks/123/abc')).toBe(true);
+    expect(signWebhookPayload('mysecret', '{"a":1}')).toMatch(/^sha256=[a-f0-9]{64}$/);
+
+    const badHook = await app.request('/api/admin/webhooks', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Local SSRF', url: 'http://127.0.0.1/steal' }),
+    });
+    expect(badHook.status).toBe(400);
+
+    const goodHook = await app.request('/api/admin/webhooks', {
+      method: 'POST',
+      headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Discord Live',
+        url: 'https://discord.com/api/webhooks/12345/abcdef',
+        secret: 'topsecret',
+        platform: 'discord',
+      }),
+    });
+    expect(goodHook.status).toBe(201);
+    expect((await goodHook.json()).webhook.hasSecret).toBe(true);
+  });
 });

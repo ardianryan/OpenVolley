@@ -2,11 +2,11 @@ import { Hono, type Context } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { sign, verify } from 'hono/jwt';
 import { streamSSE } from 'hono/streaming';
-import { desc, eq } from 'drizzle-orm';
+import { asc, desc, eq } from 'drizzle-orm';
 import { AUDIO_TRACKS } from '../../shared/audio-library';
 import { hasAnyPermission } from '../../shared/rbac';
 import { db } from '../db';
-import { matchReports, tvScreens } from '../db/schema';
+import { matchReports, obsOverlays, teamPlayers, tvScreens } from '../db/schema';
 import { authenticateRequestUser, JWT_SECRET } from '../middleware/auth';
 import {
   createRateLimiter,
@@ -487,4 +487,142 @@ publicRoutes.post('/verify-turnstile', async (c) => {
   });
 
   return c.json({ ok: true, verified: true });
+});
+
+// =============================================================================
+// Token-Gated OBS Browser Source Endpoints (?overlay=<slug>&token=<accessToken>)
+// =============================================================================
+
+async function resolveAuthorizedObsOverlay(c: Context) {
+  const slug = c.req.query('overlay')?.trim() || '';
+  const token = c.req.query('token')?.trim() || '';
+  if (!token) return null;
+
+  const overlay = slug
+    ? await db.query.obsOverlays.findFirst({ where: eq(obsOverlays.slug, slug) })
+    : (await db.select().from(obsOverlays).orderBy(asc(obsOverlays.id)).limit(1))[0];
+
+  if (!overlay) return null;
+  if (!safeComparePin(token, overlay.accessToken)) return null;
+  return overlay;
+}
+
+publicRoutes.get('/obs-state', async (c) => {
+  const overlay = await resolveAuthorizedObsOverlay(c);
+  if (!overlay) {
+    return c.json({ error: 'Token OBS tidak valid atau overlay tidak ditemukan' }, 403);
+  }
+
+  const overview = await getFullOverview(false);
+  const allMatches = overview.matches ?? [];
+
+  let activeMatch =
+    (overlay.matchId ? allMatches.find((m) => m.id === overlay.matchId) : undefined) ?? null;
+
+  if (overlay.autoFollowCourt) {
+    const courtFilter = overlay.courtName?.trim().toLowerCase();
+    const liveCandidate = allMatches.find(
+      (m) =>
+        m.status === 'live' &&
+        (!courtFilter || (m.courtName || '').trim().toLowerCase() === courtFilter)
+    );
+    if (liveCandidate) {
+      activeMatch = liveCandidate;
+    } else if (!activeMatch) {
+      activeMatch =
+        allMatches.find(
+          (m) =>
+            m.status === 'scheduled' &&
+            (m.teamAId || m.teamBId) &&
+            (!courtFilter || (m.courtName || '').trim().toLowerCase() === courtFilter)
+        ) ??
+        allMatches[0] ??
+        null;
+    }
+  }
+
+  const teamA = activeMatch?.teamAId
+    ? overview.teams.find((t) => t.id === activeMatch.teamAId) ?? null
+    : null;
+  const teamB = activeMatch?.teamBId
+    ? overview.teams.find((t) => t.id === activeMatch.teamBId) ?? null
+    : null;
+  const tournament = activeMatch
+    ? overview.tournaments.find((t) => t.id === activeMatch.tournamentId) ?? null
+    : null;
+
+  const { accessToken: _hiddenToken, ...safeOverlay } = overlay;
+  return c.json({
+    overlay: safeOverlay,
+    match: activeMatch,
+    teamA,
+    teamB,
+    tournament,
+    settings: overview.settings,
+  });
+});
+
+publicRoutes.get('/obs-stream', async (c) => {
+  const overlay = await resolveAuthorizedObsOverlay(c);
+  if (!overlay) {
+    return c.json({ error: 'Token OBS tidak valid' }, 403);
+  }
+
+  const res = streamSSE(c, async (stream) => {
+    addSseClient(stream);
+    await stream.writeSSE({
+      id: String(getOverviewVersion()),
+      event: 'connected',
+      retry: 2000,
+      data: JSON.stringify({
+        time: Date.now(),
+        overlaySlug: overlay.slug,
+        version: getOverviewVersion(),
+      }),
+    });
+
+    const heartbeat = setInterval(() => {
+      stream
+        .writeSSE({
+          event: 'ping',
+          data: JSON.stringify({ time: Date.now(), version: getOverviewVersion() }),
+        })
+        .catch(() => {});
+    }, 20000);
+
+    stream.onAbort(() => {
+      clearInterval(heartbeat);
+      removeSseClient(stream);
+    });
+
+    while (!stream.aborted && !stream.closed) {
+      await stream.sleep(15000);
+    }
+  });
+  res.headers.set('Cache-Control', 'no-cache, no-store, no-transform, must-revalidate');
+  res.headers.set('X-Accel-Buffering', 'no');
+  return res;
+});
+
+publicRoutes.get('/matches/:id/players', async (c) => {
+  const id = Number(c.req.param('id'));
+  const match = await getMatchWithSets(id);
+  if (!match) return c.json({ error: 'Pertandingan tidak ditemukan' }, 404);
+
+  const playersA = match.teamAId
+    ? await db
+        .select()
+        .from(teamPlayers)
+        .where(eq(teamPlayers.teamId, match.teamAId))
+        .orderBy(asc(teamPlayers.jerseyNumber))
+    : [];
+  const playersB = match.teamBId
+    ? await db
+        .select()
+        .from(teamPlayers)
+        .where(eq(teamPlayers.teamId, match.teamBId))
+        .orderBy(asc(teamPlayers.jerseyNumber))
+    : [];
+
+  return c.json({ playersA, playersB });
 });

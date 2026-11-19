@@ -78,6 +78,59 @@ export interface TvScreen {
   updatedAt?: number;
 }
 
+export type ObsLayoutPreset =
+  | 'scorebug_corner'
+  | 'lower_third'
+  | 'match_intro'
+  | 'timeout_break'
+  | 'winner_card';
+
+export type ObsThemeMode = 'dark' | 'light' | 'glass';
+
+export interface ObsOverlay {
+  id: number;
+  name: string;
+  slug: string;
+  accessToken: string;
+  layoutPreset: ObsLayoutPreset;
+  themeMode: ObsThemeMode;
+  matchId?: number | null;
+  courtName: string;
+  autoFollowCourt: boolean;
+  showSponsorTicker: boolean;
+  showSetHistory: boolean;
+  showTimeoutSub: boolean;
+  isVisible: boolean;
+  customBadgeText: string;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface TeamPlayer {
+  id: number;
+  teamId: number | null;
+  masterTeamId: number | null;
+  jerseyNumber: number;
+  name: string;
+  role: 'player' | 'captain' | 'libero';
+  createdAt?: number;
+}
+
+export interface WebhookItem {
+  id: number;
+  name: string;
+  url: string;
+  secret: string;
+  hasSecret?: boolean;
+  platform: 'generic' | 'discord' | 'telegram';
+  eventsJson: string;
+  isEnabled: boolean;
+  lastStatus?: number | null;
+  lastError?: string | null;
+  lastTriggeredAt?: number | null;
+  createdAt: number;
+}
+
 export interface AuthUser {
   id: number;
   username: string;
@@ -202,6 +255,7 @@ export interface Match {
   regularSetPoints?: number | null;
   decidingSetPoints?: number | null;
   useDeuce?: boolean | null;
+  matchCode?: string | null;
   sets: MatchSet[];
   undoCount?: number;
   pendingDecision?: {

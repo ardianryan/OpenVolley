@@ -246,6 +246,37 @@ export function OfficialDocuments({
     }
   };
 
+  const handleDownloadFivbO2Pdf = async (match: Match) => {
+    if (generatingMatchId) return;
+    setGeneratingMatchId(match.id);
+    setError(null);
+    try {
+      const tournament = tournamentMap.get(match.tournamentId);
+      const roster = await apiFetch<{
+        playersA: Array<{ jerseyNumber: number; name: string; role: 'player' | 'captain' | 'libero' }>;
+        playersB: Array<{ jerseyNumber: number; name: string; role: 'player' | 'captain' | 'libero' }>;
+      }>(`/api/public/matches/${match.id}/players`).catch(() => ({
+        playersA: [],
+        playersB: [],
+      }));
+
+      const { downloadFivbO2ScoresheetPdf } = await import('../lib/pdfDocuments');
+      await downloadFivbO2ScoresheetPdf(match, {
+        settings: data.settings,
+        tournament,
+        teamA: match.teamAId ? teamMap.get(match.teamAId) : undefined,
+        teamB: match.teamBId ? teamMap.get(match.teamBId) : undefined,
+        playersA: roster.playersA,
+        playersB: roster.playersB,
+        docSettingsOverride: currentDocOverride,
+      });
+    } catch (err) {
+      setError(`Gagal membuat PDF Form O-2: ${(err as Error).message}`);
+    } finally {
+      setGeneratingMatchId(null);
+    }
+  };
+
   const toggleCatId = (id: number) => {
     setSelectedCatIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
@@ -669,15 +700,27 @@ export function OfficialDocuments({
                       </div>
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={isBusy}
-                      onClick={() => handleDownloadMatchPdf(m)}
-                      className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-800 transition hover:border-amber-500 hover:bg-amber-500 hover:text-slate-950 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-amber-500 dark:hover:text-slate-950"
-                    >
-                      <FileText className="h-3.5 w-3.5" />
-                      {isBusy ? 'Mencetak...' : 'PDF'}
-                    </button>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => handleDownloadMatchPdf(m)}
+                        className="inline-flex min-h-9 items-center gap-1 rounded-xl border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-800 transition hover:border-amber-500 hover:bg-amber-500 hover:text-slate-950 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-amber-500 dark:hover:text-slate-950"
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        {isBusy ? 'Mencetak...' : 'Berita Acara'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => handleDownloadFivbO2Pdf(m)}
+                        title="Cetak FIVB Official Scoresheet (Form O-2)"
+                        className="inline-flex min-h-9 items-center gap-1 rounded-xl border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-bold text-amber-700 transition hover:bg-amber-500 hover:text-slate-950 disabled:opacity-50 dark:text-amber-300"
+                      >
+                        <FileSpreadsheet className="h-3.5 w-3.5" />
+                        O-2
+                      </button>
+                    </div>
                   </div>
                 );
               })

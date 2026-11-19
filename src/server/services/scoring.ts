@@ -2,6 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { matchSets, matches, tournaments } from '../db/schema';
 import { advanceWinner } from './bracket';
+import { dispatchWebhookEvent } from './webhook';
 
 interface ScoreSnapshot {
   currentSet: number;
@@ -100,6 +101,7 @@ export async function startMatch(matchId: number, rules?: MatchRulesOverride) {
       subsA: 0,
       subsB: 0,
       isFinished: false,
+      startedAt: Date.now(),
     });
   }
 
@@ -122,6 +124,13 @@ export async function startMatch(matchId: number, rules?: MatchRulesOverride) {
   }
 
   await db.update(matches).set(updateFields).where(eq(matches.id, matchId));
+
+  void dispatchWebhookEvent('match_started', {
+    matchId,
+    courtName: match.courtName,
+    stageLabel: match.stageLabel || '',
+    summary: `Pertandingan #${matchId} (${match.courtName}) telah dimulai (LIVE).`,
+  });
 
   return getMatchWithSets(matchId);
 }
@@ -295,7 +304,7 @@ export async function confirmCurrentSet(
 
   await db
     .update(matchSets)
-    .set({ isFinished: true, winnerId: setWinnerId })
+    .set({ isFinished: true, winnerId: setWinnerId, endedAt: Date.now() })
     .where(eq(matchSets.id, activeSet.id));
 
   const newSetsWonA = match.setsWonA + (setWinnerSide === 'A' ? 1 : 0);
@@ -314,6 +323,13 @@ export async function confirmCurrentSet(
       .where(eq(matches.id, matchId));
 
     await advanceWinner(matchId);
+    void dispatchWebhookEvent('match_finished', {
+      matchId,
+      setsWonA: newSetsWonA,
+      setsWonB: newSetsWonB,
+      winnerId: matchWinnerId,
+      summary: `Pertandingan #${matchId} selesai dengan skor set ${newSetsWonA} - ${newSetsWonB}.`,
+    });
   } else {
     const nextSetNum = match.currentSet + 1;
     await db
@@ -337,6 +353,16 @@ export async function confirmCurrentSet(
       subsA: 0,
       subsB: 0,
       isFinished: false,
+      startedAt: Date.now(),
+    });
+    void dispatchWebhookEvent('set_confirmed', {
+      matchId,
+      setNumber: activeSet.setNumber,
+      scoreA: activeSet.scoreA,
+      scoreB: activeSet.scoreB,
+      setsWonA: newSetsWonA,
+      setsWonB: newSetsWonB,
+      summary: `Set ${activeSet.setNumber} selesai (${activeSet.scoreA}-${activeSet.scoreB}). Lanjut ke Set ${nextSetNum}.`,
     });
   }
 

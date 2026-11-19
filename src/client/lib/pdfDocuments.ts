@@ -1381,7 +1381,7 @@ export async function downloadTournamentBulletinPdf(
       });
     });
 
-    // Draw Perebutan Juara 3/4 Box at Bottom-Right (matching POPDA Bulletin layout!)
+    // Draw Perebutan Juara 3/4 Box at Bottom-Right (or Juara 3 Bersama when skipped)
     if (thirdPlaceMatch) {
       const tpW = Math.max(boxW, 50);
       const tpH = 23;
@@ -1409,6 +1409,57 @@ export async function downloadTournamentBulletinPdf(
         feederLabelMap,
         accentRgb
       );
+    } else {
+      const tpW = Math.max(boxW, 55);
+      const tpH = 22;
+      const tpX = 196 - tpW;
+      const tpY = 250;
+
+      doc.setFillColor(accentRgb[0], accentRgb[1], accentRgb[2]);
+      doc.roundedRect(tpX, tpY - 6.2, tpW, 5.4, 1.2, 1.2, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.6);
+      doc.setTextColor(15, 23, 42);
+      doc.text('JUARA 3 BERSAMA', tpX + tpW / 2, tpY - 2.4, {
+        align: 'center',
+      });
+
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(203, 213, 225);
+      doc.roundedRect(tpX, tpY, tpW, tpH, 1.5, 1.5, 'FD');
+
+      const semiRound = totalRounds - 1;
+      const semiMatches = mainMatches.filter((m) => m.round === semiRound);
+      const jointLosers: string[] = [];
+      for (const sm of semiMatches) {
+        if (sm.winnerId && sm.teamAId && sm.teamBId) {
+          const lId = sm.winnerId === sm.teamAId ? sm.teamBId : sm.teamAId;
+          const lTeam = teamById.get(lId);
+          if (lTeam) jointLosers.push(lTeam.name);
+        }
+      }
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.setTextColor(30, 41, 59);
+      if (jointLosers.length >= 2) {
+        doc.text(`1. ${jointLosers[0]}`, tpX + 3, tpY + 7);
+        doc.text(`2. ${jointLosers[1]}`, tpX + 3, tpY + 14);
+      } else if (jointLosers.length === 1) {
+        doc.text(`1. ${jointLosers[0]}`, tpX + 3, tpY + 7);
+        doc.setFont('helvetica', 'italic');
+        doc.text('2. (Pecundang Semifinal 2)', tpX + 3, tpY + 14);
+      } else {
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(7);
+        doc.setTextColor(100, 116, 139);
+        doc.text('Kedua tim semifinalis yang kalah', tpX + 3, tpY + 8);
+        doc.text('otomatis menjadi Juara 3 Bersama', tpX + 3, tpY + 14);
+      }
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(5.5);
+      doc.setTextColor(148, 163, 184);
+      doc.text('Tanpa match playoff perebutan', tpX + 3, tpY + 19.5);
     }
   }
 
@@ -1967,4 +2018,201 @@ export async function downloadMatchSummaryPdf(
     `berita-acara-${tournament?.name || 'match'}-${nameA}-vs-${nameB}`
   );
   doc.save(`${matchSlug}.pdf`);
+}
+
+export interface FivbO2Player {
+  jerseyNumber: number;
+  name: string;
+  role: 'player' | 'captain' | 'libero';
+}
+
+export interface FivbO2Context extends MatchSummaryContext {
+  playersA?: FivbO2Player[];
+  playersB?: FivbO2Player[];
+}
+
+/**
+ * Generates an A4 FIVB Official Scoresheet (Form O-2 Hybrid) PDF:
+ * populates digital scores, set durations, T/O, substitutions, and optional team_players rosters,
+ * while leaving crisp court-ready cells for Positions I-VI & sanctions if filled manually.
+ */
+export async function downloadFivbO2ScoresheetPdf(
+  match: Match,
+  ctx: FivbO2Context
+): Promise<void> {
+  const { settings, tournament, teamA, teamB, playersA = [], playersB = [] } = ctx;
+  const savedDocMeta = parseOfficialDocSettings(settings.docSettingsJson);
+  const docMeta: OfficialDocSettings = {
+    ...savedDocMeta,
+    ...ctx.docSettingsOverride,
+  };
+  const accentRgb = hexToRgb(settings.accentColor, [224, 157, 23]);
+
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+    compress: true,
+  });
+
+  // Top Bar & Title
+  doc.setFillColor(accentRgb[0], accentRgb[1], accentRgb[2]);
+  doc.rect(0, 0, 210, 3, 'F');
+  doc.setFillColor(15, 23, 42);
+  doc.roundedRect(14, 10, 182, 13, 2, 2, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(255, 255, 255);
+  doc.text('FIVB OFFICIAL SCORESHEET (FORM O-2)', 18, 16.5);
+  doc.setFontSize(7.8);
+  doc.setTextColor(252, 211, 77);
+  doc.text(
+    truncatePdfText(doc, `${settings.eventName.toUpperCase()} • ${tournament?.name || ''}`, 110),
+    18,
+    20.8
+  );
+  doc.setTextColor(255, 255, 255);
+  doc.text(`MATCH NO: ${match.matchCode || `#${match.id}`}`, 192, 18.2, { align: 'right' });
+
+  // Match Header Metadata
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(203, 213, 225);
+  doc.roundedRect(14, 26, 182, 16, 1.5, 1.5, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.setTextColor(15, 23, 42);
+  doc.text(`Lapangan: ${match.courtName}`, 18, 32);
+  doc.text(`Jadwal: ${match.scheduledAt || '-'}`, 80, 32);
+  doc.text(`Tim A: ${teamA?.name || 'TBA'}`, 18, 38.5);
+  doc.text(`Tim B: ${teamB?.name || 'TBA'}`, 105, 38.5);
+
+  // Set Results + Duration + Starting Lineup Grid (Set I-V)
+  let y = 46;
+  doc.setFillColor(30, 41, 59);
+  doc.rect(14, y, 182, 6.5, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.8);
+  doc.setTextColor(255, 255, 255);
+  doc.text('SET', 20, y + 4.4, { align: 'center' });
+  doc.text('MULAI', 34, y + 4.4, { align: 'center' });
+  doc.text('SELESAI', 50, y + 4.4, { align: 'center' });
+  doc.text('DURASI', 66, y + 4.4, { align: 'center' });
+  doc.text('SKOR (A : B)', 88, y + 4.4, { align: 'center' });
+  doc.text('T/O (A-B)', 110, y + 4.4, { align: 'center' });
+  doc.text('SUB (A-B)', 130, y + 4.4, { align: 'center' });
+  doc.text('ROTASI AWAL POSISI I - VI (A / B)', 168, y + 4.4, { align: 'center' });
+  y += 6.5;
+
+  const sets = match.sets ?? [];
+  const fmtHm = (ts?: number | null) => {
+    if (!ts) return '___:___';
+    const d = new Date(ts);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+
+  for (let i = 0; i < 5; i++) {
+    const s = sets[i] as (typeof sets[number] & { startedAt?: number | null; endedAt?: number | null }) | undefined;
+    const durMin =
+      s?.startedAt && s?.endedAt && s.endedAt >= s.startedAt
+        ? `${Math.max(1, Math.round((s.endedAt - s.startedAt) / 60000))} mnt`
+        : '___ mnt';
+    doc.setFillColor(i % 2 === 0 ? 255 : 248, i % 2 === 0 ? 255 : 250, i % 2 === 0 ? 255 : 252);
+    doc.rect(14, y, 182, 8, 'F');
+    doc.setDrawColor(203, 213, 225);
+    doc.rect(14, y, 182, 8);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.3);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`Set ${i + 1}`, 20, y + 5.2, { align: 'center' });
+    doc.setFont('helvetica', 'normal');
+    doc.text(fmtHm(s?.startedAt), 34, y + 5.2, { align: 'center' });
+    doc.text(fmtHm(s?.endedAt), 50, y + 5.2, { align: 'center' });
+    doc.text(durMin, 66, y + 5.2, { align: 'center' });
+    doc.text(s ? `${s.scoreA}  :  ${s.scoreB}` : '___ : ___', 88, y + 5.2, { align: 'center' });
+    doc.text(s ? `${s.timeoutsA ?? 0} - ${s.timeoutsB ?? 0}` : '_ - _', 110, y + 5.2, { align: 'center' });
+    doc.text(s ? `${s.subsA ?? 0} - ${s.subsB ?? 0}` : '_ - _', 130, y + 5.2, { align: 'center' });
+    doc.text('[ _ _ _ _ _ _ ] / [ _ _ _ _ _ _ ]', 168, y + 5.2, { align: 'center' });
+    y += 8;
+  }
+
+  // Team A & Team B Roster Grid (14 slots each)
+  y += 5;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.text('DAFTAR PEMAIN (ROSTER) & LIBERO', 14, y);
+  y += 2.5;
+
+  const drawRosterCol = (title: string, list: FivbO2Player[], xStart: number) => {
+    let ry = y;
+    doc.setFillColor(30, 41, 59);
+    doc.rect(xStart, ry, 88, 6, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7);
+    doc.setTextColor(255, 255, 255);
+    doc.text(truncatePdfText(doc, title, 82), xStart + 3, ry + 4.1);
+    ry += 6;
+
+    for (let r = 0; r < 14; r++) {
+      const p = list[r];
+      doc.setFillColor(r % 2 === 0 ? 255 : 248, r % 2 === 0 ? 255 : 250, r % 2 === 0 ? 255 : 252);
+      doc.rect(xStart, ry, 88, 6.2, 'F');
+      doc.setDrawColor(226, 232, 240);
+      doc.rect(xStart, ry, 88, 6.2);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(15, 23, 42);
+      if (p) {
+        const tag = p.role === 'captain' ? ' (C)' : p.role === 'libero' ? ' (L)' : '';
+        doc.text(`#${String(p.jerseyNumber).padStart(2, '0')}`, xStart + 2.5, ry + 4.2);
+        doc.text(truncatePdfText(doc, `${p.name}${tag}`, 72), xStart + 12, ry + 4.2);
+      } else {
+        doc.setTextColor(148, 163, 184);
+        doc.text('#__', xStart + 2.5, ry + 4.2);
+      }
+      ry += 6.2;
+    }
+    return ry;
+  };
+
+  const endRosterY = Math.max(
+    drawRosterCol(`TIM A: ${teamA?.name || 'TBA'}`, playersA, 14),
+    drawRosterCol(`TIM B: ${teamB?.name || 'TBA'}`, playersB, 108)
+  );
+
+  // Sanctions Box
+  y = endRosterY + 4;
+  doc.setDrawColor(203, 213, 225);
+  doc.roundedRect(14, y, 182, 18, 1.5, 1.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.2);
+  doc.setTextColor(15, 23, 42);
+  doc.text('SANCTIONS / REMARKS (KARTU KUNING / MERAH / CATATAN WASIT):', 17, y + 4.8);
+
+  // Approval Signature Row
+  const sigY = 236;
+  const cols = [
+    { role: 'SCORER', name: '( ..................... )' },
+    { role: 'WASIT I', name: docMeta.referee1Default?.trim() || '( ..................... )' },
+    { role: 'WASIT II', name: docMeta.referee2Default?.trim() || '( ..................... )' },
+    { role: `KAPTEN ${teamA?.shortCode || 'A'}`, name: '( ..................... )' },
+    { role: `KAPTEN ${teamB?.shortCode || 'B'}`, name: '( ..................... )' },
+  ];
+  const bw = 34.8;
+  cols.forEach((col, idx) => {
+    const bx = 14 + idx * (bw + 2);
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(bx, sigY, bw, 34, 1.5, 1.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.2);
+    doc.text(col.role, bx + bw / 2, sigY + 4.5, { align: 'center' });
+    doc.line(bx + 3, sigY + 26, bx + bw - 3, sigY + 26);
+    doc.setFontSize(6.5);
+    doc.text(truncatePdfText(doc, col.name, bw - 3), bx + bw / 2, sigY + 30.8, {
+      align: 'center',
+    });
+  });
+
+  const slug = slugifyFilename(`fivb-o2-${tournament?.name || 'match'}-${teamA?.name || 'A'}-vs-${teamB?.name || 'B'}`);
+  doc.save(`${slug}.pdf`);
 }

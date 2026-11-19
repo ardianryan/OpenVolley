@@ -1,8 +1,10 @@
 import { createApp } from './app';
 import { seedDefaults } from './db';
 import { printOpenVolleyBanner } from './lib/banner';
+import { startBackupScheduler } from './services/backup';
 
 await seedDefaults();
+startBackupScheduler();
 
 const app = createApp();
 const port = Number(process.env.PORT) || 3000;

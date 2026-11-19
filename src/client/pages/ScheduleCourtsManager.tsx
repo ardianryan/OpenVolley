@@ -1,10 +1,15 @@
 import {
   ArrowRightLeft,
   CalendarClock,
+  CalendarX,
   Copy,
+  Edit3,
   MapPin,
+  Pencil,
   Plus,
+  RotateCcw,
   Trash2,
+  X,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { formatInternationalStageLabel } from '../../shared/stages';
@@ -18,6 +23,16 @@ interface ScheduleCourtsManagerProps {
   onRefresh: () => Promise<void>;
 }
 
+const QUICK_TIME_SLOTS = [
+  '07.30 - 08.45',
+  '08.45 - 10.00',
+  '10.00 - 11.15',
+  '11.15 - 12.30',
+  '13.00 - 14.15',
+  '14.15 - 15.30',
+  '15.30 - 16.45',
+];
+
 export function ScheduleCourtsManager({
   data,
   onRefresh,
@@ -30,6 +45,13 @@ export function ScheduleCourtsManager({
   const [pullSourceFilter, setPullSourceFilter] = useState<string>('all');
   const [busy, setBusy] = useState(false);
   const [pendingDeleteCourt, setPendingDeleteCourt] = useState<MasterCourt | null>(null);
+  const [pendingClearCourt, setPendingClearCourt] = useState<MasterCourt | null>(null);
+  const [pendingClearMatch, setPendingClearMatch] = useState<Match | null>(null);
+  const [editingMatch, setEditingMatch] = useState<Match | null>(null);
+  const [editCourtName, setEditCourtName] = useState('');
+  const [editScheduledAt, setEditScheduledAt] = useState('');
+  const [editStageLabel, setEditStageLabel] = useState('');
+  const [showUnscheduledSection, setShowUnscheduledSection] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; msg: string } | null>(
     null
   );
@@ -71,6 +93,11 @@ export function ScheduleCourtsManager({
     }
     return map;
   }, [data.matches]);
+
+  const unscheduledMatches = useMemo(
+    () => playableMatches.filter((m) => !m.scheduledAt || !m.scheduledAt.trim()),
+    [playableMatches]
+  );
 
   const handleAddCourt = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -132,7 +159,7 @@ export function ScheduleCourtsManager({
 
   const handleUpdateMatchSchedule = async (
     matchId: number,
-    fields: { courtName?: string; scheduledAt?: string }
+    fields: { courtName?: string; scheduledAt?: string | null; stageLabel?: string }
   ) => {
     try {
       await apiFetch(`/api/admin/matches/${matchId}`, {
@@ -142,6 +169,76 @@ export function ScheduleCourtsManager({
       await onRefresh();
     } catch (err) {
       notify('err', (err as Error).message);
+    }
+  };
+
+  const openEditModal = (match: Match) => {
+    setEditingMatch(match);
+    setEditCourtName(match.courtName || courts[0]?.name || 'Lapangan Utama');
+    setEditScheduledAt(match.scheduledAt || '');
+    setEditStageLabel(match.stageLabel || '');
+  };
+
+  const handleSaveModalEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingMatch) return;
+    setBusy(true);
+    try {
+      await apiFetch(`/api/admin/matches/${editingMatch.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          courtName: editCourtName.trim() || undefined,
+          scheduledAt: editScheduledAt.trim() || null,
+          stageLabel: editStageLabel.trim() || undefined,
+        }),
+      });
+      setEditingMatch(null);
+      await onRefresh();
+      notify('ok', 'Jadwal pertandingan berhasil diperbarui');
+    } catch (err) {
+      notify('err', (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmClearMatchSchedule = async () => {
+    if (!pendingClearMatch) return;
+    setBusy(true);
+    try {
+      await apiFetch(`/api/admin/matches/${pendingClearMatch.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          scheduledAt: null,
+        }),
+      });
+      setPendingClearMatch(null);
+      await onRefresh();
+      notify('ok', 'Jadwal pertandingan dikosongkan (belum terjadwal)');
+    } catch (err) {
+      notify('err', (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmClearCourtSchedule = async () => {
+    if (!pendingClearCourt) return;
+    setBusy(true);
+    try {
+      await apiFetch('/api/admin/matches/bulk-schedule-clear', {
+        method: 'POST',
+        body: JSON.stringify({
+          courtName: pendingClearCourt.name,
+        }),
+      });
+      setPendingClearCourt(null);
+      await onRefresh();
+      notify('ok', `Semua jadwal pertandingan di "${pendingClearCourt.name}" berhasil dikosongkan`);
+    } catch (err) {
+      notify('err', (err as Error).message);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -220,9 +317,9 @@ export function ScheduleCourtsManager({
                 Master Lapangan &amp; Papan Jadwal Visual ({courts.length})
               </h2>
               <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
-                Kelola daftar lapangan resmi, lalu atur atau{' '}
-                <strong>tarik jadwal antar-lapangan</strong> secara berdampingan dengan 1
-                klik (mendukung salin pola jam dari Lapangan 1 ke Lapangan 2+).
+                Kelola jadwal per lapangan: <strong>edit jam/tanggal</strong>,{' '}
+                <strong>hapus/kosongkan jadwal</strong>, atau{' '}
+                <strong>tarik pertandingan</strong> antar-lapangan secara instan.
               </p>
             </div>
           </div>
@@ -231,7 +328,7 @@ export function ScheduleCourtsManager({
             <input
               type="text"
               required
-              placeholder="Nama Lapangan (mis: Lapangan 3)"
+              placeholder="Nama Lapangan (mis: Lapangan 2)"
               value={newCourtName}
               onChange={(e) => setNewCourtName(e.target.value)}
               className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
@@ -239,7 +336,7 @@ export function ScheduleCourtsManager({
             <input
               type="text"
               maxLength={12}
-              placeholder="Kode (LAP 3)"
+              placeholder="Kode (LAP 2)"
               value={newCourtCode}
               onChange={(e) => setNewCourtCode(e.target.value.toUpperCase())}
               className="w-24 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold uppercase dark:border-slate-700 dark:bg-slate-950"
@@ -313,12 +410,12 @@ export function ScheduleCourtsManager({
         </div>
       )}
 
-      {/* Filter Bar */}
+      {/* Filter Bar & Unscheduled Matches Toggle */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
         <div className="flex flex-wrap items-center gap-2">
           <span className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-500">
             <CalendarClock className="h-4 w-4 text-amber-500" />
-            Filter Pertandingan:
+            Filter Jadwal:
           </span>
           <select
             value={categoryFilter}
@@ -353,12 +450,68 @@ export function ScheduleCourtsManager({
             <option value="live">Sedang Live</option>
             <option value="finished">Selesai</option>
           </select>
+
+          {unscheduledMatches.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowUnscheduledSection(!showUnscheduledSection)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-500 hover:text-slate-950 dark:text-amber-300"
+            >
+              <CalendarX className="h-3.5 w-3.5" />
+              {showUnscheduledSection
+                ? `Tutup Antrean (${unscheduledMatches.length})`
+                : `Belum Ada Jam (${unscheduledMatches.length})`}
+            </button>
+          )}
         </div>
 
         <span className="text-xs font-semibold text-slate-500">
           Total: <strong>{playableMatches.length}</strong> Pertandingan
         </span>
       </div>
+
+      {/* Unscheduled Matches Collapsible Drawer */}
+      {showUnscheduledSection && unscheduledMatches.length > 0 && (
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 dark:bg-amber-500/10">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-amber-900 dark:text-amber-200">
+              <CalendarX className="h-4 w-4 text-amber-500" />
+              Pertandingan Belum Ada Jam ({unscheduledMatches.length})
+            </h3>
+            <span className="text-[11px] text-slate-500">
+              Klik <strong>Set Jadwal</strong> untuk memasukkan tanggal &amp; jam ke lapangan.
+            </span>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {unscheduledMatches.map((um) => {
+              const { cat, tA, tB, stageLbl } = renderMatchSummary(um);
+              return (
+                <div
+                  key={um.id}
+                  className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white p-2.5 text-xs shadow-2xs dark:border-slate-800 dark:bg-slate-900"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-bold text-slate-900 dark:text-white">
+                      {tA} vs {tB}
+                    </p>
+                    <p className="truncate text-[10px] text-slate-500">
+                      {cat?.name} • {stageLbl} • Lapangan: <strong>{um.courtName}</strong>
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openEditModal(um)}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-amber-500 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 hover:bg-amber-400"
+                  >
+                    <Pencil className="h-3 w-3" />
+                    Set Jadwal
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Side-by-Side Visual Court Schedule Columns */}
       <div
@@ -413,7 +566,7 @@ export function ScheduleCourtsManager({
                       }`}
                     >
                       <ArrowRightLeft className="h-3.5 w-3.5" />
-                      {isPullOpen ? 'Tutup Tarik Jadwal' : 'Tarik Jadwal'}
+                      {isPullOpen ? 'Tutup Tarik' : 'Tarik Jadwal'}
                     </button>
 
                     {otherCourts.length > 0 && (
@@ -435,6 +588,19 @@ export function ScheduleCourtsManager({
                           </option>
                         ))}
                       </select>
+                    )}
+
+                    {courtMatches.some((m) => m.scheduledAt) && (
+                      <button
+                        type="button"
+                        onClick={() => setPendingClearCourt(court)}
+                        title={`Kosongkan semua jam jadwal di ${court.name}`}
+                        aria-label={`Kosongkan semua jadwal di ${court.name}`}
+                        className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 bg-red-500/5 px-2 py-1.5 text-[11px] font-bold text-red-600 hover:bg-red-500 hover:text-white dark:text-red-400"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        Kosongkan
+                      </button>
                     )}
                   </div>
                 </div>
@@ -524,21 +690,46 @@ export function ScheduleCourtsManager({
                           <span className="font-bold text-amber-600 dark:text-amber-400">
                             #{idx + 1} • {cat?.name || 'Kategori'} • {stageLbl}
                           </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase ${
-                              m.status === 'live'
-                                ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase ${
+                                m.status === 'live'
+                                  ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                                  : m.status === 'finished'
+                                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+                                    : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                              }`}
+                            >
+                              {m.status === 'live'
+                                ? 'LIVE'
                                 : m.status === 'finished'
-                                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
-                                  : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
-                            }`}
-                          >
-                            {m.status === 'live'
-                              ? 'LIVE'
-                              : m.status === 'finished'
-                                ? `SELESAI (${m.setsWonA}-${m.setsWonB})`
-                                : 'JADWAL'}
-                          </span>
+                                  ? `SELESAI (${m.setsWonA}-${m.setsWonB})`
+                                  : 'JADWAL'}
+                            </span>
+
+                            {/* Action Buttons: Edit Modal & Delete/Clear Schedule */}
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(m)}
+                              title="Edit Detail Jadwal"
+                              aria-label={`Edit jadwal ${tA} vs ${tB}`}
+                              className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:border-amber-500 hover:text-amber-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                            >
+                              <Edit3 className="h-3 w-3" />
+                            </button>
+
+                            {m.scheduledAt && (
+                              <button
+                                type="button"
+                                onClick={() => setPendingClearMatch(m)}
+                                title="Hapus Jadwal (Kosongkan Jam)"
+                                aria-label={`Hapus jadwal ${tA} vs ${tB}`}
+                                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:border-red-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-red-950/30"
+                              >
+                                <CalendarX className="h-3 w-3" />
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         <p className="truncate font-bold text-slate-900 dark:text-white">
@@ -554,7 +745,7 @@ export function ScheduleCourtsManager({
                               const val = e.target.value.trim();
                               if (val !== (m.scheduledAt || '')) {
                                 handleUpdateMatchSchedule(m.id, {
-                                  scheduledAt: val,
+                                  scheduledAt: val || null,
                                 });
                               }
                             }}
@@ -588,6 +779,131 @@ export function ScheduleCourtsManager({
           );
         })}
       </div>
+
+      {/* Edit Match Schedule Modal */}
+      {editingMatch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400">
+                  <Pencil className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="font-display text-sm font-extrabold uppercase text-slate-900 dark:text-white">
+                    Edit Jadwal Pertandingan
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Atur lapangan dan jam tayang pertandingan resmi.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingMatch(null)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveModalEdit} className="mt-4 space-y-3.5">
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50 p-2.5 text-xs dark:border-slate-800 dark:bg-slate-950">
+                <span className="text-[10px] font-bold uppercase text-amber-600 dark:text-amber-400">
+                  {tournamentMap.get(editingMatch.tournamentId)?.name}
+                </span>
+                <p className="font-bold text-slate-900 dark:text-white">
+                  {editingMatch.teamAId ? teamMap.get(editingMatch.teamAId)?.name : 'TBD'}{' '}
+                  <span className="text-slate-400">vs</span>{' '}
+                  {editingMatch.teamBId ? teamMap.get(editingMatch.teamBId)?.name : 'TBD'}
+                </p>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  Pilih Lapangan
+                </label>
+                <select
+                  value={editCourtName}
+                  onChange={(e) => setEditCourtName(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold dark:border-slate-700 dark:bg-slate-950"
+                >
+                  {courts.map((c) => (
+                    <option key={c.id} value={c.name}>
+                      {c.name} ({c.shortCode})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  Tanggal &amp; Jam Pertandingan
+                </label>
+                <input
+                  type="text"
+                  placeholder="mis: Jumat, 27 Nov • 13.00 - 14.15 WIB"
+                  value={editScheduledAt}
+                  onChange={(e) => setEditScheduledAt(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
+                />
+                <div className="mt-2 flex flex-wrap gap-1">
+                  <span className="w-full text-[10px] font-bold text-slate-400">
+                    Pilihan Slot Jam Cepat:
+                  </span>
+                  {QUICK_TIME_SLOTS.map((slot) => (
+                    <button
+                      key={slot}
+                      type="button"
+                      onClick={() => {
+                        const datePrefix = editScheduledAt.includes('•')
+                          ? editScheduledAt.split('•')[0]!.trim() + ' • '
+                          : '';
+                        setEditScheduledAt(`${datePrefix}${slot} WIB`);
+                      }}
+                      className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:border-amber-500 hover:text-amber-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
+                    >
+                      {slot}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  Label Babak / Stage (Opsional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="mis: Semifinal 1, Perempat Final 2"
+                  value={editStageLabel}
+                  onChange={(e) => setEditStageLabel(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-950"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEditingMatch(null)}
+                  className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400 disabled:opacity-50"
+                >
+                  {busy ? 'Menyimpan...' : 'Simpan Perubahan'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Delete Court Dialog */}
       <ConfirmDialog
         open={Boolean(pendingDeleteCourt)}
         title="Hapus Lapangan?"
@@ -600,6 +916,36 @@ export function ScheduleCourtsManager({
         busy={busy}
         onConfirm={confirmDeleteCourt}
         onCancel={() => setPendingDeleteCourt(null)}
+      />
+
+      {/* Confirm Clear Match Schedule Dialog */}
+      <ConfirmDialog
+        open={Boolean(pendingClearMatch)}
+        title="Hapus / Kosongkan Jam Jadwal?"
+        message={
+          pendingClearMatch
+            ? `Kosongkan jam jadwal untuk pertandingan "${renderMatchSummary(pendingClearMatch).tA} vs ${renderMatchSummary(pendingClearMatch).tB}"? Pertandingan akan berstatus belum ada jam dan dapat dijadwalkan ulang sewaktu-waktu.`
+            : ''
+        }
+        confirmLabel="Ya, Kosongkan Jadwal"
+        busy={busy}
+        onConfirm={confirmClearMatchSchedule}
+        onCancel={() => setPendingClearMatch(null)}
+      />
+
+      {/* Confirm Clear Whole Court Schedule Dialog */}
+      <ConfirmDialog
+        open={Boolean(pendingClearCourt)}
+        title={`Kosongkan Semua Jadwal ${pendingClearCourt?.name}?`}
+        message={
+          pendingClearCourt
+            ? `Semua jam pertandingan di "${pendingClearCourt.name}" akan dikosongkan (di-reset). Pertandingan tetap berada di lapangan ini namun slot jamnya akan dibersihkan.`
+            : ''
+        }
+        confirmLabel="Ya, Kosongkan Semua Jadwal Lapangan"
+        busy={busy}
+        onConfirm={confirmClearCourtSchedule}
+        onCancel={() => setPendingClearCourt(null)}
       />
     </div>
   );

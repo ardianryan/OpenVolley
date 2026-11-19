@@ -33,6 +33,7 @@ import {
   formatInternationalStageLabel,
   type StagePresetKey,
 } from '../../shared/stages';
+import { resolveTournamentPodium } from '../../shared/podium';
 import {
   DEFAULT_VIDEO_CLIP_SEC,
   MAX_STUDIO_PHOTOS,
@@ -886,32 +887,40 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       ? `POOL ${activeMatch.poolName.toUpperCase()}`
       : stageMeta.badge;
 
-  // Auto-resolve Podium Winners (1st Champion, 2nd Runner-Up, 3rd Place) for active category
+  // Auto-resolve Podium Winners (1st Champion, 2nd Runner-Up, 3rd Place / Joint 3rd) for active category
+  const podiumResolution = resolveTournamentPodium(
+    { id: tournament?.id ?? 1, hasThirdPlace: tournament?.hasThirdPlace },
+    catMatches,
+    data.teams ?? []
+  );
+
   const grandFinalMatch = catMatches.find(
     (m) => m.bracketType === 'main' && m.round === totalMainRounds
   );
   const thirdPlaceMatchObj = catMatches.find((m) => m.bracketType === 'third_place');
 
-  const autoChampionTeam = grandFinalMatch?.winnerId
-    ? teamMap.get(grandFinalMatch.winnerId) ?? null
-    : activeMatch?.winnerId
-      ? teamMap.get(activeMatch.winnerId) ?? null
-      : teamA ?? catTeams[0] ?? null;
+  const autoChampionTeam = podiumResolution.champion ??
+    (grandFinalMatch?.winnerId
+      ? teamMap.get(grandFinalMatch.winnerId) ?? null
+      : activeMatch?.winnerId
+        ? teamMap.get(activeMatch.winnerId) ?? null
+        : teamA ?? catTeams[0] ?? null);
 
-  const autoRunnerUpTeam =
-    grandFinalMatch?.winnerId && grandFinalMatch.teamAId && grandFinalMatch.teamBId
+  const autoRunnerUpTeam = podiumResolution.runnerUp ??
+    (grandFinalMatch?.winnerId && grandFinalMatch.teamAId && grandFinalMatch.teamBId
       ? teamMap.get(
           grandFinalMatch.winnerId === grandFinalMatch.teamAId
             ? grandFinalMatch.teamBId
             : grandFinalMatch.teamAId
         ) ?? null
-      : teamB ?? catTeams[1] ?? null;
+      : teamB ?? catTeams[1] ?? null);
 
-  const autoThirdTeam = thirdPlaceMatchObj?.winnerId
-    ? teamMap.get(thirdPlaceMatchObj.winnerId) ?? null
-    : thirdPlaceMatchObj?.teamAId
-      ? teamMap.get(thirdPlaceMatchObj.teamAId) ?? null
-      : catTeams[2] ?? null;
+  const autoThirdTeam = podiumResolution.thirdPlace ??
+    (thirdPlaceMatchObj?.winnerId
+      ? teamMap.get(thirdPlaceMatchObj.winnerId) ?? null
+      : thirdPlaceMatchObj?.teamAId
+        ? teamMap.get(thirdPlaceMatchObj.teamAId) ?? null
+        : podiumResolution.jointThirdTeams[0] ?? catTeams[2] ?? null);
 
   const spotlightOverrideTeam = customSpotlightTeamId
     ? teamMap.get(customSpotlightTeamId) ?? null

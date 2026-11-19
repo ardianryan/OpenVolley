@@ -7,12 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.3.0] - 2026-11-19
 
-### Planned
-- Pluggable UI localization dictionary (`id-ID` + `en-US` full toggle).
-- Transparent OBS Browser Source overlay (`/obs/:matchId`) for live YouTube / Twitch match streams.
-- Optional Webhook / Discord / Telegram match-result notifications.
+### Added
+- **Token-Gated OBS Browser Source Overlay & Back-Office Controller (`/obs?token=<secret>`)**:
+  - Dedicated transparent browser source overlay (`ObsOverlayDisplay.tsx`) with 100% transparent alpha canvas and 5 broadcast layout presets: **Scorebug Corner**, **Lower-Third Bar**, **Match Intro VS**, **Timeout / Set Break**, and **Winner Card**.
+  - Token-gated stream endpoints (`/api/public/obs-stream`, `/api/public/obs-state`) with constant-time token validation and 1-click token regeneration from the Back-Office.
+  - Remote OBS Controller panel at `/back-office/obs` with real-time match selection, layout switching, theme selection (Dark, Broadcast Glass, High-Contrast), and visibility toggles.
+- **FIVB Form O-2 Official Scoresheet Generator (`OfficialDocuments.tsx`, `pdfDocuments.ts`)**:
+  - Automated generation of official FIVB Form O-2 vector PDF scoresheets containing team rosters, starting lineups, set duration timestamps (`startedAt`, `endedAt`), per-set timeouts, substitutions, and referee sign-off blocks.
+  - Dedicated `O-2` action button on the Official Documents match list.
+- **Full Bilingual UI Localization (`i18n.ts`)**:
+  - Typed Indonesian (`id`) and English (`en`) localization dictionary with persistent local storage preferences (`openvolley_locale`).
+  - Seamless language toggle button (`ID / EN`) directly in the header of the Public Portal.
+- **Outgoing Webhooks & Hot S3 Database Backup (`/back-office/integrasi`)**:
+  - HMAC-SHA256 signed outgoing webhook dispatcher (`webhook.ts`) with anti-SSRF IP filtering (blocking loopback, private ranges, metadata IPs) and automated delivery on `match_started`, `set_finished`, and `match_finished` events.
+  - Hot SQLite database backup (`VACUUM INTO`) to S3-compatible object storage with 1-click manual trigger and direct backup downloads.
+- **Master Court Schedule Editing & Clearing (`ScheduleCourtsManager.tsx`)**:
+  - Interactive modal dialog to edit match date/time (`scheduledAt`), court assignment (`courtName`), and stage labels with 1-click quick time slot buttons (`07.30 - 08.45`, `08.45 - 10.00`, etc.).
+  - Per-match schedule clearing / unassigning with confirmation dialog.
+  - Whole-court bulk schedule clearing (`POST /api/admin/matches/bulk-schedule-clear`) to reset all time slots on a specific court.
+  - Collapsible drawer for unscheduled matches with 1-click scheduling action.
+- **Skippable 3rd Place Match & Joint 3rd Place ("Juara 3 Bersama")**:
+  - Unified `resolveTournamentPodium` engine in `src/shared/podium.ts`. When `hasThirdPlace: false`, both semifinal losers are officially recognized as Joint 3rd Place winners (*Juara 3 Bersama*), and 4th place is cleanly omitted.
+  - Interactive Bracket View displays a dedicated **"JUARA 3 BERSAMA"** card and updated podium recap.
+  - Media Studio *Champions & Podium* template automatically displays both semifinal losers on the 3rd place podium.
+  - Tournament Bulletin PDF automatically draws a *"JUARA 3 BERSAMA"* box with both school names.
+  - Category rules editor allows toggling 3rd place playoff on/off dynamically before or after bracket generation.
+- **Cloud S3 Logo Storage & Auto-Migration (`src/server/db/index.ts`)**:
+  - Synced all 16 school emblems and master contingent logos to S3 bucket CDN (`https://is3-storage.smage.my.id/svc-media/logos/`).
+  - Runtime database boot migration automatically rewrites legacy local disk paths (`/uploads/logos/...`) to public S3 URLs when S3 is enabled.
+- **Cloudflare Turnstile Bot Gate (`src/client/components/TurnstileGate.tsx`)**:
+  - Integrated Cloudflare Turnstile bot verification on public portal entry and back-office authentication forms with theme matching.
 
 ---
 

@@ -9,6 +9,11 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { SupportedErrorCode } from '../../shared/routes';
+import {
+  getStoredLocale,
+  setStoredLocale,
+  type LocaleCode,
+} from '../../shared/i18n';
 import { formatInternationalStageLabel } from '../../shared/stages';
 import { BracketView } from '../components/BracketView';
 import { ErrorPage } from '../components/ErrorPage';
@@ -61,6 +66,7 @@ export function PublicPortal() {
     useState<DrawSlotBroadcastPayload | null>(null);
   const [detailMatchId, setDetailMatchId] = useState<number | null>(null);
   const [downloadingBulletin, setDownloadingBulletin] = useState(false);
+  const [locale, setLocale] = useState<LocaleCode>(() => getStoredLocale('id'));
   const [syncMode, setSyncMode] = useState<'sse' | 'polling' | 'connecting'>('connecting');
   const [portalError, setPortalError] = useState<{
     code: SupportedErrorCode;
@@ -760,6 +766,19 @@ export function PublicPortal() {
             </span>
 
             <PwaInstallButton />
+
+            <button
+              type="button"
+              onClick={() => {
+                const next: LocaleCode = locale === 'id' ? 'en' : 'id';
+                setLocale(next);
+                setStoredLocale(next);
+              }}
+              title="Switch Language (ID / EN)"
+              className="inline-flex min-h-11 items-center rounded-full border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[11px] font-extrabold uppercase text-slate-700 transition hover:border-amber-500 sm:min-h-9 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+            >
+              {locale.toUpperCase()}
+            </button>
 
             <ThemeToggle />
 

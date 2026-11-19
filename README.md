@@ -6,8 +6,8 @@
   [![CI](https://github.com/ardianryan/OpenVolley/actions/workflows/ci.yml/badge.svg)](https://github.com/ardianryan/OpenVolley/actions/workflows/ci.yml)
   [![CodeQL](https://github.com/ardianryan/OpenVolley/actions/workflows/codeql.yml/badge.svg)](https://github.com/ardianryan/OpenVolley/actions/workflows/codeql.yml)
   [![Release & GHCR](https://github.com/ardianryan/OpenVolley/actions/workflows/release-and-packages.yml/badge.svg)](https://github.com/ardianryan/OpenVolley/actions/workflows/release-and-packages.yml)
-  [![Version](https://img.shields.io/badge/version-0.2.1-F5C538?labelColor=0B0F19)](https://github.com/ardianryan/OpenVolley/releases)
-  [![License](https://img.shields.io/badge/license-Apache--2.0%20%2B%20Commons%20Clause-F5C538?labelColor=0B0F19)](LICENSE)
+  [![Version](https://img.shields.io/badge/version-0.3.0-F5C538?labelColor=0B0F19)](https://github.com/ardianryan/OpenVolley/releases)
+  [![License](https://img.shields.io/badge/license-Apache--2.0%20%20%2B%20Commons%20Clause-F5C538?labelColor=0B0F19)](LICENSE)
   [![Runtime](https://img.shields.io/badge/runtime-Bun%201.x-000000?logo=bun&logoColor=FBF0DF)](https://bun.sh)
   [![Docker](https://img.shields.io/badge/ghcr.io-ardianryan%2Fopenvolley-0EA5E9?logo=docker&logoColor=white)](https://github.com/ardianryan/OpenVolley/pkgs/container/openvolley)
 </div>
@@ -33,7 +33,13 @@
 | **Client-Side Broadcast Media Studio** | Browser-rendered `9:16`, `4:5`, `16:9`, and `1:1` posters (PNG) and animated broadcast videos (`MP4`/`WebM`) with 3D WebGL volleyball scenes, S3 audio tracks with smart auto-ducking, `1–3` photo collages/slideshows, in-browser video cut/trimmer (`2s–15s`), and automatic iPhone `.HEIC` / `.MOV` browser conversion. |
 | **Multi-Slide & Video Moments Gallery** | Match gallery supporting swipeable multi-photo carousels, inline HTML5 video playback, uncropped fullscreen lightbox inspection, and direct S3-compatible object storage (with local disk fallback). |
 | **3-Role Back-Office & Defense-in-Depth** | Granular RBAC (`admin`, `panitia`, `media`), `HttpOnly` JWT cookies, sliding-window brute-force rate limiting, strict `Content-Security-Policy` (no `'unsafe-inline'` scripts), magic-byte upload verification, and branded error pages (`400`–`503`, `Offline`, `ErrorBoundary`). |
-| **Installable PWA & WCAG 2.1 AA** | Installable on Android, Desktop, and iOS Safari; 1-button 3-state theme cycle (`System` → `Opposite` → `Explicit Same` → `System`); verified WCAG 2.1 AA color contrast across Light and Dark modes. |
+| **Token-Gated OBS Overlays & Controller** | Dedicated transparent browser source (`/obs?token=<secret>`) with 5 broadcast variations (Scorebug, Lower-Third Bar, Pre-match VS Intro, Timeout/Set Break, Winner Card) controlled live from `/back-office/obs` with token regeneration & theme switching. |
+| **FIVB Form O-2 Official Scoresheet** | Automated PDF generation of official FIVB Form O-2 scoresheets with roster management, starting lineups, set duration tracking, timeouts, substitutions, and referee sign-offs. |
+| **Bilingual UI (ID / EN) & Integrations** | Persistent Indonesian & English dictionary switcher (`i18n.ts`); HMAC-SHA256 signed anti-SSRF outgoing Webhooks, and hot S3 SQLite database backup (`VACUUM INTO`). |
+| **Court Schedule Management & Unschedule** | Interactive date/time editor with quick slot buttons, match unassigning/clearing, whole-court schedule bulk clearing, and unscheduled match drawer (`/back-office/jadwal`). |
+| **Skippable 3rd Place Playoff ("Juara 3 Bersama")** | Dynamic option to skip 3rd place playoff match (`hasThirdPlace: false`), automatically recognizing both semifinal losers as Joint 3rd Place across brackets, podiums, Media Studio, and PDF bulletins. |
+| **Cloud S3 Logo Storage & Runtime Auto-Migration** | Automatic migration of legacy local `/uploads/logos/...` to S3 bucket CDN without server bandwidth strain. |
+| **Cloudflare Turnstile Bot Gate** | Zero-friction Turnstile challenge verification on public entry and back-office authentication forms. |
 
 ---
 
@@ -111,7 +117,7 @@ docker run -d \
   -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e ADMIN_DEFAULT_PASSWORD="change-me-immediately" \
   -v openvolley_data:/app/data \
-  ghcr.io/ardianryan/openvolley:0.2.1
+  ghcr.io/ardianryan/openvolley:0.3.0
 ```
 
 ### Default Seeded Accounts (First Boot Only)

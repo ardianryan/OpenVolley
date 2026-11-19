@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import { asc, eq, inArray } from 'drizzle-orm';
+import { randomBytes } from 'node:crypto';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import {
   inferTeamLevelFromName,
   sanitizeMasterLevel,
@@ -12,17 +13,22 @@ import {
   masterCourts,
   masterTeams,
   matchReports,
+  matchSets,
   matches,
+  obsOverlays,
   siteSettings,
+  teamPlayers,
   teams,
   tournaments,
   tvScreens,
+  webhooks,
 } from '../db/schema';
 import {
   type AuthUser,
   requireAuth,
   requirePermission,
 } from '../middleware/auth';
+import { createSqliteS3Backup, listS3Backups } from '../services/backup';
 import {
   advancePoolsToKnockout,
   generateBracket,
@@ -48,6 +54,7 @@ import {
   deleteUploadedReportAssets,
   saveUploadedImage,
 } from '../services/upload';
+import { isSafeWebhookUrl, sendTestWebhook } from '../services/webhook';
 
 export const adminRoutes = new Hono<{ Variables: { user: AuthUser } }>();
 
@@ -64,7 +71,8 @@ adminRoutes.use(
     'operator',
     'tv_screens',
     'documents',
-    'branding'
+    'branding',
+    'integrations'
   )
 );
 adminRoutes.use('/tv-pin', requirePermission('branding', 'tv_screens'));
@@ -86,10 +94,22 @@ adminRoutes.use(
   '/matches/bulk-schedule-assign',
   requirePermission('schedule', 'tournaments')
 );
+adminRoutes.use(
+  '/matches/bulk-schedule-clear',
+  requirePermission('schedule', 'tournaments')
+);
 adminRoutes.use('/matches/:id/score', requirePermission('operator'));
 adminRoutes.use('/matches/:id', requirePermission('schedule', 'tournaments', 'operator'));
 adminRoutes.use('/tv-screens', requirePermission('tv_screens'));
 adminRoutes.use('/tv-screens/*', requirePermission('tv_screens'));
+adminRoutes.use('/obs-overlays', requirePermission('obs_overlays'));
+adminRoutes.use('/obs-overlays/*', requirePermission('obs_overlays'));
+adminRoutes.use('/players/*', requirePermission('tournaments', 'documents', 'contingents'));
+adminRoutes.use('/teams/:id/players', requirePermission('tournaments', 'documents', 'contingents'));
+adminRoutes.use('/webhooks', requirePermission('integrations'));
+adminRoutes.use('/webhooks/*', requirePermission('integrations'));
+adminRoutes.use('/backups', requirePermission('integrations'));
+adminRoutes.use('/backups/*', requirePermission('integrations'));
 
 function sanitizeDocSettingsJson(
   rawInput: unknown,
@@ -623,7 +643,62 @@ adminRoutes.patch('/tournaments/:id', async (c) => {
   if (body.regularSetPoints !== undefined) updateData.regularSetPoints = Number(body.regularSetPoints);
   if (body.decidingSetPoints !== undefined) updateData.decidingSetPoints = Number(body.decidingSetPoints);
   if (body.useDeuce !== undefined) updateData.useDeuce = Boolean(body.useDeuce);
-  if (body.hasThirdPlace !== undefined) updateData.hasThirdPlace = Boolean(body.hasThirdPlace);
+  if (body.hasThirdPlace !== undefined) {
+    const wantsThird = Boolean(body.hasThirdPlace);
+    updateData.hasThirdPlace = wantsThird;
+
+    // Handle skip or restore 3rd place match if bracket already exists
+    if (!wantsThird) {
+      const existingThird = await db.query.matches.findFirst({
+        where: and(eq(matches.tournamentId, id), eq(matches.bracketType, 'third_place')),
+      });
+      if (existingThird && existingThird.status !== 'finished') {
+        await db
+          .update(matches)
+          .set({ loserNextMatchId: null, loserNextMatchSlot: null })
+          .where(eq(matches.loserNextMatchId, existingThird.id));
+        await db.delete(matchSets).where(eq(matchSets.matchId, existingThird.id));
+        await db.delete(matches).where(eq(matches.id, existingThird.id));
+      }
+    } else {
+      const existingThird = await db.query.matches.findFirst({
+        where: and(eq(matches.tournamentId, id), eq(matches.bracketType, 'third_place')),
+      });
+      if (!existingThird) {
+        const allMain = await db
+          .select()
+          .from(matches)
+          .where(and(eq(matches.tournamentId, id), eq(matches.bracketType, 'main')));
+        if (allMain.length >= 3) {
+          const maxRound = Math.max(...allMain.map((m) => m.round));
+          const semiMatches = allMain.filter((m) => m.round === maxRound - 1);
+          if (semiMatches.length === 2) {
+            const [thirdMatch] = await db
+              .insert(matches)
+              .values({
+                tournamentId: id,
+                round: maxRound,
+                matchIndex: 1,
+                bracketType: 'third_place',
+                status: 'scheduled',
+                courtName: 'Court 1',
+              })
+              .returning({ id: matches.id });
+            if (thirdMatch) {
+              await db
+                .update(matches)
+                .set({ loserNextMatchId: thirdMatch.id, loserNextMatchSlot: 'A' })
+                .where(eq(matches.id, semiMatches[0]!.id));
+              await db
+                .update(matches)
+                .set({ loserNextMatchId: thirdMatch.id, loserNextMatchSlot: 'B' })
+                .where(eq(matches.id, semiMatches[1]!.id));
+            }
+          }
+        }
+      }
+    }
+  }
 
   const [updated] = await db
     .update(tournaments)
@@ -1570,7 +1645,7 @@ adminRoutes.patch('/matches/:id', async (c) => {
   const id = Number(c.req.param('id'));
   const body = await c.req.json<{
     courtName?: string;
-    scheduledAt?: string;
+    scheduledAt?: string | null;
     stageLabel?: string;
   }>();
 
@@ -1579,7 +1654,7 @@ adminRoutes.patch('/matches/:id', async (c) => {
     updateData.courtName = sanitizePlainText(body.courtName, 40) || 'Court 1';
   }
   if (body.scheduledAt !== undefined) {
-    updateData.scheduledAt = sanitizePlainText(body.scheduledAt, 60);
+    updateData.scheduledAt = body.scheduledAt ? sanitizePlainText(body.scheduledAt, 60) : null;
   }
   if (body.stageLabel !== undefined) {
     updateData.stageLabel = sanitizePlainText(body.stageLabel, 80) || null;
@@ -1736,6 +1811,30 @@ adminRoutes.post('/matches/bulk-schedule-assign', async (c) => {
   }
 
   return c.json({ ok: true, count: updatedMatches.length, matches: updatedMatches });
+});
+
+adminRoutes.post('/matches/bulk-schedule-clear', async (c) => {
+  const body = await c.req.json<{
+    courtName?: string;
+    matchIds?: number[];
+  }>();
+
+  if (body.courtName) {
+    await db
+      .update(matches)
+      .set({ scheduledAt: null })
+      .where(eq(matches.courtName, body.courtName));
+  } else if (Array.isArray(body.matchIds) && body.matchIds.length > 0) {
+    await db
+      .update(matches)
+      .set({ scheduledAt: null })
+      .where(inArray(matches.id, body.matchIds));
+  } else {
+    return c.json({ error: 'Parameter courtName atau matchIds wajib diisi' }, 400);
+  }
+
+  await broadcastEvent('bracket_updated', { scheduleCleared: true, courtName: body.courtName });
+  return c.json({ ok: true });
 });
 
 // =========================================================================
@@ -1946,4 +2045,352 @@ adminRoutes.delete('/tv-screens/:id', async (c) => {
   await db.delete(tvScreens).where(eq(tvScreens.id, id));
   await broadcastEvent('tv_screen_updated', { deletedId: id, slug: existing.slug });
   return c.json({ ok: true });
+});
+
+// =============================================================================
+// OBS Broadcast Overlays & Token-Gated Remote Controller (/api/admin/obs-overlays)
+// =============================================================================
+
+function slugifyObsName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || 'stream';
+}
+
+const VALID_OBS_LAYOUTS = new Set([
+  'scorebug_corner',
+  'lower_third',
+  'match_intro',
+  'timeout_break',
+  'winner_card',
+]);
+const VALID_OBS_THEMES = new Set(['dark', 'light', 'glass']);
+
+adminRoutes.get('/obs-overlays', async (c) => {
+  const list = await db.select().from(obsOverlays).orderBy(asc(obsOverlays.id));
+  return c.json({ overlays: list });
+});
+
+adminRoutes.post('/obs-overlays', async (c) => {
+  const body = await c.req
+    .json<Record<string, unknown>>()
+    .catch(() => ({} as Record<string, unknown>));
+  const name = sanitizePlainText(String(body.name || ''), 60).trim() || 'Stream Baru';
+  const baseSlug = slugifyObsName(String(body.slug || name));
+  const existing = await db.select().from(obsOverlays);
+  const usedSlugs = new Set(existing.map((o) => o.slug));
+  let slug = baseSlug;
+  let n = 2;
+  while (usedSlugs.has(slug)) {
+    slug = `${baseSlug}-${n++}`;
+  }
+
+  const rawToken = typeof body.accessToken === 'string' ? body.accessToken.trim() : '';
+  const accessToken =
+    /^[a-zA-Z0-9_-]{6,64}$/.test(rawToken) ? rawToken : randomBytes(12).toString('hex');
+
+  const layoutPreset = VALID_OBS_LAYOUTS.has(String(body.layoutPreset))
+    ? (String(body.layoutPreset) as typeof obsOverlays.$inferInsert.layoutPreset)
+    : 'lower_third';
+  const themeMode = VALID_OBS_THEMES.has(String(body.themeMode))
+    ? (String(body.themeMode) as typeof obsOverlays.$inferInsert.themeMode)
+    : 'dark';
+  const now = Date.now();
+
+  const [created] = await db
+    .insert(obsOverlays)
+    .values({
+      name,
+      slug,
+      accessToken,
+      layoutPreset,
+      themeMode,
+      matchId: typeof body.matchId === 'number' ? body.matchId : null,
+      courtName: sanitizePlainText(String(body.courtName || ''), 60).trim(),
+      autoFollowCourt: body.autoFollowCourt !== false,
+      showSponsorTicker: body.showSponsorTicker !== false,
+      showSetHistory: body.showSetHistory !== false,
+      showTimeoutSub: body.showTimeoutSub !== false,
+      isVisible: body.isVisible !== false,
+      customBadgeText:
+        sanitizePlainText(String(body.customBadgeText || 'LIVE BROADCAST'), 40).trim() ||
+        'LIVE BROADCAST',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+
+  await broadcastEvent('obs_overlay_updated', { slug: created!.slug, id: created!.id });
+  return c.json({ overlay: created }, 201);
+});
+
+adminRoutes.patch('/obs-overlays/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const prev = await db.query.obsOverlays.findFirst({ where: eq(obsOverlays.id, id) });
+  if (!prev) return c.json({ error: 'Profil OBS tidak ditemukan' }, 404);
+
+  const body = await c.req
+    .json<Record<string, unknown>>()
+    .catch(() => ({} as Record<string, unknown>));
+  const patch: Partial<typeof obsOverlays.$inferInsert> = { updatedAt: Date.now() };
+
+  if (typeof body.name === 'string' && body.name.trim()) {
+    patch.name = sanitizePlainText(body.name, 60).trim();
+  }
+  if (typeof body.accessToken === 'string' && /^[a-zA-Z0-9_-]{6,64}$/.test(body.accessToken.trim())) {
+    patch.accessToken = body.accessToken.trim();
+  }
+  if (typeof body.layoutPreset === 'string' && VALID_OBS_LAYOUTS.has(body.layoutPreset)) {
+    patch.layoutPreset = body.layoutPreset as typeof obsOverlays.$inferInsert.layoutPreset;
+  }
+  if (typeof body.themeMode === 'string' && VALID_OBS_THEMES.has(body.themeMode)) {
+    patch.themeMode = body.themeMode as typeof obsOverlays.$inferInsert.themeMode;
+  }
+  if (body.matchId === null || typeof body.matchId === 'number') {
+    patch.matchId = body.matchId;
+  }
+  if (typeof body.courtName === 'string') {
+    patch.courtName = sanitizePlainText(body.courtName, 60).trim();
+  }
+  if (typeof body.autoFollowCourt === 'boolean') patch.autoFollowCourt = body.autoFollowCourt;
+  if (typeof body.showSponsorTicker === 'boolean') patch.showSponsorTicker = body.showSponsorTicker;
+  if (typeof body.showSetHistory === 'boolean') patch.showSetHistory = body.showSetHistory;
+  if (typeof body.showTimeoutSub === 'boolean') patch.showTimeoutSub = body.showTimeoutSub;
+  if (typeof body.isVisible === 'boolean') patch.isVisible = body.isVisible;
+  if (typeof body.customBadgeText === 'string') {
+    patch.customBadgeText = sanitizePlainText(body.customBadgeText, 40).trim();
+  }
+
+  const [updated] = await db
+    .update(obsOverlays)
+    .set(patch)
+    .where(eq(obsOverlays.id, id))
+    .returning();
+
+  await broadcastEvent('obs_overlay_updated', { slug: updated!.slug, id: updated!.id });
+  return c.json({ overlay: updated });
+});
+
+adminRoutes.post('/obs-overlays/:id/regenerate-token', async (c) => {
+  const id = Number(c.req.param('id'));
+  const prev = await db.query.obsOverlays.findFirst({ where: eq(obsOverlays.id, id) });
+  if (!prev) return c.json({ error: 'Profil OBS tidak ditemukan' }, 404);
+
+  const newToken = randomBytes(12).toString('hex');
+  const [updated] = await db
+    .update(obsOverlays)
+    .set({ accessToken: newToken, updatedAt: Date.now() })
+    .where(eq(obsOverlays.id, id))
+    .returning();
+
+  await broadcastEvent('obs_overlay_updated', { slug: updated!.slug, id: updated!.id });
+  return c.json({ overlay: updated });
+});
+
+adminRoutes.delete('/obs-overlays/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const existing = await db.query.obsOverlays.findFirst({ where: eq(obsOverlays.id, id) });
+  if (!existing) return c.json({ error: 'Profil OBS tidak ditemukan' }, 404);
+  await db.delete(obsOverlays).where(eq(obsOverlays.id, id));
+  await broadcastEvent('obs_overlay_updated', { deletedId: id, slug: existing.slug });
+  return c.json({ ok: true });
+});
+
+// =============================================================================
+// Optional Team Roster / Players for FIVB Form O-2 (/api/admin/teams/:id/players)
+// =============================================================================
+
+adminRoutes.get('/teams/:id/players', async (c) => {
+  const teamId = Number(c.req.param('id'));
+  const list = await db
+    .select()
+    .from(teamPlayers)
+    .where(eq(teamPlayers.teamId, teamId))
+    .orderBy(asc(teamPlayers.jerseyNumber), asc(teamPlayers.id));
+  return c.json({ players: list });
+});
+
+adminRoutes.post('/teams/:id/players', async (c) => {
+  const teamId = Number(c.req.param('id'));
+  const team = await db.query.teams.findFirst({ where: eq(teams.id, teamId) });
+  if (!team) return c.json({ error: 'Tim tidak ditemukan' }, 404);
+
+  const body = await c.req.json<{
+    jerseyNumber?: number;
+    name?: string;
+    role?: 'player' | 'captain' | 'libero';
+  }>().catch(() => ({ jerseyNumber: 0, name: '', role: 'player' as const }));
+
+  const jerseyNumber = Number(body.jerseyNumber);
+  const name = sanitizePlainText(body.name || '', 60).trim();
+  if (!Number.isInteger(jerseyNumber) || jerseyNumber < 1 || jerseyNumber > 99) {
+    return c.json({ error: 'Nomor punggung harus 1–99' }, 400);
+  }
+  if (!name) return c.json({ error: 'Nama pemain wajib diisi' }, 400);
+
+  const role =
+    body.role === 'captain' || body.role === 'libero' ? body.role : 'player';
+
+  const [created] = await db
+    .insert(teamPlayers)
+    .values({
+      teamId,
+      masterTeamId: team.masterTeamId ?? null,
+      jerseyNumber,
+      name,
+      role,
+      createdAt: Date.now(),
+    })
+    .returning();
+
+  return c.json({ player: created }, 201);
+});
+
+adminRoutes.delete('/players/:playerId', async (c) => {
+  const playerId = Number(c.req.param('playerId'));
+  const existing = await db.query.teamPlayers.findFirst({
+    where: eq(teamPlayers.id, playerId),
+  });
+  if (!existing) return c.json({ error: 'Pemain tidak ditemukan' }, 404);
+  await db.delete(teamPlayers).where(eq(teamPlayers.id, playerId));
+  return c.json({ ok: true });
+});
+
+// =============================================================================
+// Outbound Webhooks (/api/admin/webhooks)
+// =============================================================================
+
+adminRoutes.get('/webhooks', async (c) => {
+  const rows = await db.select().from(webhooks).orderBy(desc(webhooks.id));
+  return c.json({
+    webhooks: rows.map((w) => ({
+      ...w,
+      secret: w.secret ? '••••••••' : '',
+      hasSecret: Boolean(w.secret),
+    })),
+  });
+});
+
+adminRoutes.post('/webhooks', async (c) => {
+  const body = await c.req.json<{
+    name?: string;
+    url?: string;
+    secret?: string;
+    platform?: 'generic' | 'discord' | 'telegram';
+    events?: string[];
+  }>().catch(() => ({
+    name: '',
+    url: '',
+    secret: '',
+    platform: 'generic' as const,
+    events: [] as string[],
+  }));
+
+  const name = sanitizePlainText(body.name || '', 60).trim();
+  const url = String(body.url || '').trim();
+  if (!name || !url) {
+    return c.json({ error: 'Nama dan URL webhook wajib diisi' }, 400);
+  }
+  if (!(await isSafeWebhookUrl(url))) {
+    return c.json(
+      { error: 'URL webhook tidak valid atau mengarah ke jaringan internal yang diblokir' },
+      400
+    );
+  }
+
+  const platform =
+    body.platform === 'discord' || body.platform === 'telegram' ? body.platform : 'generic';
+  const validEvents = new Set(['match_started', 'set_confirmed', 'match_finished']);
+  const events = Array.isArray(body.events)
+    ? body.events.filter((e) => validEvents.has(e))
+    : ['match_started', 'set_confirmed', 'match_finished'];
+
+  const [created] = await db
+    .insert(webhooks)
+    .values({
+      name,
+      url,
+      secret: String(body.secret || '').trim(),
+      platform,
+      eventsJson: JSON.stringify(events.length > 0 ? events : ['match_finished']),
+      isEnabled: true,
+      createdAt: Date.now(),
+    })
+    .returning();
+
+  return c.json(
+    {
+      webhook: {
+        ...created!,
+        secret: created!.secret ? '••••••••' : '',
+        hasSecret: Boolean(created!.secret),
+      },
+    },
+    201
+  );
+});
+
+adminRoutes.patch('/webhooks/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const existing = await db.query.webhooks.findFirst({ where: eq(webhooks.id, id) });
+  if (!existing) return c.json({ error: 'Webhook tidak ditemukan' }, 404);
+
+  const body = await c.req
+    .json<{ isEnabled?: boolean }>()
+    .catch(() => ({} as { isEnabled?: boolean }));
+  const [updated] = await db
+    .update(webhooks)
+    .set({
+      isEnabled: typeof body.isEnabled === 'boolean' ? body.isEnabled : existing.isEnabled,
+    })
+    .where(eq(webhooks.id, id))
+    .returning();
+
+  return c.json({
+    webhook: {
+      ...updated!,
+      secret: updated!.secret ? '••••••••' : '',
+      hasSecret: Boolean(updated!.secret),
+    },
+  });
+});
+
+adminRoutes.post('/webhooks/:id/test', async (c) => {
+  const id = Number(c.req.param('id'));
+  try {
+    const result = await sendTestWebhook(id);
+    return c.json({ ok: !result.error, result });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
+});
+
+adminRoutes.delete('/webhooks/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  await db.delete(webhooks).where(eq(webhooks.id, id));
+  return c.json({ ok: true });
+});
+
+// =============================================================================
+// SQLite Snapshot Backups to S3 (/api/admin/backups)
+// =============================================================================
+
+adminRoutes.get('/backups', async (c) => {
+  try {
+    const listing = await listS3Backups();
+    return c.json(listing);
+  } catch (err) {
+    return c.json({ s3Configured: true, backups: [], error: (err as Error).message });
+  }
+});
+
+adminRoutes.post('/backups/run', async (c) => {
+  try {
+    const snapshot = await createSqliteS3Backup();
+    return c.json({ ok: true, snapshot });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 500);
+  }
 });

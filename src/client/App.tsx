@@ -11,6 +11,9 @@ import { PublicPortal } from './pages/PublicPortal';
 const ArenaTvDisplay = lazy(() =>
   import('./pages/ArenaTvDisplay').then((m) => ({ default: m.ArenaTvDisplay }))
 );
+const ObsOverlayDisplay = lazy(() =>
+  import('./pages/ObsOverlayDisplay').then((m) => ({ default: m.ObsOverlayDisplay }))
+);
 const BackOffice = lazy(() =>
   import('./pages/BackOffice').then((m) => ({ default: m.BackOffice }))
 );
@@ -38,6 +41,10 @@ export function App() {
       ) : cleanPath === '/tv' ? (
         <Suspense fallback={<div className="min-h-screen bg-[#070A12]" />}>
           <ArenaTvDisplay />
+        </Suspense>
+      ) : cleanPath === '/obs' ? (
+        <Suspense fallback={<div className="min-h-screen bg-transparent" />}>
+          <ObsOverlayDisplay />
         </Suspense>
       ) : cleanPath.startsWith('/back-office') ? (
         <Suspense fallback={<div className="min-h-screen bg-slate-50 dark:bg-slate-950" />}>

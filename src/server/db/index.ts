@@ -1,11 +1,12 @@
 import { Database } from 'bun:sqlite';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import {
   inferTeamLevelFromName,
   isPlaceholderDrawSlotName,
 } from '../../shared/fivb-draw';
-import { DEFAULT_SYSTEM_ROLES } from '../../shared/rbac';
+import { DEFAULT_SYSTEM_ROLES, PERMISSION_KEYS } from '../../shared/rbac';
 import * as schema from './schema';
 
 const isTest = process.env.NODE_ENV === 'test';
@@ -199,6 +200,49 @@ export function initDatabase() {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS obs_overlays (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      access_token TEXT NOT NULL,
+      layout_preset TEXT NOT NULL DEFAULT 'lower_third',
+      theme_mode TEXT NOT NULL DEFAULT 'dark',
+      match_id INTEGER REFERENCES matches(id) ON DELETE SET NULL,
+      court_name TEXT NOT NULL DEFAULT '',
+      auto_follow_court INTEGER NOT NULL DEFAULT 1,
+      show_sponsor_ticker INTEGER NOT NULL DEFAULT 1,
+      show_set_history INTEGER NOT NULL DEFAULT 1,
+      show_timeout_sub INTEGER NOT NULL DEFAULT 1,
+      is_visible INTEGER NOT NULL DEFAULT 1,
+      custom_badge_text TEXT NOT NULL DEFAULT 'LIVE BROADCAST',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS team_players (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER REFERENCES teams(id) ON DELETE CASCADE,
+      master_team_id INTEGER REFERENCES master_teams(id) ON DELETE CASCADE,
+      jersey_number INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'player',
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS webhooks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      secret TEXT NOT NULL DEFAULT '',
+      platform TEXT NOT NULL DEFAULT 'generic',
+      events_json TEXT NOT NULL DEFAULT '["match_started","set_confirmed","match_finished"]',
+      is_enabled INTEGER NOT NULL DEFAULT 1,
+      last_status INTEGER,
+      last_error TEXT,
+      last_triggered_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
   `);
 
   // Safe idempotent column migrations for existing databases
@@ -271,12 +315,17 @@ export function initDatabase() {
   if (!matchColNames.has('use_deuce')) sqlite.exec('ALTER TABLE matches ADD COLUMN use_deuce INTEGER;');
   if (!matchColNames.has('pool_name')) sqlite.exec('ALTER TABLE matches ADD COLUMN pool_name TEXT;');
   if (!matchColNames.has('stage_label')) sqlite.exec('ALTER TABLE matches ADD COLUMN stage_label TEXT;');
+  if (!matchColNames.has('match_code')) sqlite.exec('ALTER TABLE matches ADD COLUMN match_code TEXT;');
 
   const setColNames = getColumnSet('match_sets');
   if (!setColNames.has('timeouts_a')) sqlite.exec('ALTER TABLE match_sets ADD COLUMN timeouts_a INTEGER NOT NULL DEFAULT 0;');
   if (!setColNames.has('timeouts_b')) sqlite.exec('ALTER TABLE match_sets ADD COLUMN timeouts_b INTEGER NOT NULL DEFAULT 0;');
   if (!setColNames.has('subs_a')) sqlite.exec('ALTER TABLE match_sets ADD COLUMN subs_a INTEGER NOT NULL DEFAULT 0;');
   if (!setColNames.has('subs_b')) sqlite.exec('ALTER TABLE match_sets ADD COLUMN subs_b INTEGER NOT NULL DEFAULT 0;');
+  if (!setColNames.has('started_at')) sqlite.exec('ALTER TABLE match_sets ADD COLUMN started_at INTEGER;');
+  if (!setColNames.has('ended_at')) sqlite.exec('ALTER TABLE match_sets ADD COLUMN ended_at INTEGER;');
+  if (!setColNames.has('lineup_a_json')) sqlite.exec("ALTER TABLE match_sets ADD COLUMN lineup_a_json TEXT NOT NULL DEFAULT '[]';");
+  if (!setColNames.has('lineup_b_json')) sqlite.exec("ALTER TABLE match_sets ADD COLUMN lineup_b_json TEXT NOT NULL DEFAULT '[]';");
 
   const reportColNames = getColumnSet('match_reports');
   if (!reportColNames.has('media_json')) {
@@ -291,6 +340,21 @@ export function initDatabase() {
   seedDefaultRoles();
   backfillMasterTeamsFromExisting();
   backfillMasterCourtsAndTvScreens();
+  backfillObsOverlays();
+}
+
+function backfillObsOverlays() {
+  const existing = sqlite.query('SELECT id FROM obs_overlays LIMIT 1').all();
+  if (existing.length > 0) return;
+  const now = Date.now();
+  const token = randomBytes(12).toString('hex');
+  sqlite
+    .prepare(
+      `INSERT INTO obs_overlays
+       (name, slug, access_token, layout_preset, theme_mode, court_name, auto_follow_court, show_sponsor_ticker, show_set_history, show_timeout_sub, is_visible, custom_badge_text, created_at, updated_at)
+       VALUES (?, ?, ?, 'lower_third', 'dark', '', 1, 1, 1, 1, 1, 'LIVE BROADCAST', ?, ?)`
+    )
+    .run('Stream Utama', 'stream-utama', token, now, now);
 }
 
 function seedDefaultRoles() {
@@ -309,6 +373,10 @@ function seedDefaultRoles() {
       now
     );
   }
+  // Keep system 'admin' role synced with all canonical permission keys on upgrade
+  sqlite
+    .prepare("UPDATE roles SET permissions_json = ? WHERE slug = 'admin' AND is_system = 1")
+    .run(JSON.stringify([...PERMISSION_KEYS]));
 }
 
 function backfillMasterCourtsAndTvScreens() {
@@ -500,6 +568,30 @@ export async function seedDefaults() {
   }
 
   const existingAdmin = await db.query.users.findFirst();
+
+  // Automatic S3 migration for local team logos when S3 storage is enabled
+  const s3Endpoint = process.env.S3_ENDPOINT;
+  const s3Bucket = process.env.S3_BUCKET;
+  if (process.env.NODE_ENV !== 'test' && s3Endpoint && s3Bucket) {
+    const s3Prefix = (process.env.S3_PREFIX || '').replace(/^\/+|\/+$/g, '');
+    const s3PublicBase = (
+      process.env.S3_PUBLIC_URL || `${s3Endpoint}/${s3Bucket}`
+    ).replace(/\/+$/, '');
+    const targetBase = s3Prefix
+      ? `${s3PublicBase}/${s3Prefix}/logos/`
+      : `${s3PublicBase}/logos/`;
+
+    const localLogoRows = sqlite
+      .query("SELECT id, logo_url FROM master_teams WHERE logo_url LIKE '/uploads/logos/%'")
+      .all() as Array<{ id: number; logo_url: string }>;
+
+    for (const row of localLogoRows) {
+      const filename = row.logo_url.replace('/uploads/logos/', '');
+      const newUrl = `${targetBase}${filename}`;
+      sqlite.run('UPDATE master_teams SET logo_url = ? WHERE id = ?', [newUrl, row.id]);
+      sqlite.run('UPDATE teams SET logo_url = ? WHERE logo_url = ?', [newUrl, row.logo_url]);
+    }
+  }
   if (!existingAdmin) {
     const defaultAdminPass = process.env.ADMIN_DEFAULT_PASSWORD || 'admin123';
     const hash = await Bun.password.hash(defaultAdminPass);

@@ -133,6 +133,7 @@ export const matches = sqliteTable('matches', {
   regularSetPoints: integer('regular_set_points'),
   decidingSetPoints: integer('deciding_set_points'),
   useDeuce: integer('use_deuce', { mode: 'boolean' }),
+  matchCode: text('match_code'),
 });
 
 export const matchSets = sqliteTable('match_sets', {
@@ -149,6 +150,10 @@ export const matchSets = sqliteTable('match_sets', {
   subsB: integer('subs_b').notNull().default(0),
   isFinished: integer('is_finished', { mode: 'boolean' }).notNull().default(false),
   winnerId: integer('winner_id'),
+  startedAt: integer('started_at'),
+  endedAt: integer('ended_at'),
+  lineupAJson: text('lineup_a_json').notNull().default('[]'),
+  lineupBJson: text('lineup_b_json').notNull().default('[]'),
 });
 
 export const matchReports = sqliteTable('match_reports', {
@@ -200,4 +205,61 @@ export const tvScreens = sqliteTable('tv_screens', {
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
+});
+
+export const obsOverlays = sqliteTable('obs_overlays', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  slug: text('slug').notNull().unique(),
+  accessToken: text('access_token').notNull(),
+  layoutPreset: text('layout_preset', {
+    enum: ['scorebug_corner', 'lower_third', 'match_intro', 'timeout_break', 'winner_card'],
+  })
+    .notNull()
+    .default('lower_third'),
+  themeMode: text('theme_mode', { enum: ['dark', 'light', 'glass'] })
+    .notNull()
+    .default('dark'),
+  matchId: integer('match_id').references(() => matches.id, { onDelete: 'set null' }),
+  courtName: text('court_name').notNull().default(''),
+  autoFollowCourt: integer('auto_follow_court', { mode: 'boolean' }).notNull().default(true),
+  showSponsorTicker: integer('show_sponsor_ticker', { mode: 'boolean' }).notNull().default(true),
+  showSetHistory: integer('show_set_history', { mode: 'boolean' }).notNull().default(true),
+  showTimeoutSub: integer('show_timeout_sub', { mode: 'boolean' }).notNull().default(true),
+  isVisible: integer('is_visible', { mode: 'boolean' }).notNull().default(true),
+  customBadgeText: text('custom_badge_text').notNull().default('LIVE BROADCAST'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const teamPlayers = sqliteTable('team_players', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  teamId: integer('team_id').references(() => teams.id, { onDelete: 'cascade' }),
+  masterTeamId: integer('master_team_id').references(() => masterTeams.id, {
+    onDelete: 'cascade',
+  }),
+  jerseyNumber: integer('jersey_number').notNull(),
+  name: text('name').notNull(),
+  role: text('role', { enum: ['player', 'captain', 'libero'] })
+    .notNull()
+    .default('player'),
+  createdAt: integer('created_at').notNull(),
+});
+
+export const webhooks = sqliteTable('webhooks', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  url: text('url').notNull(),
+  secret: text('secret').notNull().default(''),
+  platform: text('platform', { enum: ['generic', 'discord', 'telegram'] })
+    .notNull()
+    .default('generic'),
+  eventsJson: text('events_json')
+    .notNull()
+    .default('["match_started","set_confirmed","match_finished"]'),
+  isEnabled: integer('is_enabled', { mode: 'boolean' }).notNull().default(true),
+  lastStatus: integer('last_status'),
+  lastError: text('last_error'),
+  lastTriggeredAt: integer('last_triggered_at'),
+  createdAt: integer('created_at').notNull(),
 });

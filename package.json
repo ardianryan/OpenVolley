@@ -1,6 +1,6 @@
 {
   "name": "openvolley",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Self-hosted real-time volleyball live score, symmetric tournament bracket, PIN-gated Arena TV display, and client-side broadcast Media Studio built on Bun, Hono, React 19, and SQLite.",
   "type": "module",
   "license": "SEE LICENSE IN LICENSE",

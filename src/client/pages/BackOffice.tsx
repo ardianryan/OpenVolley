@@ -38,6 +38,8 @@ import { AdminDashboard } from './AdminDashboard';
 import { LiveOperator } from './LiveOperator';
 import { MasterTeamsManager } from './MasterTeamsManager';
 import { MediaStudio } from './MediaStudio';
+import { IntegrationsManager } from './IntegrationsManager';
+import { ObsControllerManager } from './ObsControllerManager';
 import { OfficialDocuments } from './OfficialDocuments';
 import { ScheduleCourtsManager } from './ScheduleCourtsManager';
 import { TvScreensManager } from './TvScreensManager';
@@ -47,10 +49,12 @@ type BackOfficeSection =
   | 'contingents'
   | 'schedule'
   | 'tv_screens'
+  | 'obs_overlays'
   | 'operator'
   | 'tournaments'
   | 'documents'
   | 'branding'
+  | 'integrations'
   | 'users'
   | 'media';
 
@@ -59,11 +63,13 @@ const SECTION_TO_PATH: Record<BackOfficeSection, string> = {
   contingents: '/back-office/kontingen',
   schedule: '/back-office/jadwal',
   tv_screens: '/back-office/layar-tv',
+  obs_overlays: '/back-office/obs',
   operator: '/back-office/operator',
   tournaments: '/back-office/bagan',
   documents: '/back-office/dokumen',
   media: '/back-office/media',
   branding: '/back-office/branding',
+  integrations: '/back-office/integrasi',
   users: '/back-office/akun',
 };
 
@@ -72,11 +78,13 @@ const PATH_TO_SECTION: Record<string, BackOfficeSection> = {
   '/back-office/kontingen': 'contingents',
   '/back-office/jadwal': 'schedule',
   '/back-office/layar-tv': 'tv_screens',
+  '/back-office/obs': 'obs_overlays',
   '/back-office/operator': 'operator',
   '/back-office/bagan': 'tournaments',
   '/back-office/dokumen': 'documents',
   '/back-office/media': 'media',
   '/back-office/branding': 'branding',
+  '/back-office/integrasi': 'integrations',
   '/back-office/akun': 'users',
 };
 
@@ -122,9 +130,11 @@ export function BackOffice() {
     tournaments: 'master',
     operator: 'arena',
     tv_screens: 'arena',
+    obs_overlays: 'arena',
     documents: 'media_pub',
     media: 'media_pub',
     branding: 'system',
+    integrations: 'system',
     users: 'system',
   };
 
@@ -188,6 +198,7 @@ export function BackOffice() {
         'tv_screens',
         'documents',
         'branding',
+        'integrations',
       ]);
       const endpoint = canReadAdminOverview
         ? `/api/admin/overview?_=${Date.now()}`
@@ -449,6 +460,12 @@ export function BackOffice() {
       icon: Monitor,
     },
     {
+      id: 'obs_overlays',
+      label: 'OBS Broadcast',
+      shortLabel: 'OBS',
+      icon: Radio,
+    },
+    {
       id: 'documents',
       label: 'Dokumen Resmi',
       shortLabel: 'Dokumen',
@@ -465,6 +482,12 @@ export function BackOffice() {
       label: 'Branding & Logo',
       shortLabel: 'Brand',
       icon: Palette,
+    },
+    {
+      id: 'integrations',
+      label: 'Webhooks & Backup',
+      shortLabel: 'Integrasi',
+      icon: Shield,
     },
     {
       id: 'users',
@@ -681,7 +704,7 @@ export function BackOffice() {
                 {
                   key: 'arena',
                   title: 'Arena & Layar TV',
-                  ids: ['operator', 'tv_screens'] as BackOfficeSection[],
+                  ids: ['operator', 'tv_screens', 'obs_overlays'] as BackOfficeSection[],
                 },
                 {
                   key: 'media_pub',
@@ -691,7 +714,7 @@ export function BackOffice() {
                 {
                   key: 'system',
                   title: 'Sistem & Akses',
-                  ids: ['branding', 'users'] as BackOfficeSection[],
+                  ids: ['branding', 'integrations', 'users'] as BackOfficeSection[],
                 },
               ] as const
             ).map((grp) => {
@@ -1103,6 +1126,16 @@ export function BackOffice() {
           {data && section === 'tv_screens' && (
             <div key="sec-tv-screens" className="animate-page-enter">
               <TvScreensManager data={data} onRefresh={() => loadData(user)} />
+            </div>
+          )}
+          {data && section === 'obs_overlays' && (
+            <div key="sec-obs-overlays" className="animate-page-enter">
+              <ObsControllerManager data={data} />
+            </div>
+          )}
+          {data && section === 'integrations' && (
+            <div key="sec-integrations" className="animate-page-enter">
+              <IntegrationsManager />
             </div>
           )}
           {data &&

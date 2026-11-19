@@ -10,7 +10,8 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { resolveTournamentPodium } from '../../shared/podium';
 import { formatRoundColumnLabel } from '../../shared/stages';
 import type { Match, Team } from '../types';
 import { TeamAvatar } from './TeamAvatar';
@@ -241,26 +242,21 @@ export function BracketView({
   const totalRounds = Math.max(...mainMatches.map((m) => m.round));
   const finalMatch = mainMatches.find((m) => m.round === totalRounds);
 
-  const champion = finalMatch?.winnerId ? teamMap.get(finalMatch.winnerId) : null;
-  const runnerUp =
-    finalMatch?.winnerId && finalMatch.teamAId && finalMatch.teamBId
-      ? teamMap.get(
-          finalMatch.winnerId === finalMatch.teamAId
-            ? finalMatch.teamBId
-            : finalMatch.teamAId
-        )
-      : null;
-  const thirdWinner = thirdPlaceMatch?.winnerId
-    ? teamMap.get(thirdPlaceMatch.winnerId)
-    : null;
-  const fourthPlace =
-    thirdPlaceMatch?.winnerId && thirdPlaceMatch.teamAId && thirdPlaceMatch.teamBId
-      ? teamMap.get(
-          thirdPlaceMatch.winnerId === thirdPlaceMatch.teamAId
-            ? thirdPlaceMatch.teamBId
-            : thirdPlaceMatch.teamAId
-        )
-      : null;
+  const tournamentId = matches[0]?.tournamentId ?? 1;
+  const podium = useMemo(
+    () =>
+      resolveTournamentPodium(
+        { id: tournamentId, hasThirdPlace: Boolean(thirdPlaceMatch) },
+        matches,
+        teams
+      ),
+    [tournamentId, Boolean(thirdPlaceMatch), matches, teams]
+  );
+
+  const champion = podium.champion;
+  const runnerUp = podium.runnerUp;
+  const thirdWinner = podium.thirdPlace;
+  const fourthPlace = podium.fourthPlace;
 
   const cardWidth = compact ? 'w-44 xl:w-48' : 'w-64';
 
@@ -660,8 +656,26 @@ export function BracketView({
 
               {finalMatch && renderMatchCard(finalMatch, 'GRAND FINAL')}
 
-              {thirdPlaceMatch &&
-                renderMatchCard(thirdPlaceMatch, '3RD PLACE MATCH', 2)}
+              {thirdPlaceMatch ? (
+                renderMatchCard(thirdPlaceMatch, '3RD PLACE MATCH', 2)
+              ) : (
+                <div
+                  className={`${cardWidth} rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-2.5 text-center dark:bg-amber-500/10`}
+                >
+                  <div className="flex items-center justify-center gap-1 text-[10px] font-extrabold uppercase text-amber-800 dark:text-amber-300">
+                    <Award className="h-3 w-3" />
+                    Juara 3 Bersama
+                  </div>
+                  <p className="mt-1 text-[11px] font-bold text-slate-900 dark:text-white">
+                    {podium.jointThirdTeams.length >= 2
+                      ? `${podium.jointThirdTeams[0].name} & ${podium.jointThirdTeams[1].name}`
+                      : podium.jointThirdTeams.length === 1
+                        ? `${podium.jointThirdTeams[0].name} & (Kalah Semifinal)`
+                        : 'Kedua Tim Kalah Semifinal'}
+                  </p>
+                  <p className="mt-0.5 text-[9px] text-slate-500">Tanpa Pertandingan Perebutan</p>
+                </div>
+              )}
 
               {/* Podium Recap */}
               <div
@@ -683,7 +697,7 @@ export function BracketView({
                   </span>
                   <span className="truncate font-semibold">{runnerUp?.name || '-'}</span>
                 </div>
-                {thirdPlaceMatch && (
+                {thirdPlaceMatch ? (
                   <>
                     <div className="flex items-center justify-between gap-2">
                       <span className="flex shrink-0 items-center gap-1 font-semibold text-amber-800 dark:text-amber-500">
@@ -700,6 +714,28 @@ export function BracketView({
                       </span>
                     </div>
                   </>
+                ) : (
+                  <div className="space-y-1 border-t border-slate-100 pt-1.5 dark:border-slate-800">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex shrink-0 items-center gap-1 font-semibold text-amber-800 dark:text-amber-500">
+                        <Medal className="h-3 w-3" /> 3rd (Bersama)
+                      </span>
+                    </div>
+                    {podium.jointThirdTeams.length > 0 ? (
+                      podium.jointThirdTeams.map((t) => (
+                        <div
+                          key={t.id}
+                          className="truncate pl-3 font-bold text-[11px] text-slate-800 dark:text-slate-200"
+                        >
+                          • {t.name}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="pl-3 text-[10px] italic text-slate-500">
+                        Kalah Semifinal (Juara 3 Bersama)
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>

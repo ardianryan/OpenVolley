@@ -55,14 +55,38 @@ This document tracks completed milestones in **`v0.1.0` – `v0.2.1`** alongside
 
 ---
 
+## Completed in `v0.3.0` (Broadcast Graphics, FIVB O-2 Scoresheet, Webhooks & Full Localization)
+- [x] **Token-Gated OBS Browser Source Overlay & Back-Office Remote Controller:**
+  - Dedicated `/obs?token=<secret>` broadcast overlay with 100% transparent alpha canvas and 5 dynamic layout presets: Scorebug Corner, Lower Third Bar, Pre-match VS Intro, Timeout/Set Break, and Winner Card.
+  - Back-office controller at `/back-office/obs` with token regeneration, visibility toggle, theme switching, and real-time SSE stream (`/api/public/obs-stream`).
+- [x] **FIVB Form O-2 Official Scoresheet Generator:**
+  - Standardized FIVB Form O-2 scoresheet PDF with player rosters, starting lineups, set durations, timeouts, substitutions, and referee sign-offs in `pdfDocuments.ts`.
+- [x] **Full Bilingual UI Localization (Indonesian & English):**
+  - Type-safe dictionary `i18n.ts` supporting `id` and `en` with persistent local storage preference and switcher on Public Portal.
+- [x] **Integrations & S3 Backup:**
+  - HMAC-SHA256 signed, anti-SSRF webhook dispatcher (`webhook.ts`).
+  - Hot SQLite database backup (`VACUUM INTO`) to S3 storage with manual trigger and download at `/back-office/integrasi`.
+- [x] **Court Schedule Management (Edit & Clear Schedules):**
+  - Interactive schedule edit modal with quick time-slot shortcuts (`07.30 - 08.45`, etc.), court switching, and stage label editor.
+  - Per-match schedule clearing (unschedule) and whole-court bulk schedule reset with safe confirmation dialogs.
+  - Collapsible drawer for unscheduled matches.
+- [x] **Skippable 3rd Place Match & Joint 3rd Place ("Juara 3 Bersama"):**
+  - Option to skip 3rd place playoff match (`hasThirdPlace: false`), automatically recognizing both semifinal losers as Joint 3rd Place winners.
+  - Reflected across Bracket View, Official Podium Recap, Media Studio posters/videos, and PDF Bulletins.
+- [x] **School Logo S3 Cloud Storage & Auto-Migration:**
+  - All 16 official school logos synced to S3 bucket (`svc-media/logos/`).
+  - Automatic migration on server boot to update legacy local `/uploads/logos/` paths to S3 public URLs when S3 is enabled.
+
+---
+
 ## Upcoming Backlog
 
-### `v0.3.0` — Integrations & Full Localization
-- [ ] **FIVB Official Scoresheet (Form O-2 & Line-Up Sheet):** Optional court-table O-2 PDF export with player roster & jersey numbers, starting rotations (Positions I–VI) per set, Libero tracking, point-by-point running score, sanction cards, set duration timestamps, and Match No. in Match Summary.
-- [ ] **UI Localization Dictionary (`i18n`):** Pluggable locale pack (`id-ID` default + `en-US` toggle) for international tournaments.
-- [ ] **OBS Browser Source Overlay (`/obs/:matchId`):** Transparent-background lower-third scorebug URL for live YouTube / Twitch match streams.
-- [ ] **Outbound Webhooks:** Signed JSON webhooks on `match_started`, `set_confirmed`, and `match_finished` for Discord, Telegram, or WhatsApp bots.
-- [ ] **Automated SQLite Snapshot Backup:** Scheduled hot backup (`VACUUM INTO`) to S3-compatible storage.
+### `v0.3.1` — Analytics & Live Venue Enhancements
+- [x] **FIVB Official Scoresheet (Form O-2 & Line-Up Sheet):** Optional court-table O-2 PDF export with player roster & jersey numbers, starting rotations (Positions I–VI) per set, Libero tracking, point-by-point running score, sanction cards, set duration timestamps, and Match No. in Match Summary.
+- [x] **UI Localization Dictionary (`i18n`):** Pluggable locale pack (`id-ID` default + `en-US` toggle) for international tournaments.
+- [x] **OBS Browser Source Overlay (`/obs?overlay=...&token=...`) & Remote Controller (`/back-office/obs`):** Transparent-background OBS Browser Source protected by per-profile access tokens, 5 broadcast layout variations (`scorebug_corner`, `lower_third`, `match_intro`, `timeout_break`, `winner_card`), and real-time SSE controller.
+- [x] **Outbound Webhooks:** Signed JSON webhooks (`HMAC-SHA256` + anti-SSRF guard) on `match_started`, `set_confirmed`, and `match_finished` for Discord, Telegram, or generic endpoints.
+- [x] **Automated SQLite Snapshot Backup:** Scheduled & manual hot backup (`VACUUM INTO`) to S3-compatible storage.
 
 ### `v1.0.0` — Federation & Multi-Event Scale
 - [ ] **Multi-Season Archive Mode:** Read-only historical tournament archive per year/edition (`2026`, `2027`, etc.) with persistent team records.

@@ -772,13 +772,13 @@ export function AdminDashboard({
                     />
                     Deuce selisih 2
                   </label>
-                  <label className="flex items-center gap-1.5 font-medium">
+                  <label className="flex items-center gap-1.5 font-medium" title="Jika dinonaktifkan, kedua tim semifinalis yang gugur otomatis menjadi Juara 3 Bersama">
                     <input
                       type="checkbox"
                       checked={hasThirdPlace}
                       onChange={(e) => setHasThirdPlace(e.target.checked)}
                     />
-                    Perebutan Juara 3
+                    Perebutan Juara 3 (Uncheck untuk Juara 3 Bersama)
                   </label>
                 </div>
               </form>
@@ -858,13 +858,13 @@ export function AdminDashboard({
                     />
                     Deuce selisih 2 poin
                   </label>
-                  <label className="flex items-center gap-1.5 font-medium">
+                  <label className="flex items-center gap-1.5 font-medium" title="Jika dinonaktifkan, kedua tim semifinalis yang gugur otomatis menjadi Juara 3 Bersama">
                     <input
                       type="checkbox"
                       checked={editHasThirdPlace}
                       onChange={(e) => setEditHasThirdPlace(e.target.checked)}
                     />
-                    Perebutan Juara 3
+                    Perebutan Juara 3 (Uncheck untuk Juara 3 Bersama)
                   </label>
                   <button
                     type="button"

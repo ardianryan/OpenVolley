@@ -5,9 +5,11 @@ export const PERMISSION_KEYS = [
   'tournaments',
   'operator',
   'tv_screens',
+  'obs_overlays',
   'documents',
   'media',
   'branding',
+  'integrations',
   'users',
 ] as const;
 
@@ -65,6 +67,13 @@ export const PERMISSION_CATALOG: PermissionMeta[] = [
     group: 'Arena & Layar TV',
   },
   {
+    key: 'obs_overlays',
+    label: 'OBS Broadcast & Remote',
+    shortLabel: 'OBS',
+    description: 'Kelola link OBS Browser Source bertoken, variasi overlay & kontrol siaran.',
+    group: 'Arena & Layar TV',
+  },
+  {
     key: 'documents',
     label: 'Dokumen Resmi',
     shortLabel: 'Dokumen',
@@ -83,6 +92,13 @@ export const PERMISSION_CATALOG: PermissionMeta[] = [
     label: 'Branding & Logo',
     shortLabel: 'Brand',
     description: 'Ubah logo acara, sponsor, PIN TV, akses TV publik & SEO.',
+    group: 'Sistem',
+  },
+  {
+    key: 'integrations',
+    label: 'Webhooks & Backup S3',
+    shortLabel: 'Integrasi',
+    description: 'Kelola webhook event real-time & snapshot backup SQLite ke S3.',
     group: 'Sistem',
   },
   {
@@ -119,6 +135,7 @@ export const DEFAULT_SYSTEM_ROLES: Array<{
       'tournaments',
       'operator',
       'tv_screens',
+      'obs_overlays',
       'documents',
     ],
     isSystem: true,
@@ -127,7 +144,7 @@ export const DEFAULT_SYSTEM_ROLES: Array<{
     slug: 'media',
     name: 'Tim Media & Publikasi',
     description: 'Media Studio broadcast grafik, video & galeri momen.',
-    permissions: ['media'],
+    permissions: ['media', 'obs_overlays'],
     isSystem: true,
   },
 ];
