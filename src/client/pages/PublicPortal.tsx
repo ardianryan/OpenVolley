@@ -793,8 +793,12 @@ export function PublicPortal() {
           </div>
         </div>
 
-        {/* Category Pills + Main Nav Tabs */}
-        <div className="mx-auto flex max-w-7xl flex-col gap-2 border-t border-slate-100 px-4 py-2 dark:border-slate-800/70 sm:flex-row sm:items-center sm:justify-between">
+        {/* Category Pills + Main Nav Tabs (Main tabs move to fixed bottom bar on mobile) */}
+        <div
+          className={`mx-auto max-w-7xl flex-col gap-2 border-t border-slate-100 px-4 py-2 dark:border-slate-800/70 sm:flex sm:flex-row sm:items-center sm:justify-between ${
+            tournaments.length > 1 ? 'flex' : 'hidden'
+          }`}
+        >
           {/* Dynamic Categories */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:pb-0">
             {tournaments.map((t) => (
@@ -802,7 +806,7 @@ export function PublicPortal() {
                 key={t.id}
                 type="button"
                 onClick={() => setSelectedTournamentId(t.id)}
-                className={`min-h-11 shrink-0 rounded-full px-3.5 py-2 text-xs font-bold transition sm:min-h-8 sm:py-1 ${
+                className={`min-h-10 shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition sm:min-h-8 sm:py-1 ${
                   t.id === activeTournament?.id
                     ? 'bg-amber-500 text-slate-950 shadow-sm shadow-amber-500/30'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
@@ -813,12 +817,12 @@ export function PublicPortal() {
             ))}
           </div>
 
-          {/* Portal Section Tabs */}
-          <div className="grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-900 sm:flex">
+          {/* Desktop Portal Section Tabs */}
+          <div className="hidden gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-900 sm:flex">
             <button
               type="button"
               onClick={() => setActiveTab('live')}
-              className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-bold transition sm:min-h-9 sm:px-3 sm:py-1.5 ${
+              className={`inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
                 activeTab === 'live'
                   ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-amber-300'
                   : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
@@ -835,7 +839,7 @@ export function PublicPortal() {
             <button
               type="button"
               onClick={() => setActiveTab('bracket')}
-              className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-bold transition sm:min-h-9 sm:px-3 sm:py-1.5 ${
+              className={`inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
                 activeTab === 'bracket'
                   ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-amber-300'
                   : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
@@ -847,7 +851,7 @@ export function PublicPortal() {
             <button
               type="button"
               onClick={() => setActiveTab('reports')}
-              className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-bold transition sm:min-h-9 sm:px-3 sm:py-1.5 ${
+              className={`inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
                 activeTab === 'reports'
                   ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-amber-300'
                   : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
@@ -1147,7 +1151,73 @@ export function PublicPortal() {
       </main>
 
       {/* Official Organizer & Sponsors Footer */}
-      {data && <PartnersFooter settings={settings} />}
+      {data && <PartnersFooter settings={settings} hasMobileBottomNav />}
+
+      {/* Mobile Fixed Bottom Navigation Bar */}
+      <nav
+        aria-label="Navigasi Utama Mobile"
+        className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/90 bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-4px_20px_-6px_rgba(15,23,42,0.12)] backdrop-blur-md dark:border-slate-800/90 dark:bg-slate-950/95 sm:hidden"
+      >
+        <div className="mx-auto grid max-w-md grid-cols-3">
+          <button
+            type="button"
+            onClick={() => setActiveTab('live')}
+            aria-current={activeTab === 'live' ? 'page' : undefined}
+            className={`relative flex min-h-14 flex-col items-center justify-center gap-1 px-2 py-2 text-[11px] font-bold transition ${
+              activeTab === 'live'
+                ? 'text-amber-600 dark:text-amber-400'
+                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+            }`}
+          >
+            {activeTab === 'live' && (
+              <span className="absolute inset-x-4 top-0 h-0.5 rounded-b-full bg-amber-500" />
+            )}
+            <span className="relative">
+              <Calendar className="h-5 w-5" />
+              {liveMatches.length > 0 && (
+                <span className="absolute -right-2.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[9px] font-extrabold text-white shadow-xs">
+                  {liveMatches.length}
+                </span>
+              )}
+            </span>
+            <span className="truncate">Skor &amp; Jadwal</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('bracket')}
+            aria-current={activeTab === 'bracket' ? 'page' : undefined}
+            className={`relative flex min-h-14 flex-col items-center justify-center gap-1 px-2 py-2 text-[11px] font-bold transition ${
+              activeTab === 'bracket'
+                ? 'text-amber-600 dark:text-amber-400'
+                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+            }`}
+          >
+            {activeTab === 'bracket' && (
+              <span className="absolute inset-x-4 top-0 h-0.5 rounded-b-full bg-amber-500" />
+            )}
+            <GitBranch className="h-5 w-5" />
+            <span className="truncate">Bagan</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('reports')}
+            aria-current={activeTab === 'reports' ? 'page' : undefined}
+            className={`relative flex min-h-14 flex-col items-center justify-center gap-1 px-2 py-2 text-[11px] font-bold transition ${
+              activeTab === 'reports'
+                ? 'text-amber-600 dark:text-amber-400'
+                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+            }`}
+          >
+            {activeTab === 'reports' && (
+              <span className="absolute inset-x-4 top-0 h-0.5 rounded-b-full bg-amber-500" />
+            )}
+            <Camera className="h-5 w-5" />
+            <span className="truncate">Galeri</span>
+          </button>
+        </div>
+      </nav>
 
       {/* Match Center Detail Modal / Bottom Sheet */}
       {detailMatchId &&
