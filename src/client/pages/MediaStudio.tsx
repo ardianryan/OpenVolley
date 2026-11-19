@@ -835,7 +835,14 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     pinchMidY: 0,
   });
   const hiddenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const lastVideoFrameCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewRafRef = useRef<number>(0);
+  const previewPlayingRef = useRef(false);
+  const exportingVideoRef = useRef(false);
+  const showSafeZoneRef = useRef(showSafeZone);
+  previewPlayingRef.current = previewPlaying;
+  exportingVideoRef.current = exportingVideo;
+  showSafeZoneRef.current = showSafeZone;
   const vb3dRef = useRef<OffscreenVolleyballController | null>(null);
   const audioBufferCacheRef = useRef<Map<string, AudioBuffer>>(new Map());
   const miniAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -958,7 +965,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   const recommendedTracks = getTracksForTemplate(template);
   const recommendedIdSet = new Set(recommendedTracks.map((t) => t.id));
   const otherTracks = AUDIO_TRACKS.filter((t) => !recommendedIdSet.has(t.id));
-  const teamMap = new Map<number, Team>(data.teams.map((t) => [t.id, t]));
+  const teamMap = useMemo(
+    () => new Map<number, Team>(data.teams.map((t) => [t.id, t])),
+    [data.teams]
+  );
   const teamA = activeMatch?.teamAId ? teamMap.get(activeMatch.teamAId) : null;
   const teamB = activeMatch?.teamBId ? teamMap.get(activeMatch.teamBId) : null;
   const tournament =
@@ -1266,7 +1276,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
       // Helper: Draw any Image or Video element center-cropped ("object-cover") inside a clipped rect
       const drawMediaCoverRect = (
-        source: HTMLImageElement | HTMLVideoElement,
+        source: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement,
         rx: number,
         ry: number,
         rw: number,
@@ -1374,8 +1384,39 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         if (mediaMode === 'video') {
           const vidEl = hiddenVideoRef.current;
           const canDrawLiveVideo =
-            animSlide && vidEl && vidEl.readyState >= 2 && vidEl.videoWidth > 0;
-          const vidSource = canDrawLiveVideo ? vidEl : videoCoverImg;
+            animSlide &&
+            vidEl &&
+            vidEl.readyState >= 2 &&
+            !vidEl.seeking &&
+            vidEl.videoWidth > 0 &&
+            vidEl.videoHeight > 0;
+          if (canDrawLiveVideo) {
+            let cacheCanvas = lastVideoFrameCanvasRef.current;
+            if (!cacheCanvas) {
+              cacheCanvas = document.createElement('canvas');
+              lastVideoFrameCanvasRef.current = cacheCanvas;
+            }
+            if (
+              cacheCanvas.width !== vidEl.videoWidth ||
+              cacheCanvas.height !== vidEl.videoHeight
+            ) {
+              cacheCanvas.width = vidEl.videoWidth;
+              cacheCanvas.height = vidEl.videoHeight;
+            }
+            const cacheCtx = cacheCanvas.getContext('2d');
+            if (cacheCtx) {
+              cacheCtx.drawImage(vidEl, 0, 0, vidEl.videoWidth, vidEl.videoHeight);
+            }
+          }
+          const cachedVideoFrame =
+            animSlide &&
+            lastVideoFrameCanvasRef.current &&
+            lastVideoFrameCanvasRef.current.width > 0
+              ? lastVideoFrameCanvasRef.current
+              : null;
+          const vidSource = canDrawLiveVideo
+            ? vidEl
+            : cachedVideoFrame ?? videoCoverImg;
 
           if (vidSource) {
             const settle = animSlide
@@ -4509,6 +4550,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     ]
   );
 
+  const renderFrameRef = useRef(renderFrame);
+  renderFrameRef.current = renderFrame;
+
   const photoUrlsKey = photoItems.map((p) => p.url).join('|');
 
   // Preload all visual assets (1-3 Photos, SVC, AVERSA, SMANSAGE, Burst Rays, Arcs, Sponsors, Team & Podium Logos)
@@ -4573,7 +4617,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           img: sponsorImgs[idx] ?? null,
         })),
       };
-      renderFrame(0, false, showSafeZone);
+      if (!previewPlayingRef.current && !exportingVideoRef.current) {
+        renderFrameRef.current(0, false, showSafeZoneRef.current);
+      }
     })();
     return () => {
       cancelled = true;
@@ -4587,8 +4633,6 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     resolvedPodium2?.logoUrl,
     resolvedPodium3?.logoUrl,
     sponsorList.length,
-    renderFrame,
-    showSafeZone,
   ]);
 
   const handleAddPhotos = async (fileList: FileList | null) => {
@@ -4998,13 +5042,15 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
       if (!active) {
         if (!v.paused) v.pause();
-        v.currentTime = videoClip.trimStart;
+        if (!v.seeking && Math.abs(v.currentTime - videoClip.trimStart) > 0.05) {
+          v.currentTime = videoClip.trimStart;
+        }
         return;
       }
 
       if (elapsedSec < 7.48) {
         if (!v.paused) v.pause();
-        if (Math.abs(v.currentTime - videoClip.trimStart) > 0.15) {
+        if (!v.seeking && Math.abs(v.currentTime - videoClip.trimStart) > 0.15) {
           v.currentTime = videoClip.trimStart;
         }
         return;
@@ -5020,7 +5066,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       if (v.paused && targetSec < videoClip.trimEnd - 0.05) {
         v.play().catch(() => {});
       }
-      if (Math.abs(v.currentTime - targetSec) > 0.32) {
+      if (!v.seeking && Math.abs(v.currentTime - targetSec) > 0.65) {
         v.currentTime = targetSec;
       }
     },
@@ -5336,11 +5382,15 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
   const handlePlayPreview = async () => {
     if (previewPlaying || exportingVideo) return;
+    previewPlayingRef.current = true;
     setPreviewPlaying(true);
+    if (lastVideoFrameCanvasRef.current) {
+      lastVideoFrameCanvasRef.current.width = 0;
+    }
     await unlockHiddenVideoGesture();
     syncHiddenVideoAt(0, false);
     warmUpGpuTextures();
-    renderFrame(0, true, showSafeZone);
+    renderFrameRef.current(0, true, showSafeZoneRef.current);
     const totalDur = timeline.totalDurationSec;
     const session = await startBroadcastAudioSession('preview');
     const start = performance.now();
@@ -5348,13 +5398,14 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       const elapsedSec = (now - start) / 1000;
       if (elapsedSec <= totalDur) {
         syncHiddenVideoAt(elapsedSec, true);
-        renderFrame(elapsedSec, true, showSafeZone);
+        renderFrameRef.current(elapsedSec, true, showSafeZoneRef.current);
         previewRafRef.current = requestAnimationFrame(tick);
       } else {
         syncHiddenVideoAt(0, false);
         session.stop();
+        previewPlayingRef.current = false;
         setPreviewPlaying(false);
-        renderFrame(0, false, showSafeZone);
+        renderFrameRef.current(0, false, showSafeZoneRef.current);
       }
     };
     previewRafRef.current = requestAnimationFrame(tick);
@@ -5472,14 +5523,19 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   const handleExportVideo = async () => {
     const canvas = canvasRef.current;
     if (!canvas || exportingVideo) return;
+    exportingVideoRef.current = true;
+    previewPlayingRef.current = false;
     setExportingVideo(true);
     setPreviewPlaying(false);
     cancelAnimationFrame(previewRafRef.current);
+    if (lastVideoFrameCanvasRef.current) {
+      lastVideoFrameCanvasRef.current.width = 0;
+    }
     setVideoProgress(0);
     await unlockHiddenVideoGesture();
     syncHiddenVideoAt(0, false);
     warmUpGpuTextures();
-    renderFrame(0, true, false);
+    renderFrameRef.current(0, true, false);
 
     try {
       const totalDur = timeline.totalDurationSec;
@@ -5522,32 +5578,39 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           return url;
         });
         setExportedVideoExt(ext);
+        exportingVideoRef.current = false;
         setExportingVideo(false);
         setVideoProgress(0);
+        renderFrameRef.current(0, false, showSafeZoneRef.current);
         setStatusMsg(`Video broadcast ${totalDur} detik (.${ext}) siap diputar!`);
         setTimeout(() => setStatusMsg(null), 4000);
       };
 
       recorder.start();
 
+      let lastPct = -1;
       const animate = (now: number) => {
         const elapsed = now - startTime;
         const progress = Math.min(1, elapsed / durationMs);
         const curSec = progress * totalDur;
         syncHiddenVideoAt(curSec, true);
-        renderFrame(curSec, true, false);
-        setVideoProgress(Math.round(progress * 100));
+        renderFrameRef.current(curSec, true, false);
+        const nextPct = Math.round(progress * 100);
+        if (nextPct !== lastPct) {
+          lastPct = nextPct;
+          setVideoProgress(nextPct);
+        }
         if (progress < 1) {
           requestAnimationFrame(animate);
         } else {
           recorder.stop();
-          renderFrame(0, false, showSafeZone);
         }
       };
 
       requestAnimationFrame(animate);
     } catch (err) {
       syncHiddenVideoAt(0, false);
+      exportingVideoRef.current = false;
       setExportingVideo(false);
       setStatusMsg(`Gagal export video: ${(err as Error).message}`);
     }
