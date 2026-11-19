@@ -1,5 +1,5 @@
 export type AudioCategory = 'live' | 'final' | 'upcoming' | 'highlight' | 'ceremony' | 'ambient';
-export type TemplateAudioTarget = 'live' | 'final' | 'upcoming' | 'highlight' | 'champion';
+export type TemplateAudioTarget = 'live' | 'final' | 'upcoming' | 'highlight' | 'champion' | 'schedule_day';
 
 export interface AudioTrackMeta {
   id: string;
@@ -176,6 +176,11 @@ export function getTracksForTemplate(template: TemplateAudioTarget): AudioTrackM
   if (template === 'champion') {
     return AUDIO_TRACKS.filter(
       (t) => t.categories.includes('ceremony') || (t.categories.includes('final') && t.highStakes)
+    );
+  }
+  if (template === 'schedule_day') {
+    return AUDIO_TRACKS.filter(
+      (t) => t.categories.includes('upcoming') || t.categories.includes('ambient')
     );
   }
   return AUDIO_TRACKS.filter((t) => t.categories.includes(template));

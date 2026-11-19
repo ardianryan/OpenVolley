@@ -2,7 +2,13 @@ import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { db, initDatabase } from '../db';
 import { matches, teams, tournaments } from '../db/schema';
-import { advanceWinner, buildSeedOrder, generateBracket, initializeDrawBracket } from './bracket';
+import {
+  advanceWinner,
+  buildSeedOrder,
+  generateBracket,
+  initializeDrawBracket,
+  retractAdvancement,
+} from './bracket';
 
 describe('Bracket Engine', () => {
   let tournamentId: number;
@@ -116,6 +122,24 @@ describe('Bracket Engine', () => {
     expect(finalMatch.teamBId).toBe(sf2.teamBId);
     expect(thirdMatch.teamAId).toBe(sf1.teamBId);
     expect(thirdMatch.teamBId).toBe(sf2.teamAId);
+
+    // Retract SF1: SF1 winner and loser should be cleared from Final & 3rd Place
+    await retractAdvancement(sf1.id);
+
+    const allAfterRetract = await db
+      .select()
+      .from(matches)
+      .where(eq(matches.tournamentId, tournamentId));
+
+    const finalRetracted = allAfterRetract.find((m) => m.bracketType === 'main' && m.round === 2)!;
+    const thirdRetracted = allAfterRetract.find((m) => m.bracketType === 'third_place')!;
+
+    // SF1 slots are now null/cleared
+    expect(finalRetracted.teamAId).toBeNull();
+    expect(thirdRetracted.teamAId).toBeNull();
+    // SF2 slots remain untouched!
+    expect(finalRetracted.teamBId).toBe(sf2.teamBId);
+    expect(thirdRetracted.teamBId).toBe(sf2.teamAId);
   });
 
   test('initializeDrawBracket creates 16 Undian slots and 16 symmetric matches (8 R1 + 4 QF + 2 SF + Final + 3rd)', async () => {

@@ -620,3 +620,101 @@ export async function advanceWinner(matchId: number) {
     await db.update(matches).set(loserField).where(eq(matches.id, match.loserNextMatchId));
   }
 }
+
+/**
+ * Retracts/revokes advancement when a match is reset, undone, or modified.
+ * Clears the corresponding team slot in downstream matches (nextMatchId / loserNextMatchId),
+ * cascading recursively if downstream matches were also progressed.
+ */
+export async function retractAdvancement(matchId: number) {
+  const match = await db.query.matches.findFirst({
+    where: eq(matches.id, matchId),
+  });
+  if (!match) return;
+
+  // 1. Retract Winner Advancement from nextMatch
+  if (match.nextMatchId) {
+    const nextMatch = await db.query.matches.findFirst({
+      where: eq(matches.id, match.nextMatchId),
+    });
+
+    if (nextMatch) {
+      // Cascade: If the downstream match was also progressed, retract it recursively first
+      await retractAdvancement(nextMatch.id);
+
+      // Clean sets in downstream match if any were played
+      await db.delete(matchSets).where(eq(matchSets.matchId, nextMatch.id));
+
+      const clearSlot: Partial<typeof matches.$inferInsert> = {};
+      if (match.nextMatchSlot === 'A') {
+        clearSlot.teamAId = null;
+      } else if (match.nextMatchSlot === 'B') {
+        clearSlot.teamBId = null;
+      } else {
+        if (match.winnerId && nextMatch.teamAId === match.winnerId) {
+          clearSlot.teamAId = null;
+        } else if (match.winnerId && nextMatch.teamBId === match.winnerId) {
+          clearSlot.teamBId = null;
+        }
+      }
+
+      await db
+        .update(matches)
+        .set({
+          ...clearSlot,
+          status: 'scheduled',
+          setsWonA: 0,
+          setsWonB: 0,
+          currentSet: 1,
+          winnerId: null,
+          servingTeam: null,
+        })
+        .where(eq(matches.id, nextMatch.id));
+    }
+  }
+
+  // 2. Retract Loser Advancement from loserNextMatch (e.g. 3rd place match)
+  if (match.loserNextMatchId) {
+    const loserMatch = await db.query.matches.findFirst({
+      where: eq(matches.id, match.loserNextMatchId),
+    });
+
+    if (loserMatch) {
+      await retractAdvancement(loserMatch.id);
+      await db.delete(matchSets).where(eq(matchSets.matchId, loserMatch.id));
+
+      const clearSlot: Partial<typeof matches.$inferInsert> = {};
+      if (match.loserNextMatchSlot === 'A') {
+        clearSlot.teamAId = null;
+      } else if (match.loserNextMatchSlot === 'B') {
+        clearSlot.teamBId = null;
+      } else {
+        const loserId =
+          match.winnerId && match.teamAId && match.teamBId
+            ? match.winnerId === match.teamAId
+              ? match.teamBId
+              : match.teamAId
+            : null;
+        if (loserId && loserMatch.teamAId === loserId) {
+          clearSlot.teamAId = null;
+        } else if (loserId && loserMatch.teamBId === loserId) {
+          clearSlot.teamBId = null;
+        }
+      }
+
+      await db
+        .update(matches)
+        .set({
+          ...clearSlot,
+          status: 'scheduled',
+          setsWonA: 0,
+          setsWonB: 0,
+          currentSet: 1,
+          winnerId: null,
+          servingTeam: null,
+        })
+        .where(eq(matches.id, loserMatch.id));
+    }
+  }
+}
+

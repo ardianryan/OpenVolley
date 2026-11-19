@@ -4,6 +4,7 @@ import {
   clampTrimWindow,
   computeMediaTimeline,
   computePhotoSlideState,
+  shiftTrimWindow,
 } from './media-timeline';
 
 describe('Media Studio Adaptive Timeline & Video Trimmer Math', () => {
@@ -73,5 +74,19 @@ describe('Media Studio Adaptive Timeline & Video Trimmer Math', () => {
     const last = computePhotoSlideState(3, 8.5, 9.6);
     expect(last.primaryIdx).toBe(2);
     expect(last.nextIdx).toBeNull();
+  });
+
+  test('shiftTrimWindow keeps span constant and clamps to [0, durationSec]', () => {
+    const shifted = shiftTrimWindow(30, 5, 15, 4.5);
+    expect(shifted.trimStart).toBe(9.5);
+    expect(shifted.trimEnd).toBe(19.5);
+
+    const clampedEnd = shiftTrimWindow(30, 15, 25, 12);
+    expect(clampedEnd.trimStart).toBe(20);
+    expect(clampedEnd.trimEnd).toBe(30);
+
+    const clampedStart = shiftTrimWindow(30, 4, 14, -10);
+    expect(clampedStart.trimStart).toBe(0);
+    expect(clampedStart.trimEnd).toBe(10);
   });
 });

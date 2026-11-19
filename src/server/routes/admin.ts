@@ -1634,6 +1634,14 @@ adminRoutes.post('/matches/:id/score', async (c) => {
       body.action === 'confirm_match_finish'
     ) {
       await broadcastEvent('bracket_updated', { tournamentId: result?.tournamentId });
+      if (result?.nextMatchId) {
+        const downstream = await getMatchWithSets(result.nextMatchId);
+        if (downstream) await broadcastEvent('match_updated', downstream);
+      }
+      if (result?.loserNextMatchId) {
+        const loserDownstream = await getMatchWithSets(result.loserNextMatchId);
+        if (loserDownstream) await broadcastEvent('match_updated', loserDownstream);
+      }
     }
     return c.json({ match: result });
   } catch (err) {

@@ -1,11 +1,14 @@
 import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { eq } from 'drizzle-orm';
 import { db, initDatabase } from '../db';
 import { matches, teams, tournaments } from '../db/schema';
 import {
   addExtraSet,
   addPoint,
   confirmCurrentSet,
+  finishMatchManually,
   getMatchWithSets,
+  resetMatchScore,
   startMatch,
   undoLastAction,
 } from './scoring';
@@ -142,5 +145,72 @@ describe('Scoring Engine', () => {
     }
     let state = await addPoint(matchId, 'A', 1);
     expect((state as { pendingDecision?: { setNumber: number } }).pendingDecision?.setNumber).toBe(1);
+  });
+
+  test('resetMatchScore resets match and retracts winner from downstream bracket (e.g. QF)', async () => {
+    // Create downstream QF match
+    const currentM = await getMatchWithSets(matchId);
+    const [qfMatch] = await db
+      .insert(matches)
+      .values({
+        tournamentId: currentM!.tournamentId,
+        round: 2,
+        matchIndex: 0,
+        bracketType: 'main',
+        status: 'scheduled',
+      })
+      .returning();
+
+    // Link current match to QF slot A
+    await db
+      .update(matches)
+      .set({ nextMatchId: qfMatch.id, nextMatchSlot: 'A' })
+      .where(eq(matches.id, matchId));
+
+    // Finish match manually with Team A as winner
+    await finishMatchManually(matchId, 'A');
+
+    const qfAfterWin = await getMatchWithSets(qfMatch.id);
+    expect(qfAfterWin?.teamAId).toBe(teamAId);
+
+    // Now reset the match
+    const resetMatch = await resetMatchScore(matchId);
+    expect(resetMatch?.status).toBe('scheduled');
+    expect(resetMatch?.setsWonA).toBe(0);
+    expect(resetMatch?.winnerId).toBeNull();
+
+    // Downstream QF match slot A must be revoked to null!
+    const qfAfterReset = await getMatchWithSets(qfMatch.id);
+    expect(qfAfterReset?.teamAId).toBeNull();
+  });
+
+  test('undoing match finish retracts winner from downstream bracket', async () => {
+    const currentM = await getMatchWithSets(matchId);
+    const [qfMatch] = await db
+      .insert(matches)
+      .values({
+        tournamentId: currentM!.tournamentId,
+        round: 2,
+        matchIndex: 0,
+        bracketType: 'main',
+        status: 'scheduled',
+      })
+      .returning();
+
+    await db
+      .update(matches)
+      .set({ nextMatchId: qfMatch.id, nextMatchSlot: 'B' })
+      .where(eq(matches.id, matchId));
+
+    await finishMatchManually(matchId, 'B');
+
+    let qf = await getMatchWithSets(qfMatch.id);
+    expect(qf?.teamBId).toBe(teamBId);
+
+    // Undo finish
+    await undoLastAction(matchId);
+
+    qf = await getMatchWithSets(qfMatch.id);
+    expect(qf?.teamBId).toBeNull();
   });
 });

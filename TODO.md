@@ -79,14 +79,26 @@ This document tracks completed milestones in **`v0.1.0` – `v0.2.1`** alongside
 
 ---
 
+## Completed in `v0.3.1` (Visual Media Studio Trimmer & Match Reset Retraction)
+- [x] **WhatsApp/Instagram-Style Video Trimmer Sequence Bar (`VideoTrimmerControl.tsx`):**
+  - Interactive sequence scrubber with frame preview, millisecond-precision drag handles, clamp constraints (2s–15s), and aspect-ratio indicators.
+- [x] **Direct Gesture Media Cropping & Framing (`MediaCropBox.tsx`, `media-framing.ts`):**
+  - 1-finger drag, pinch-to-zoom, non-passive mouse wheel/trackpad zoom, double-click reset, 3x3 alignment grid, and compact zoom pill bar replacing range sliders.
+- [x] **Media Wizard Polish & OBS Menu Relocation:**
+  - Integrated OBS Broadcast controls under the Media section.
+  - Replaced text clutter with interactive tooltips and collapsible accordion instructions.
+- [x] **Match Reset & Bracket Retraction Engine (`bracket.ts`, `scoring.ts`, `LiveOperator.tsx`):**
+  - Automated revocation (`retractAdvancement`) of downstream qualified teams from next rounds (e.g., Quarter Final) upon match reset or undo.
+  - Cascade retraction preventing orphaned or ambiguous bracket entries, with instant SSE broadcasts and explicit "Reset Permainan" controls.
+
+---
+
 ## Upcoming Backlog
 
-### `v0.3.1` — Analytics & Live Venue Enhancements
-- [x] **FIVB Official Scoresheet (Form O-2 & Line-Up Sheet):** Optional court-table O-2 PDF export with player roster & jersey numbers, starting rotations (Positions I–VI) per set, Libero tracking, point-by-point running score, sanction cards, set duration timestamps, and Match No. in Match Summary.
-- [x] **UI Localization Dictionary (`i18n`):** Pluggable locale pack (`id-ID` default + `en-US` toggle) for international tournaments.
-- [x] **OBS Browser Source Overlay (`/obs?overlay=...&token=...`) & Remote Controller (`/back-office/obs`):** Transparent-background OBS Browser Source protected by per-profile access tokens, 5 broadcast layout variations (`scorebug_corner`, `lower_third`, `match_intro`, `timeout_break`, `winner_card`), and real-time SSE controller.
-- [x] **Outbound Webhooks:** Signed JSON webhooks (`HMAC-SHA256` + anti-SSRF guard) on `match_started`, `set_confirmed`, and `match_finished` for Discord, Telegram, or generic endpoints.
-- [x] **Automated SQLite Snapshot Backup:** Scheduled & manual hot backup (`VACUUM INTO`) to S3-compatible storage.
+### `v0.4.0` — Venue Logistics & Advanced Media
+- [ ] **Multi-Camera OBS Switcher Integration:** Webhook triggers to switch OBS scenes automatically upon rally end / set point / winner declaration.
+- [ ] **Player Photo Roster Cards:** Dynamic player photo cutout overlay support in Media Studio.
+- [ ] **Live Spectator Reaction Polling:** Low-latency emoji reaction counter on public live score portal.
 
 ### `v1.0.0` — Federation & Multi-Event Scale
 - [ ] **Multi-Season Archive Mode:** Read-only historical tournament archive per year/edition (`2026`, `2027`, etc.) with persistent team records.

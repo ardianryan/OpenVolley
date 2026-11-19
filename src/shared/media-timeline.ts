@@ -112,6 +112,27 @@ export function clampTrimWindow(
   };
 }
 
+/**
+ * Shifts the active trim window [trimStart, trimEnd] together by deltaSec while preserving span and clamping to [0, durationSec].
+ */
+export function shiftTrimWindow(
+  durationSec: number,
+  currentStart: number,
+  currentEnd: number,
+  deltaSec: number
+): { trimStart: number; trimEnd: number } {
+  const safeDur = Math.max(0.5, Number.isFinite(durationSec) ? durationSec : 10);
+  const minSpan = Math.min(MIN_VIDEO_CLIP_SEC, safeDur);
+  const maxSpan = Math.min(MAX_VIDEO_CLIP_SEC, safeDur);
+  const span = clamp(currentEnd - currentStart, minSpan, maxSpan);
+  const nextStart = clamp(currentStart + deltaSec, 0, Math.max(0, safeDur - span));
+
+  return {
+    trimStart: Number(nextStart.toFixed(1)),
+    trimEnd: Number((nextStart + span).toFixed(1)),
+  };
+}
+
 export interface PhotoSlideState {
   primaryIdx: number;
   nextIdx: number | null;

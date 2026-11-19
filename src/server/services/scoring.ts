@@ -1,7 +1,7 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { matchSets, matches, tournaments } from '../db/schema';
-import { advanceWinner } from './bracket';
+import { advanceWinner, retractAdvancement } from './bracket';
 import { dispatchWebhookEvent } from './webhook';
 
 interface ScoreSnapshot {
@@ -375,7 +375,14 @@ export async function undoLastAction(matchId: number) {
     throw new Error('Tidak ada aksi untuk di-undo');
   }
 
+  const currentMatch = await db.query.matches.findFirst({ where: eq(matches.id, matchId) });
   const snapshot = stack.pop()!;
+
+  // If match had progressed/finished with a winner that changed after undo, retract downstream
+  if (currentMatch?.winnerId && currentMatch.winnerId !== snapshot.winnerId) {
+    await retractAdvancement(matchId);
+  }
+
   await db
     .update(matches)
     .set({
@@ -420,6 +427,11 @@ export async function finishMatchManually(matchId: number, winnerSide: 'A' | 'B'
   if (!winnerId) throw new Error('Tim pemenang tidak valid');
 
   await pushUndoSnapshot(matchId);
+
+  // If winner changed from previous winner, retract old advancement first
+  if (match.winnerId && match.winnerId !== winnerId) {
+    await retractAdvancement(matchId);
+  }
 
   // Close any active unfinished set with points so the final set tally is always complete
   const existingSets = await db
@@ -484,19 +496,7 @@ export async function addExtraSet(matchId: number) {
       ? Math.max(...existingSets.map((s) => s.setNumber)) + 1
       : match.currentSet + 1;
 
-  if (match.winnerId && match.nextMatchId && match.nextMatchSlot) {
-    const clearField =
-      match.nextMatchSlot === 'A' ? { teamAId: null } : { teamBId: null };
-    await db.update(matches).set(clearField).where(eq(matches.id, match.nextMatchId));
-  }
-  if (match.winnerId && match.loserNextMatchId && match.loserNextMatchSlot) {
-    const clearLoser =
-      match.loserNextMatchSlot === 'A' ? { teamAId: null } : { teamBId: null };
-    await db
-      .update(matches)
-      .set(clearLoser)
-      .where(eq(matches.id, match.loserNextMatchId));
-  }
+  await retractAdvancement(matchId);
 
   await db
     .update(matches)
@@ -525,6 +525,8 @@ export async function addExtraSet(matchId: number) {
 export async function resetMatchScore(matchId: number) {
   const match = await db.query.matches.findFirst({ where: eq(matches.id, matchId) });
   if (!match) throw new Error('Pertandingan tidak ditemukan');
+
+  await retractAdvancement(matchId);
 
   undoStacks.delete(matchId);
   await db.delete(matchSets).where(eq(matchSets.matchId, matchId));

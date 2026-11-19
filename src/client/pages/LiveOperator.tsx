@@ -665,10 +665,11 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
                 type="button"
                 disabled={busy}
                 onClick={() => setConfirmModal({ type: 'reset' })}
+                title="Reset skor & status permainan (menarik kembali kelulusan di bagan jika sudah lolos)"
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 transition hover:border-red-500/40 hover:text-red-500 dark:border-slate-700 dark:text-slate-400"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
-                Reset
+                Reset Permainan
               </button>
             </div>
           </div>
@@ -1003,17 +1004,28 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
           ) : (
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4 dark:border-slate-800">
               <p className="text-xs font-semibold text-amber-600 dark:text-amber-400">
-                Pertandingan selesai ({activeMatch.setsWonA} - {activeMatch.setsWonB}). Ingin menambah 1 set lagi?
+                Pertandingan selesai ({activeMatch.setsWonA} - {activeMatch.setsWonB}). Laga telah diputuskan.
               </p>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => runAction('extra_set')}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2 text-xs font-bold text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                +1 Set Tambahan
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setConfirmModal({ type: 'reset' })}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-red-500/40 bg-red-500/10 px-3.5 py-2 text-xs font-bold text-red-600 hover:bg-red-500/20 dark:text-red-400"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Reset Permainan
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => runAction('extra_set')}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2 text-xs font-bold text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  +1 Set Tambahan
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -1099,12 +1111,12 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
             <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-300 dark:bg-slate-700 sm:hidden" />
             <h3 className="text-base font-bold text-slate-900 dark:text-white">
               {confirmModal.type === 'reset'
-                ? 'Reset Skor Pertandingan?'
+                ? 'Reset Skor & Status Permainan?'
                 : 'Selesaikan Pertandingan?'}
             </h3>
             <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
               {confirmModal.type === 'reset'
-                ? 'Semua poin dan set pada pertandingan ini akan dikembalikan ke 0.'
+                ? 'Semua poin, set, dan status pertandingan ini akan dikembalikan ke kondisi awal (belum dimulai). Jika tim telah lolos ke babak berikutnya (seperti Quarter Final), kelulusannya akan otomatis ditarik kembali dari bagan.'
                 : `Tim ${
                     confirmModal.winnerSide === 'A' ? teamA?.name : teamB?.name
                   } akan dinyatakan menang dan otomatis lolos ke babak berikutnya.`}

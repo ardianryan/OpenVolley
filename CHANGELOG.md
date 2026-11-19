@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.1] - 2026-11-19
+
+### Added
+- **Visual Trimmer Sequence & Filmstrip Scrubber (`VideoTrimmerControl.tsx`, `media-timeline.ts`)**:
+  - Replaced numerical duration-based trimming with a WhatsApp / video-editor style interactive scrubber bar.
+  - Interactive drag handles with millisecond precision, real-time seek preview, clamped trim window (2s–15s), and duration / aspect-ratio badges.
+- **Gesture Direct Crop & Pinch-to-Zoom (`MediaCropBox.tsx`, `media-framing.ts`)**:
+  - Implemented intuitive gesture-based media framing: 1-finger / mouse drag, 2-finger pinch-to-zoom, non-passive mouse wheel / trackpad zoom, and double-click reset for photo covers and collage slots.
+  - Rule-of-thirds 3x3 alignment grid and compact zoom pill bar (`-`, zoom %, `+`, reset, done) replacing unintuitive range sliders.
+- **Media Studio Wizard Simplification & OBS Relocation**:
+  - Cleaned up wizard UI: replaced dense text blocks with subtle tooltips and an optional collapsible accordion guide.
+  - Relocated OBS Broadcast Overlay management directly into the Media section.
+
+### Fixed
+- **Match Reset & Bracket Advancement Retraction (`bracket.ts`, `scoring.ts`, `LiveOperator.tsx`)**:
+  - Fixed an issue where resetting a completed match left the winning team in downstream bracket matches (e.g., SMPN 6 remaining in Quarter Final after R16 match reset).
+  - Implemented `retractAdvancement(matchId)` which cleanly clears qualified team slots in downstream matches (`nextMatchId` and `loserNextMatchId`) and cascades recursively.
+  - Integrated retraction into `resetMatchScore`, `undoLastAction`, `finishMatchManually`, and `addExtraSet`.
+  - Added explicit **"Reset Permainan"** controls in Live Operator with informative confirmation dialog and real-time SSE broadcasts.
+
+---
+
 ## [0.3.0] - 2026-11-19
 
 ### Added

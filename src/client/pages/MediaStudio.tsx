@@ -1,17 +1,26 @@
 import {
   ArrowLeft,
   ArrowRight,
+  CalendarDays,
   Camera,
+  Check,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
+  Copy,
+  Crop,
   Crown,
   Download,
   Film,
+  HelpCircle,
   ImagePlus,
   LayoutGrid,
   Medal,
+  Move,
   Music,
+  Palette,
   Play,
+  RotateCcw,
   Send,
   Shuffle,
   Square,
@@ -20,13 +29,24 @@ import {
   Video,
   Volume2,
   VolumeX,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AUDIO_TRACKS,
   getTracksForTemplate,
   pickSmartRandomTrack,
 } from '../../shared/audio-library';
+import {
+  applyPanDelta,
+  applyZoomLevel,
+  computeMaxPanFractions,
+  getCollageSlotRects,
+  hitTestCollageSlot,
+  type MediaFraming,
+} from '../../shared/media-framing';
+import { groupMatchesByScheduleDay } from '../../shared/schedule';
 import {
   STAGE_VISUAL_META,
   detectMatchStageKey,
@@ -44,6 +64,7 @@ import {
 } from '../../shared/media-timeline';
 import { splitTeamRegionName } from '../../shared/team-format';
 import { GalleryMediaCard } from '../components/GalleryMediaCard';
+import { MediaCropBox } from '../components/MediaCropBox';
 import {
   VideoTrimmerControl,
   type VideoClipState,
@@ -70,10 +91,57 @@ interface MediaStudioProps {
 }
 
 type AspectRatio = '9:16' | '4:5' | '16:9' | '1:1';
-type TemplateStyle = 'live' | 'final' | 'upcoming' | 'highlight' | 'champion';
+type TemplateStyle = 'live' | 'final' | 'upcoming' | 'highlight' | 'champion' | 'schedule_day';
+type ColorFilterPreset = 'original' | 'crisp' | 'warm' | 'bw';
 type StageSelection = 'auto' | StagePresetKey;
 type PodiumVariant = 'champion_1' | 'runner_up' | 'third_place' | 'podium_all';
 type StudioStep = 1 | 2 | 3;
+
+const COLOR_FILTER_MAP: Record<ColorFilterPreset, { label: string; css: string }> = {
+  original: { label: 'Original', css: 'none' },
+  crisp: { label: 'Sport Crisp', css: 'contrast(1.14) saturate(1.18) brightness(1.03)' },
+  warm: { label: 'Arena Warm', css: 'contrast(1.06) saturate(1.14) sepia(0.14) brightness(1.04)' },
+  bw: { label: 'Dramatic B&W', css: 'grayscale(1) contrast(1.22) brightness(1.04)' },
+};
+
+function InfoTooltip({
+  text,
+  align = 'center',
+}: {
+  text: string;
+  align?: 'center' | 'right';
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-flex items-center">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onBlur={() => setOpen(false)}
+        aria-label={text}
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-slate-400 transition hover:bg-amber-500/15 hover:text-amber-600 dark:hover:text-amber-300"
+      >
+        <HelpCircle className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          className={`absolute bottom-full z-40 mb-1.5 w-56 rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-2 text-[11px] font-medium normal-case leading-snug tracking-normal text-slate-100 shadow-xl ${
+            align === 'right' ? 'right-0' : 'left-1/2 -translate-x-1/2'
+          }`}
+        >
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
 
 const DIMENSIONS: Record<AspectRatio, { w: number; h: number; label: string }> = {
   '9:16': { w: 1080, h: 1920, label: '9:16 Portrait (Story / Reels)' },
@@ -703,6 +771,15 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   });
   const [ratio, setRatio] = useState<AspectRatio>('9:16');
   const [template, setTemplate] = useState<TemplateStyle>('live');
+  const [colorFilter, setColorFilter] = useState<ColorFilterPreset>('original');
+  const [photoCredit, setPhotoCredit] = useState('');
+  const [selectedScheduleDayIdx, setSelectedScheduleDayIdx] = useState(0);
+  const [activeFramingKey, setActiveFramingKey] = useState<string | null>(null);
+  const [activeCanvasSlot, setActiveCanvasSlot] = useState(0);
+  const [canvasDragging, setCanvasDragging] = useState(false);
+  const [showGuideAccordion, setShowGuideAccordion] = useState(false);
+  const [copiedSocialCaption, setCopiedSocialCaption] = useState(false);
+  const [exportingBatchIg, setExportingBatchIg] = useState(false);
   const [stageTheme, setStageTheme] = useState<StageSelection>('auto');
   const [podiumVariant, setPodiumVariant] = useState<PodiumVariant>('champion_1');
   const [customSpotlightTeamId, setCustomSpotlightTeamId] = useState<number | null>(null);
@@ -712,7 +789,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
   // Multi-Photo (1-3) & Single Trimmed Video Clip State
   const [mediaMode, setMediaMode] = useState<StudioMediaMode>('photo');
-  const [photoItems, setPhotoItems] = useState<Array<{ id: string; url: string }>>([]);
+  const [photoItems, setPhotoItems] = useState<
+    Array<{ id: string; url: string; zoom?: number; panX?: number; panY?: number }>
+  >([]);
   const [posterLayout, setPosterLayout] = useState<'collage' | 'single'>('collage');
   const [videoClip, setVideoClip] = useState<VideoClipState | null>(null);
   const [videoCoverImg, setVideoCoverImg] = useState<HTMLImageElement | null>(null);
@@ -738,6 +817,23 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+  const canvasPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const canvasGestureRef = useRef<{
+    slotIdx: number;
+    lastX: number;
+    lastY: number;
+    pinchDist: number;
+    pinchMidX: number;
+    pinchMidY: number;
+  }>({
+    slotIdx: 0,
+    lastX: 0,
+    lastY: 0,
+    pinchDist: 0,
+    pinchMidX: 0,
+    pinchMidY: 0,
+  });
   const hiddenVideoRef = useRef<HTMLVideoElement | null>(null);
   const previewRafRef = useRef<number>(0);
   const vb3dRef = useRef<OffscreenVolleyballController | null>(null);
@@ -815,11 +911,11 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     () => activeMatch?.courtName || ''
   );
 
-  // Auto-sync template style & match schedule/court with selected match (preserve 'champion' if user chose it)
+  // Auto-sync template style & match schedule/court with selected match (preserve 'champion' & 'schedule_day')
   useEffect(() => {
     if (!activeMatch) return;
     setTemplate((prev) => {
-      if (prev === 'champion') return 'champion';
+      if (prev === 'champion' || prev === 'schedule_day') return prev;
       if (activeMatch.status === 'finished') return 'final';
       if (activeMatch.status === 'live') return 'live';
       return 'upcoming';
@@ -870,6 +966,18 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     data.tournaments[0];
 
   const catMatches = data.matches.filter((m) => m.tournamentId === tournament?.id);
+  const scheduleDayGroups = useMemo(() => {
+    const cat = data.matches.filter((m) => m.tournamentId === tournament?.id);
+    const source = (cat.length > 0 ? cat : data.matches).filter(
+      (m) => m.status !== 'bye'
+    );
+    return groupMatchesByScheduleDay(source).dayGroups;
+  }, [data.matches, tournament?.id]);
+  const safeScheduleDayIdx = Math.min(
+    selectedScheduleDayIdx,
+    Math.max(0, scheduleDayGroups.length - 1)
+  );
+  const activeScheduleDay = scheduleDayGroups[safeScheduleDayIdx] ?? null;
   const catTeams = data.teams.filter((t) => t.tournamentId === tournament?.id);
   const mainRoundNums = catMatches
     .filter((m) => m.bracketType === 'main')
@@ -946,13 +1054,19 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
    *   and ReactBits motion effects (SplitText, ShinyText, CircularText, Aurora, CountUp)
    */
   const renderFrame = useCallback(
-    (timeSec: number, isVideo: boolean, drawGuides = false) => {
+    (
+      timeSec: number,
+      isVideo: boolean,
+      drawGuides = false,
+      ratioOverride?: AspectRatio
+    ) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const { w, h } = DIMENSIONS[ratio];
+      const activeRatio = ratioOverride ?? ratio;
+      const { w, h } = DIMENSIONS[activeRatio];
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
@@ -961,10 +1075,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       const assets = loadedAssetsRef.current;
       const u = Math.min(w, h); // Consistent 1080 base unit across 9:16, 4:5, 16:9, & 1:1
       const pad = Math.round(u * 0.052);
-      const isStory = ratio === '9:16';
-      const isPost45 = ratio === '4:5';
-      const isLandscape = ratio === '16:9';
-      const isSquare = ratio === '1:1';
+      const isStory = activeRatio === '9:16';
+      const isPost45 = activeRatio === '4:5';
+      const isLandscape = activeRatio === '16:9';
+      const isSquare = activeRatio === '1:1';
       // Safe Margins for Instagram Story / Reels (Top ~13% = 250px, Bottom ~15% = 288px on 1080x1920)
       const safeTop = isStory ? Math.round(h * 0.13) : pad;
       const safeBottom = isStory ? Math.round(h * 0.15) : pad;
@@ -1059,7 +1173,49 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       };
 
       const drawSafeZoneOverlay = () => {
-        if (!drawGuides || !isStory) return;
+        if (!drawGuides) return;
+
+        if (canvasDragging && !isVideo) {
+          const rects =
+            mediaMode === 'video'
+              ? [{ rx: 0, ry: 0, rw: w, rh: h }]
+              : getCollageSlotRects(
+                  Math.max(1, photoItems.length),
+                  posterLayout,
+                  w,
+                  h,
+                  safeTop,
+                  safeBottom,
+                  u,
+                  isLandscape
+                );
+          const targetRect =
+            rects[Math.min(activeCanvasSlot, rects.length - 1)] ?? rects[0]!;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+          ctx.lineWidth = Math.max(1.5, Math.round(u * 0.002));
+          ctx.beginPath();
+          for (let g = 1; g <= 2; g++) {
+            const gx = targetRect.rx + (targetRect.rw * g) / 3;
+            const gy = targetRect.ry + (targetRect.rh * g) / 3;
+            ctx.moveTo(gx, targetRect.ry);
+            ctx.lineTo(gx, targetRect.ry + targetRect.rh);
+            ctx.moveTo(targetRect.rx, gy);
+            ctx.lineTo(targetRect.rx + targetRect.rw, gy);
+          }
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(245, 197, 56, 0.95)';
+          ctx.lineWidth = Math.max(4, Math.round(u * 0.0045));
+          ctx.strokeRect(
+            targetRect.rx + 2,
+            targetRect.ry + 2,
+            Math.max(4, targetRect.rw - 4),
+            Math.max(4, targetRect.rh - 4)
+          );
+          ctx.restore();
+        }
+
+        if (!isStory) return;
         ctx.save();
         ctx.fillStyle = 'rgba(239, 68, 68, 0.14)';
         ctx.fillRect(0, 0, w, safeTop);
@@ -1130,25 +1286,45 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         ctx.rect(rx, ry, rw, rh);
         ctx.clip();
 
+        const cssFilter = COLOR_FILTER_MAP[colorFilter]?.css ?? 'none';
+        if (cssFilter !== 'none') {
+          ctx.filter = cssFilter;
+        }
+
+        const safeZoom = Math.max(1, zoom);
+        const { maxPanX, maxPanY } = computeMaxPanFractions(srcW, srcH, rw, rh, safeZoom);
+        const clampedPanX = Math.max(-maxPanX * rw, Math.min(maxPanX * rw, panX));
+        const clampedPanY = Math.max(-maxPanY * rh, Math.min(maxPanY * rh, panY));
+
         const srcAspect = srcW / srcH;
         const rectAspect = rw / rh;
         let dw = rw;
         let dh = rh;
         if (srcAspect > rectAspect) {
-          dh = rh * zoom;
+          dh = rh * safeZoom;
           dw = dh * srcAspect;
         } else {
-          dw = rw * zoom;
+          dw = rw * safeZoom;
           dh = dw / srcAspect;
         }
         ctx.drawImage(
           source,
-          rx + (rw - dw) / 2 + panX,
-          ry + (rh - dh) / 2 + panY,
+          rx + (rw - dw) / 2 + clampedPanX,
+          ry + (rh - dh) / 2 + clampedPanY,
           dw,
           dh
         );
+        ctx.filter = 'none';
         ctx.restore();
+      };
+
+      const getPhotoFraming = (idx: number) => {
+        const it = photoItems[idx];
+        return {
+          zoom: it?.zoom ?? 1,
+          panX: it?.panX ?? 0,
+          panY: it?.panY ?? 0,
+        };
       };
 
       const computeKenBurnsTransform = (
@@ -1210,7 +1386,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 0.03 * clamp01(elapsedInScene4 / Math.max(1, timeline.scene4HoldSec)) +
                 settle * 0.055
               : 1;
-            drawMediaCoverRect(vidSource, 0, 0, w, h, breathe, 0, 0);
+            const vZoom = breathe * (videoClip?.zoom ?? 1);
+            const vPanX = (videoClip?.panX ?? 0) * w;
+            const vPanY = (videoClip?.panY ?? 0) * h;
+            drawMediaCoverRect(vidSource, 0, 0, w, h, vZoom, vPanX, vPanY);
           } else {
             ctx.fillStyle = '#0F172A';
             ctx.fillRect(0, 0, w, h);
@@ -1224,73 +1403,73 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           ctx.fillStyle = '#0F172A';
           ctx.fillRect(0, 0, w, h);
           drawAuroraAndBokeh(ctx, w, h, globalT, 0.85, 'dark');
-          ctx.fillStyle = '#94A3B8';
-          ctx.font = `bold ${Math.round(u * 0.034)}px "Plus Jakarta Sans", sans-serif`;
-          ctx.textAlign = 'center';
-          ctx.fillText('Unggah 1 - 3 Foto di Langkah 1', w / 2, h / 2);
+          if (template !== 'schedule_day') {
+            ctx.fillStyle = '#94A3B8';
+            ctx.font = `bold ${Math.round(u * 0.034)}px "Plus Jakarta Sans", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.fillText('Unggah 1 - 3 Foto di Langkah 1', w / 2, h / 2);
+          }
         } else if (!animSlide && validPhotos.length >= 2 && posterLayout === 'collage') {
           // Static Poster Collage Grid (2 or 3 Photos with Crisp Golden Broadcast Dividers)
-          const visTop = safeTop + Math.round(u * 0.105);
-          const visBot = h - safeBottom - Math.round(u * 0.27);
+          const slotRects = getCollageSlotRects(
+            validPhotos.length,
+            posterLayout,
+            w,
+            h,
+            safeTop,
+            safeBottom,
+            u,
+            isLandscape
+          );
           ctx.save();
-          if (validPhotos.length === 2) {
+          slotRects.forEach((sr, sIdx) => {
+            const img = validPhotos[sIdx];
+            if (!img) return;
+            const fr = getPhotoFraming(sIdx);
+            drawMediaCoverRect(
+              img,
+              sr.rx,
+              sr.ry,
+              sr.rw,
+              sr.rh,
+              fr.zoom,
+              fr.panX * sr.rw,
+              fr.panY * sr.rh
+            );
+          });
+          ctx.strokeStyle = '#F5C538';
+          ctx.lineWidth = Math.max(4, Math.round(u * 0.0045));
+          ctx.beginPath();
+          if (slotRects.length === 2) {
+            const r1 = slotRects[1]!;
             if (isLandscape) {
-              const splitX = Math.round(w * 0.5);
-              drawMediaCoverRect(validPhotos[0]!, 0, 0, splitX, h);
-              drawMediaCoverRect(validPhotos[1]!, splitX, 0, w - splitX, h);
-              ctx.strokeStyle = '#F5C538';
-              ctx.lineWidth = Math.max(4, Math.round(u * 0.0045));
-              ctx.beginPath();
-              ctx.moveTo(splitX, 0);
-              ctx.lineTo(splitX, h);
-              ctx.stroke();
+              ctx.moveTo(r1.rx, 0);
+              ctx.lineTo(r1.rx, h);
             } else {
-              const splitY = Math.round((visTop + visBot) / 2);
-              drawMediaCoverRect(validPhotos[0]!, 0, 0, w, splitY);
-              drawMediaCoverRect(validPhotos[1]!, 0, splitY, w, h - splitY);
-              ctx.strokeStyle = '#F5C538';
-              ctx.lineWidth = Math.max(4, Math.round(u * 0.0045));
-              ctx.beginPath();
-              ctx.moveTo(0, splitY);
-              ctx.lineTo(w, splitY);
-              ctx.stroke();
+              ctx.moveTo(0, r1.ry);
+              ctx.lineTo(w, r1.ry);
             }
-          } else {
-            // 3-Photo Broadcast Editorial Grid
+          } else if (slotRects.length >= 3) {
+            const r1 = slotRects[1]!;
+            const r2 = slotRects[2]!;
             if (isLandscape) {
-              const splitX = Math.round(w * 0.56);
-              const splitY = Math.round(h * 0.5);
-              drawMediaCoverRect(validPhotos[0]!, 0, 0, splitX, h);
-              drawMediaCoverRect(validPhotos[1]!, splitX, 0, w - splitX, splitY);
-              drawMediaCoverRect(validPhotos[2]!, splitX, splitY, w - splitX, h - splitY);
-              ctx.strokeStyle = '#F5C538';
-              ctx.lineWidth = Math.max(4, Math.round(u * 0.0045));
-              ctx.beginPath();
-              ctx.moveTo(splitX, 0);
-              ctx.lineTo(splitX, h);
-              ctx.moveTo(splitX, splitY);
-              ctx.lineTo(w, splitY);
-              ctx.stroke();
+              ctx.moveTo(r1.rx, 0);
+              ctx.lineTo(r1.rx, h);
+              ctx.moveTo(r1.rx, r2.ry);
+              ctx.lineTo(w, r2.ry);
             } else {
-              const splitY = Math.round(visTop + (visBot - visTop) * 0.54);
-              const splitX = Math.round(w * 0.5);
-              drawMediaCoverRect(validPhotos[0]!, 0, 0, w, splitY);
-              drawMediaCoverRect(validPhotos[1]!, 0, splitY, splitX, h - splitY);
-              drawMediaCoverRect(validPhotos[2]!, splitX, splitY, w - splitX, h - splitY);
-              ctx.strokeStyle = '#F5C538';
-              ctx.lineWidth = Math.max(4, Math.round(u * 0.0045));
-              ctx.beginPath();
-              ctx.moveTo(0, splitY);
-              ctx.lineTo(w, splitY);
-              ctx.moveTo(splitX, splitY);
-              ctx.lineTo(splitX, h);
-              ctx.stroke();
+              ctx.moveTo(0, r1.ry);
+              ctx.lineTo(w, r1.ry);
+              ctx.moveTo(r2.rx, r1.ry);
+              ctx.lineTo(r2.rx, h);
             }
           }
+          ctx.stroke();
           ctx.restore();
         } else if (!animSlide) {
           // Single Hero Cover Photo
-          drawMediaCoverRect(validPhotos[0]!, 0, 0, w, h, 1, 0, 0);
+          const f0 = getPhotoFraming(0);
+          drawMediaCoverRect(validPhotos[0]!, 0, 0, w, h, f0.zoom, f0.panX * w, f0.panY * h);
         } else {
           // Animated Multi-Photo Slideshow inside Video Scene 4 (Diagonal Golden Wipe)
           const slide = computePhotoSlideState(
@@ -1308,12 +1487,23 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
             slide.localProgressPrimary,
             entrySettle
           );
-          drawMediaCoverRect(curImg, 0, 0, w, h, kbCur.zoom, kbCur.panX, kbCur.panY);
+          const pfCur = getPhotoFraming(slide.primaryIdx);
+          drawMediaCoverRect(
+            curImg,
+            0,
+            0,
+            w,
+            h,
+            kbCur.zoom * pfCur.zoom,
+            kbCur.panX + pfCur.panX * w,
+            kbCur.panY + pfCur.panY * h
+          );
 
           if (slide.nextIdx !== null && slide.wipeProgress > 0) {
             const nextImg = validPhotos[slide.nextIdx];
             if (nextImg) {
               const kbNext = computeKenBurnsTransform(slide.nextIdx, slide.localProgressNext);
+              const pfNext = getPhotoFraming(slide.nextIdx);
               const easedWipe = easeFluidCurtain(slide.wipeProgress);
               const leadX = -w * 0.35 + easedWipe * (w * 1.95);
 
@@ -1325,7 +1515,16 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
               ctx.lineTo(-w * 0.78, h);
               ctx.closePath();
               ctx.clip();
-              drawMediaCoverRect(nextImg, 0, 0, w, h, kbNext.zoom, kbNext.panX, kbNext.panY);
+              drawMediaCoverRect(
+                nextImg,
+                0,
+                0,
+                w,
+                h,
+                kbNext.zoom * pfNext.zoom,
+                kbNext.panX + pfNext.panX * w,
+                kbNext.panY + pfNext.panY * h
+              );
               ctx.restore();
 
               // Crisp Gold Wipe Edge
@@ -1431,7 +1630,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         const headerSubStr =
           template === 'champion'
             ? `${tournament?.name || 'SVC'} • OFFICIAL CHAMPIONSHIP PODIUM`
-            : `${tournament?.name || 'SVC'} • ${stageDisplayBadge} • ${data.settings?.eventSubtitle || 'AVERSA Dies Natalis 44'}`;
+            : template === 'schedule_day'
+              ? `${tournament?.name || 'SVC'} • JADWAL ${activeScheduleDay?.dayLabel?.toUpperCase() || 'PERTANDINGAN'}`
+              : `${tournament?.name || 'SVC'} • ${stageDisplayBadge} • ${data.settings?.eventSubtitle || 'AVERSA Dies Natalis 44'}`;
 
         const fittedHeaderSub = fitSingleLine(
           ctx,
@@ -1450,9 +1651,206 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         );
         ctx.restore();
 
+        // Photographer / Videographer Credit Badge (bottom-right safe zone)
+        if (photoCredit.trim()) {
+          ctx.save();
+          const creditStr = `Foto/Video: ${photoCredit.trim()}`;
+          const cFontSize = Math.round(u * 0.019);
+          ctx.font = `700 ${cFontSize}px "Plus Jakarta Sans", sans-serif`;
+          const cTextW = ctx.measureText(creditStr).width;
+          const cPadX = Math.round(u * 0.016);
+          const cPillW = Math.min(w - pad * 2, cTextW + cPadX * 2);
+          const cPillH = Math.round(u * 0.036);
+          const cPillX = w - pad - cPillW;
+          const cPillY = safeTop + Math.round(lSize * 1.12);
+          drawRoundedRect(ctx, cPillX, cPillY, cPillW, cPillH, 999);
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+          ctx.fill();
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = 'rgba(245, 197, 56, 0.45)';
+          ctx.stroke();
+          ctx.fillStyle = '#FDE68A';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(
+            creditStr,
+            cPillX + cPillW / 2,
+            cPillY + cPillH / 2 + 1,
+            cPillW - cPadX * 2
+          );
+          ctx.restore();
+        }
+
         // Scoreboard / Championship Coronation Card: Sized strictly from `u` & `boxH`
         const cardT = animSlide ? clamp01((uiProgress - 0.08) / 0.85) : 1;
         if (cardT <= 0.001) return;
+
+        // Dedicated Daily Schedule Card Renderer (template === 'schedule_day')
+        if (template === 'schedule_day') {
+          const dayItems = (activeScheduleDay?.items ?? []).slice(0, 8);
+          const cardTop = safeTop + Math.round(u * (photoCredit.trim() ? 0.165 : 0.13));
+          const cardBot = h - safeBottom - Math.round(u * 0.025);
+          const cardH = Math.max(260, cardBot - cardTop);
+          const cardW = isLandscape ? Math.round(w * 0.82) : w - pad * 2;
+          const cardX = Math.round((w - cardW) / 2);
+          const slideOffset = (1 - easeOutQuint(cardT)) * 90;
+          const cardY = cardTop + slideOffset;
+
+          ctx.save();
+          ctx.globalAlpha = easeOutCubic(cardT);
+          drawRoundedRect(ctx, cardX, cardY, cardW, cardH, 26);
+          ctx.fillStyle = 'rgba(11, 16, 30, 0.94)';
+          ctx.fill();
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(245, 197, 56, 0.82)';
+          ctx.stroke();
+
+          // Pill Header
+          const pillH = Math.round(u * 0.048);
+          const pillW = Math.min(cardW * 0.82, Math.round(u * 0.62));
+          const pillX = w / 2 - pillW / 2;
+          const pillY = cardY - pillH / 2;
+          drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 999);
+          ctx.fillStyle = '#F5C538';
+          ctx.fill();
+
+          const dayPillLabel = `JADWAL • ${(activeScheduleDay?.dayLabel || 'HARI INI').toUpperCase()}`;
+          const fittedDayPill = fitSingleLine(
+            ctx,
+            dayPillLabel,
+            pillW - 28,
+            Math.round(pillH * 0.45),
+            Math.round(pillH * 0.3),
+            '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
+          );
+          ctx.fillStyle = '#0B0F19';
+          ctx.font = `800 ${fittedDayPill.fontSize}px "Plus Jakarta Sans", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(fittedDayPill.text, w / 2, pillY + pillH / 2 + 1);
+          ctx.textBaseline = 'alphabetic';
+
+          // Schedule Rows Area
+          const innerPadX = Math.round(cardW * 0.045);
+          const headerSpace = Math.round(u * 0.045);
+          const footerSpace = caption.trim() ? Math.round(u * 0.055) : Math.round(u * 0.025);
+          const listTop = cardY + headerSpace;
+          const listAvailH = Math.max(120, cardH - headerSpace - footerSpace);
+          const count = Math.max(1, dayItems.length);
+          const rowGap = Math.max(6, Math.round(listAvailH * 0.02));
+          const rowH = Math.min(
+            Math.round(u * 0.115),
+            Math.floor((listAvailH - rowGap * (count - 1)) / count)
+          );
+          const totalListH = count * rowH + Math.max(0, count - 1) * rowGap;
+          const startRowY = listTop + Math.max(0, Math.round((listAvailH - totalListH) / 2));
+
+          if (dayItems.length === 0) {
+            ctx.fillStyle = '#94A3B8';
+            ctx.font = `700 ${Math.round(u * 0.028)}px "Plus Jakarta Sans", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.fillText('Belum ada jadwal di hari terpilih', w / 2, listTop + listAvailH / 2);
+          } else {
+            dayItems.forEach(({ match: dm, parsed }, idx) => {
+              const ry = startRowY + idx * (rowH + rowGap);
+              const rx = cardX + innerPadX;
+              const rw = cardW - innerPadX * 2;
+
+              drawRoundedRect(ctx, rx, ry, rw, rowH, 12);
+              ctx.fillStyle =
+                dm.status === 'live'
+                  ? 'rgba(220, 38, 38, 0.22)'
+                  : 'rgba(255, 255, 255, 0.06)';
+              ctx.fill();
+              ctx.lineWidth = 1;
+              ctx.strokeStyle =
+                dm.status === 'live'
+                  ? 'rgba(248, 113, 113, 0.55)'
+                  : 'rgba(148, 163, 184, 0.2)';
+              ctx.stroke();
+
+              const timePart = parsed.timeLabel || dm.courtName || 'TBA';
+              const tBoxW = Math.round(rw * 0.25);
+              drawRoundedRect(ctx, rx + 8, ry + 6, tBoxW, rowH - 12, 8);
+              ctx.fillStyle = dm.status === 'live' ? '#DC2626' : 'rgba(245, 197, 56, 0.16)';
+              ctx.fill();
+
+              const fittedTime = fitSingleLine(
+                ctx,
+                dm.status === 'live' ? 'LIVE NOW' : timePart,
+                tBoxW - 12,
+                Math.round(rowH * 0.28),
+                Math.round(rowH * 0.19),
+                '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
+              );
+              ctx.fillStyle = dm.status === 'live' ? '#FFFFFF' : '#FACC15';
+              ctx.font = `800 ${fittedTime.fontSize}px "Plus Jakarta Sans", sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(fittedTime.text, rx + 8 + tBoxW / 2, ry + rowH / 2);
+
+              const tA = dm.teamAId ? teamMap.get(dm.teamAId)?.name || 'TBD' : 'TBD';
+              const tB = dm.teamBId ? teamMap.get(dm.teamBId)?.name || 'TBD' : 'TBD';
+              const vsText = `${tA}  vs  ${tB}`;
+              const textLeft = rx + tBoxW + 18;
+              const rightPad = dm.status === 'finished' ? Math.round(rw * 0.14) : 12;
+              const textAvailW = Math.max(80, rx + rw - rightPad - textLeft);
+
+              const fittedMatch = fitSingleLine(
+                ctx,
+                vsText,
+                textAvailW,
+                Math.round(rowH * 0.34),
+                Math.round(rowH * 0.2),
+                '800 {SIZE}px "Barlow Condensed", sans-serif'
+              );
+              ctx.fillStyle = '#FFFFFF';
+              ctx.font = `800 ${fittedMatch.fontSize}px "Barlow Condensed", sans-serif`;
+              ctx.textAlign = 'left';
+              ctx.textBaseline = 'alphabetic';
+              ctx.fillText(fittedMatch.text, textLeft, ry + rowH * 0.5);
+
+              const subLine = `${dm.stageLabel || formatInternationalStageLabel(dm, totalMainRounds)} • ${dm.courtName}`;
+              const fittedSub = fitSingleLine(
+                ctx,
+                subLine,
+                textAvailW,
+                Math.round(rowH * 0.22),
+                Math.round(rowH * 0.16),
+                '600 {SIZE}px "Plus Jakarta Sans", sans-serif'
+              );
+              ctx.fillStyle = '#CBD5E1';
+              ctx.font = `600 ${fittedSub.fontSize}px "Plus Jakarta Sans", sans-serif`;
+              ctx.fillText(fittedSub.text, textLeft, ry + rowH * 0.78);
+
+              if (dm.status === 'finished') {
+                ctx.fillStyle = '#FACC15';
+                ctx.font = `800 ${Math.round(rowH * 0.34)}px "Barlow Condensed", sans-serif`;
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(`${dm.setsWonA}-${dm.setsWonB}`, rx + rw - 12, ry + rowH / 2);
+                ctx.textBaseline = 'alphabetic';
+              }
+            });
+          }
+
+          if (caption.trim()) {
+            const fittedCap = fitSingleLine(
+              ctx,
+              caption.trim(),
+              cardW - 36,
+              Math.round(u * 0.024),
+              Math.round(u * 0.016),
+              '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
+            );
+            ctx.fillStyle = '#FDE68A';
+            ctx.font = `700 ${fittedCap.fontSize}px "Plus Jakarta Sans", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.fillText(fittedCap.text, w / 2, cardY + cardH - Math.round(u * 0.018));
+          }
+          ctx.restore();
+          return;
+        }
 
         const slideY = (1 - easeOutQuint(cardT)) * 120;
         const floatY = animSlide ? Math.sin(globalT * 2.1) * 4 : 0;
@@ -2121,11 +2519,13 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
               : podiumVariant === 'podium_all'
                 ? 'OFFICIAL PODIUM'
                 : 'CHAMPIONS'
-          : template === 'final'
-            ? `${stageDisplayBadge} • FINAL`
-            : template === 'upcoming'
-              ? `${stageDisplayBadge} • UPCOMING`
-              : `${stageDisplayBadge} • LIVE`;
+          : template === 'schedule_day'
+            ? `JADWAL • ${activeScheduleDay?.dayLabel?.toUpperCase() || 'PERTANDINGAN'}`
+            : template === 'final'
+              ? `${stageDisplayBadge} • FINAL`
+              : template === 'upcoming'
+                ? `${stageDisplayBadge} • UPCOMING`
+                : `${stageDisplayBadge} • LIVE`;
 
       // ----------------------------------------------------------------
       // LAYER HELPER A: Scene 1 (SVC Poster Intro — 16:9 2-Column & Sequential Y-Flow)
@@ -4071,6 +4471,15 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     [
       ratio,
       template,
+      colorFilter,
+      photoCredit,
+      photoItems,
+      videoClip?.zoom,
+      videoClip?.panX,
+      videoClip?.panY,
+      activeScheduleDay,
+      totalMainRounds,
+      teamMap,
       stageTheme,
       effectiveStageKey,
       stageDisplayBadge,
@@ -4095,6 +4504,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       teamB,
       tournament,
       data.settings,
+      canvasDragging,
+      activeCanvasSlot,
     ]
   );
 
@@ -4242,6 +4653,296 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       if (found) URL.revokeObjectURL(found.url);
       return prev.filter((p) => p.id !== id);
     });
+    if (activeFramingKey === id) setActiveFramingKey(null);
+  };
+
+  const handleUpdatePhotoFraming = (
+    id: string,
+    patch: { zoom?: number; panX?: number; panY?: number }
+  ) => {
+    setPhotoItems((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, ...patch } : p))
+    );
+  };
+
+  const handleResetPhotoFraming = (id: string) => {
+    setPhotoItems((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, zoom: 1, panX: 0, panY: 0 } : p))
+    );
+  };
+
+  const hasInteractiveCanvasMedia =
+    ((mediaMode === 'photo' && photoItems.length > 0) ||
+      (mediaMode === 'video' && Boolean(videoClip))) &&
+    !previewPlaying &&
+    !exportingVideo &&
+    !exportingBatchIg;
+
+  const clampedCanvasSlot =
+    mediaMode === 'video'
+      ? 0
+      : Math.min(activeCanvasSlot, Math.max(0, photoItems.length - 1));
+
+  const getCanvasSlotGeometry = (slotIdxOverride?: number) => {
+    const { w, h } = DIMENSIONS[ratio];
+    const u = Math.min(w, h);
+    const pad = Math.round(u * 0.052);
+    const isStory = ratio === '9:16';
+    const isLandscape = ratio === '16:9';
+    const safeTop = isStory ? Math.round(h * 0.13) : pad;
+    const safeBottom = isStory ? Math.round(h * 0.15) : pad;
+    const rects =
+      mediaMode === 'video'
+        ? [{ rx: 0, ry: 0, rw: w, rh: h }]
+        : getCollageSlotRects(
+            Math.max(1, photoItems.length),
+            posterLayout,
+            w,
+            h,
+            safeTop,
+            safeBottom,
+            u,
+            isLandscape
+          );
+    const idx = Math.min(slotIdxOverride ?? clampedCanvasSlot, rects.length - 1);
+    const slotRect = rects[idx] ?? rects[0]!;
+    let srcW = 0;
+    let srcH = 0;
+    if (mediaMode === 'video') {
+      const vEl = hiddenVideoRef.current;
+      srcW = vEl?.videoWidth
+        ? vEl.videoWidth
+        : videoCoverImg?.naturalWidth || videoCoverImg?.width || 0;
+      srcH = vEl?.videoHeight
+        ? vEl.videoHeight
+        : videoCoverImg?.naturalHeight || videoCoverImg?.height || 0;
+    } else {
+      const img = loadedAssetsRef.current.photos[idx];
+      srcW = img?.naturalWidth || img?.width || 0;
+      srcH = img?.naturalHeight || img?.height || 0;
+    }
+    const cur: MediaFraming =
+      mediaMode === 'video'
+        ? {
+            zoom: videoClip?.zoom ?? 1,
+            panX: videoClip?.panX ?? 0,
+            panY: videoClip?.panY ?? 0,
+          }
+        : {
+            zoom: photoItems[idx]?.zoom ?? 1,
+            panX: photoItems[idx]?.panX ?? 0,
+            panY: photoItems[idx]?.panY ?? 0,
+          };
+    return { w, h, rects, idx, slotRect, srcW, srcH, cur };
+  };
+
+  const commitCanvasSlotFraming = (idx: number, next: MediaFraming) => {
+    if (mediaMode === 'video') {
+      setVideoClip((prev) =>
+        prev ? { ...prev, zoom: next.zoom, panX: next.panX, panY: next.panY } : prev
+      );
+      return;
+    }
+    setPhotoItems((prev) =>
+      prev.map((it, i) =>
+        i === idx ? { ...it, zoom: next.zoom, panX: next.panX, panY: next.panY } : it
+      )
+    );
+  };
+
+  const canvasDirectStateRef = useRef({
+    interactive: hasInteractiveCanvasMedia,
+    getGeometry: getCanvasSlotGeometry,
+    commit: commitCanvasSlotFraming,
+  });
+  canvasDirectStateRef.current = {
+    interactive: hasInteractiveCanvasMedia,
+    getGeometry: getCanvasSlotGeometry,
+    commit: commitCanvasSlotFraming,
+  };
+
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const st = canvasDirectStateRef.current;
+      if (!st.interactive) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const gInit = st.getGeometry(0);
+      const cx = ((e.clientX - rect.left) / rect.width) * gInit.w;
+      const cy = ((e.clientY - rect.top) / rect.height) * gInit.h;
+      const hitIdx = hitTestCollageSlot(gInit.rects, cx, cy);
+      setActiveCanvasSlot(hitIdx);
+      const g = st.getGeometry(hitIdx);
+      const delta = e.ctrlKey ? -e.deltaY * 0.015 : -e.deltaY * 0.0025;
+      if (Math.abs(delta) < 0.0001) return;
+      const next = applyZoomLevel(
+        g.cur,
+        g.cur.zoom + delta,
+        g.srcW,
+        g.srcH,
+        g.slotRect.rw,
+        g.slotRect.rh
+      );
+      st.commit(hitIdx, next);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
+
+  const getCanvasTwoPointerMetrics = () => {
+    const pts = Array.from(canvasPointersRef.current.values());
+    if (pts.length < 2) return null;
+    const [p1, p2] = [pts[0]!, pts[1]!];
+    return {
+      dist: Math.max(1, Math.hypot(p2.x - p1.x, p2.y - p1.y)),
+      midX: (p1.x + p2.x) / 2,
+      midY: (p1.y + p2.y) / 2,
+    };
+  };
+
+  const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!hasInteractiveCanvasMedia) return;
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore synthetic events
+    }
+    canvasPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const gInit = getCanvasSlotGeometry(0);
+    if (canvasPointersRef.current.size === 1 && rect.width > 0 && rect.height > 0) {
+      const cx = ((e.clientX - rect.left) / rect.width) * gInit.w;
+      const cy = ((e.clientY - rect.top) / rect.height) * gInit.h;
+      const hitIdx = hitTestCollageSlot(gInit.rects, cx, cy);
+      setActiveCanvasSlot(hitIdx);
+      canvasGestureRef.current.slotIdx = hitIdx;
+      canvasGestureRef.current.lastX = e.clientX;
+      canvasGestureRef.current.lastY = e.clientY;
+    } else if (canvasPointersRef.current.size >= 2) {
+      const m = getCanvasTwoPointerMetrics();
+      if (m) {
+        canvasGestureRef.current.pinchDist = m.dist;
+        canvasGestureRef.current.pinchMidX = m.midX;
+        canvasGestureRef.current.pinchMidY = m.midY;
+      }
+    }
+    setCanvasDragging(true);
+  };
+
+  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!canvasPointersRef.current.has(e.pointerId) || !hasInteractiveCanvasMedia) {
+      return;
+    }
+    canvasPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const slotIdx = canvasGestureRef.current.slotIdx;
+    const g = getCanvasSlotGeometry(slotIdx);
+    const slotDomW = Math.max(1, g.slotRect.rw * (rect.width / g.w));
+    const slotDomH = Math.max(1, g.slotRect.rh * (rect.height / g.h));
+
+    if (canvasPointersRef.current.size >= 2) {
+      const m = getCanvasTwoPointerMetrics();
+      if (!m) return;
+      const scaleRatio = m.dist / Math.max(1, canvasGestureRef.current.pinchDist);
+      const zoomed = applyZoomLevel(
+        g.cur,
+        g.cur.zoom * scaleRatio,
+        g.srcW,
+        g.srcH,
+        g.slotRect.rw,
+        g.slotRect.rh
+      );
+      const panned = applyPanDelta(
+        zoomed,
+        m.midX - canvasGestureRef.current.pinchMidX,
+        m.midY - canvasGestureRef.current.pinchMidY,
+        slotDomW,
+        slotDomH,
+        g.srcW,
+        g.srcH,
+        g.slotRect.rw,
+        g.slotRect.rh
+      );
+      canvasGestureRef.current.pinchDist = m.dist;
+      canvasGestureRef.current.pinchMidX = m.midX;
+      canvasGestureRef.current.pinchMidY = m.midY;
+      commitCanvasSlotFraming(slotIdx, panned);
+      return;
+    }
+
+    const dx = e.clientX - canvasGestureRef.current.lastX;
+    const dy = e.clientY - canvasGestureRef.current.lastY;
+    canvasGestureRef.current.lastX = e.clientX;
+    canvasGestureRef.current.lastY = e.clientY;
+    const panned = applyPanDelta(
+      g.cur,
+      dx,
+      dy,
+      slotDomW,
+      slotDomH,
+      g.srcW,
+      g.srcH,
+      g.slotRect.rw,
+      g.slotRect.rh
+    );
+    commitCanvasSlotFraming(slotIdx, panned);
+  };
+
+  const handleCanvasPointerEnd = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    canvasPointersRef.current.delete(e.pointerId);
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // ignore
+    }
+    if (canvasPointersRef.current.size === 1) {
+      const remaining = Array.from(canvasPointersRef.current.values())[0]!;
+      canvasGestureRef.current.lastX = remaining.x;
+      canvasGestureRef.current.lastY = remaining.y;
+    } else if (canvasPointersRef.current.size === 0) {
+      setCanvasDragging(false);
+    }
+  };
+
+  const handleCanvasDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!hasInteractiveCanvasMedia) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const gInit = getCanvasSlotGeometry(0);
+    const cx = ((e.clientX - rect.left) / rect.width) * gInit.w;
+    const cy = ((e.clientY - rect.top) / rect.height) * gInit.h;
+    const hitIdx = hitTestCollageSlot(gInit.rects, cx, cy);
+    setActiveCanvasSlot(hitIdx);
+    commitCanvasSlotFraming(hitIdx, { zoom: 1, panX: 0, panY: 0 });
+  };
+
+  const activeCanvasGeom = getCanvasSlotGeometry(clampedCanvasSlot);
+
+  const handleStepActiveCanvasZoom = (delta: number) => {
+    const g = getCanvasSlotGeometry(clampedCanvasSlot);
+    const next = applyZoomLevel(
+      g.cur,
+      g.cur.zoom + delta,
+      g.srcW,
+      g.srcH,
+      g.slotRect.rw,
+      g.slotRect.rh
+    );
+    commitCanvasSlotFraming(clampedCanvasSlot, next);
+  };
+
+  const handleResetActiveCanvasSlot = () => {
+    commitCanvasSlotFraming(clampedCanvasSlot, { zoom: 1, panX: 0, panY: 0 });
   };
 
   const handleRemoveVideoClip = useCallback(() => {
@@ -4272,6 +4973,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         coverTime: Number(Math.min(initialEnd * 0.35, initialEnd).toFixed(1)),
         volume: 0.85,
         muted: false,
+        zoom: 1,
+        panX: 0,
+        panY: 0,
+        fileSizeBytes: file.size,
       });
       if (prepared.convertedInBrowser) {
         setStatusMsg('Video .MOV iPhone berhasil dikonversi otomatis di browser!');
@@ -4666,6 +5371,104 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     renderFrame(0, false, showSafeZone);
   };
 
+  const handleDownloadIgPack = async () => {
+    const canvas = canvasRef.current;
+    if (!canvas || exportingBatchIg) return;
+    setExportingBatchIg(true);
+    try {
+      const baseSlug =
+        template === 'schedule_day'
+          ? `JADWAL-${(activeScheduleDay?.dayLabel || 'HARIAN').replace(/[^a-zA-Z0-9]+/g, '-')}`
+          : `${teamA?.shortCode || 'TIMA'}-vs-${teamB?.shortCode || 'TIMB'}`;
+
+      renderFrame(0, false, false, '9:16');
+      const linkStory = document.createElement('a');
+      linkStory.download = `SVC-${baseSlug}_Story_9x16.png`;
+      linkStory.href = canvas.toDataURL('image/png');
+      linkStory.click();
+
+      await new Promise((r) => window.setTimeout(r, 260));
+
+      renderFrame(0, false, false, '4:5');
+      const linkFeed = document.createElement('a');
+      linkFeed.download = `SVC-${baseSlug}_Feed_4x5.png`;
+      linkFeed.href = canvas.toDataURL('image/png');
+      linkFeed.click();
+
+      setStatusMsg('Paket IG (Story 9:16 + Feed 4:5) berhasil diunduh!');
+      window.setTimeout(() => setStatusMsg(null), 3500);
+    } finally {
+      renderFrame(0, false, showSafeZone);
+      setExportingBatchIg(false);
+    }
+  };
+
+  const generatedSocialCaption = useMemo(() => {
+    const eventTitle = data.settings?.eventName || 'Smansage Volleyball Competition 2026';
+    const subTitle = data.settings?.eventSubtitle || 'AVERSA • Dies Natalis 44 SMAN 1 Gedeg';
+    const hashtags = '#SmansageVolleyball2026 #SVC2026 #AVERSA #SMAN1Gedeg #VoliPelajar';
+    const creditLine = photoCredit.trim() ? `\n\n📸 ${photoCredit.trim()}` : '';
+    const noteLine = caption.trim() ? `\n${caption.trim()}` : '';
+
+    if (template === 'schedule_day') {
+      const dayTitle = activeScheduleDay?.dayLabel || 'Hari Ini';
+      const lines = (activeScheduleDay?.items ?? []).slice(0, 8).map(({ match: dm, parsed }) => {
+        const tA = dm.teamAId ? teamMap.get(dm.teamAId)?.name || 'TBD' : 'TBD';
+        const tB = dm.teamBId ? teamMap.get(dm.teamBId)?.name || 'TBD' : 'TBD';
+        const rawTime = parsed.timeLabel || dm.courtName;
+        return `• ${rawTime} | ${tA} vs ${tB}`;
+      });
+      return `📅 JADWAL PERTANDINGAN — ${dayTitle.toUpperCase()}\n${eventTitle} (${tournament?.name || 'Umum'})\n\n${lines.join('\n') || 'Jadwal segera diperbarui.'}${noteLine}${creditLine}\n\n${hashtags}`;
+    }
+
+    if (template === 'champion') {
+      const winnerTitle =
+        podiumVariant === 'podium_all'
+          ? `1st: ${resolvedPodium1?.name || '-'}\n2nd: ${resolvedPodium2?.name || '-'}\n3rd: ${resolvedPodium3?.name || '-'}`
+          : podiumVariant === 'runner_up'
+            ? `🥈 Runner-Up (2nd Place): ${resolvedPodium2?.name || '-'}`
+            : podiumVariant === 'third_place'
+              ? `🥉 3rd Place: ${resolvedPodium3?.name || '-'}`
+              : `🏆 CHAMPIONS (1st Place): ${resolvedPodium1?.name || '-'}`;
+      return `🏆 HASIL AKHIR ${tournament?.name || ''} — ${eventTitle}\n\n${winnerTitle}${noteLine}${creditLine}\n\n${subTitle}\n${hashtags}`;
+    }
+
+    const nameA = teamA?.name || 'Tim A';
+    const nameB = teamB?.name || 'Tim B';
+    const stageStr = activeMatch ? formatInternationalStageLabel(activeMatch, totalMainRounds) : stageDisplayBadge;
+    const courtStr = activeMatch?.courtName || upcomingCourt || 'Lapangan Utama';
+    const playedSets = (activeMatch?.sets ?? [])
+      .filter((s) => s.scoreA > 0 || s.scoreB > 0)
+      .map((s) => `${s.scoreA}-${s.scoreB}`)
+      .join(' | ');
+    const scoreLine =
+      template === 'upcoming'
+        ? `⏰ ${upcomingSchedule || activeMatch?.scheduledAt || 'Segera Bertanding'} • 📍 ${courtStr}`
+        : `🏐 Skor Set: ${activeMatch?.setsWonA ?? 0} - ${activeMatch?.setsWonB ?? 0}${playedSets ? ` (${playedSets})` : ''} • 📍 ${courtStr}`;
+
+    return `🔥 ${stageStr.toUpperCase()} — ${eventTitle}\n${nameA} vs ${nameB}\n${scoreLine}${noteLine}${creditLine}\n\n${subTitle}\n${hashtags}`;
+  }, [
+    data.settings?.eventName,
+    data.settings?.eventSubtitle,
+    photoCredit,
+    caption,
+    template,
+    activeScheduleDay,
+    tournament?.name,
+    teamMap,
+    podiumVariant,
+    resolvedPodium1,
+    resolvedPodium2,
+    resolvedPodium3,
+    teamA?.name,
+    teamB?.name,
+    activeMatch,
+    totalMainRounds,
+    stageDisplayBadge,
+    upcomingCourt,
+    upcomingSchedule,
+  ]);
+
   const handleExportVideo = async () => {
     const canvas = canvasRef.current;
     if (!canvas || exportingVideo) return;
@@ -4832,9 +5635,11 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
               : podiumVariant === 'podium_all'
                 ? 'Official Podium 1-2-3'
                 : '1st Place • Champions'
-          : activeMatch.status === 'live' && activeSet
-            ? `${stageDisplayBadge} • Set ${activeMatch.currentSet}: ${activeSet.scoreA}-${activeSet.scoreB}`
-            : `${stageDisplayBadge} • Final ${activeMatch.setsWonA}-${activeMatch.setsWonB}`;
+          : template === 'schedule_day'
+            ? `Jadwal • ${activeScheduleDay?.dayLabel || 'Hari Ini'}`
+            : activeMatch.status === 'live' && activeSet
+              ? `${stageDisplayBadge} • Set ${activeMatch.currentSet}: ${activeSet.scoreA}-${activeSet.scoreB}`
+              : `${stageDisplayBadge} • Final ${activeMatch.setsWonA}-${activeMatch.setsWonB}`;
 
       fd.append(
         'scoreSnapshot',
@@ -4905,6 +5710,38 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           </div>
         )}
 
+        {/* Default-closed Quick Guide Accordion */}
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+          <button
+            type="button"
+            onClick={() => setShowGuideAccordion((prev) => !prev)}
+            className="flex w-full items-center justify-between gap-2 px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800/60"
+          >
+            <span className="inline-flex items-center gap-2">
+              <HelpCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              Panduan Cepat (3 Langkah)
+            </span>
+            <ChevronDown
+              className={`h-4 w-4 text-slate-400 transition-transform ${showGuideAccordion ? 'rotate-180' : ''}`}
+            />
+          </button>
+          {showGuideAccordion && (
+            <div className="border-t border-slate-200 bg-slate-50/70 px-4 py-3 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-300">
+              <ol className="list-inside list-decimal space-y-1">
+                <li>
+                  <span className="font-semibold text-slate-800 dark:text-slate-100">Match &amp; Media:</span> Pilih pertandingan (atau hari jadwal), lalu unggah 1–3 foto (JPG/PNG/HEIC) atau potong klip video ala trimmer.
+                </li>
+                <li>
+                  <span className="font-semibold text-slate-800 dark:text-slate-100">Format &amp; Teks:</span> Pilih template, filter warna, rasio, serta caption/kredit dan musik latar.
+                </li>
+                <li>
+                  <span className="font-semibold text-slate-800 dark:text-slate-100">Preview &amp; Export:</span> Unduh PNG, Paket IG (9:16 + 4:5), video 3D/transisi, atau terbitkan ke Galeri &amp; Publik.
+                </li>
+              </ol>
+            </div>
+          )}
+        </div>
+
         {/* Stepper Header */}
         <div className="grid grid-cols-3 gap-2 rounded-2xl border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
           {(
@@ -4934,57 +5771,106 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
           {step === 1 && (
             <div className="animate-page-enter space-y-4">
-              <div className="flex items-center gap-2">
-                <Camera className="h-5 w-5 text-amber-700 dark:text-amber-400" />
-                <h2 className="font-display text-lg font-extrabold uppercase tracking-wider">
-                  Langkah 1: Pilih Match &amp; Sumber Media
-                </h2>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Camera className="h-5 w-5 text-amber-700 dark:text-amber-400" />
+                  <h2 className="font-display text-lg font-extrabold uppercase tracking-wider">
+                    Langkah 1: Match &amp; Media
+                  </h2>
+                  <InfoTooltip text="Pilih pertandingan (atau hari jadwal di Langkah 2), lalu unggah 1–3 foto atau 1 klip video." />
+                </div>
               </div>
 
-              <div>
-                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                  Pertandingan
-                </label>
-                <select
-                  value={activeMatch?.id ?? ''}
-                  onChange={(e) => setSelectedMatchId(Number(e.target.value))}
-                  className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold dark:border-slate-700 dark:bg-slate-950"
-                >
-                  {playableMatches.length === 0 && (
-                    <option value="">Belum ada pertandingan</option>
-                  )}
-                  {playableMatches.map((m) => {
-                    const tA = m.teamAId ? teamMap.get(m.teamAId)?.name : 'TBD';
-                    const tB = m.teamBId ? teamMap.get(m.teamBId)?.name : 'TBD';
-                    const mRounds = data.matches
-                      .filter(
-                        (x) =>
-                          x.tournamentId === m.tournamentId &&
-                          x.bracketType === 'main'
-                      )
-                      .map((x) => x.round);
-                    const mTotal = mRounds.length > 0 ? Math.max(...mRounds) : 3;
-                    const stageLbl = formatInternationalStageLabel(m, mTotal);
-                    const st =
-                      m.status === 'live'
-                        ? 'LIVE'
-                        : m.status === 'finished'
-                          ? 'FINAL'
-                          : 'UPCOMING';
-                    return (
-                      <option key={m.id} value={m.id}>
-                        [{st}] {stageLbl} • {tA} vs {tB} ({m.courtName})
+              {template === 'schedule_day' ? (
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <label className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                      <CalendarDays className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                      Hari Jadwal
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setTemplate(activeMatch?.status === 'live' ? 'live' : activeMatch?.status === 'finished' ? 'final' : 'upcoming')}
+                      className="text-[11px] font-bold text-amber-700 hover:underline dark:text-amber-400"
+                    >
+                      Pilih per Match
+                    </button>
+                  </div>
+                  <select
+                    value={safeScheduleDayIdx}
+                    onChange={(e) => setSelectedScheduleDayIdx(Number(e.target.value))}
+                    className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold dark:border-slate-700 dark:bg-slate-950"
+                  >
+                    {scheduleDayGroups.length === 0 && (
+                      <option value={0}>Belum ada jadwal hari</option>
+                    )}
+                    {scheduleDayGroups.map((grp, gIdx) => (
+                      <option key={grp.dayKey} value={gIdx}>
+                        Hari {gIdx + 1}: {grp.dayLabel} ({grp.items.length} pertandingan)
                       </option>
-                    );
-                  })}
-                </select>
-              </div>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                      Pertandingan
+                    </label>
+                    {scheduleDayGroups.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setTemplate('schedule_day')}
+                        className="text-[11px] font-bold text-amber-700 hover:underline dark:text-amber-400"
+                      >
+                        Mode Jadwal Harian →
+                      </button>
+                    )}
+                  </div>
+                  <select
+                    value={activeMatch?.id ?? ''}
+                    onChange={(e) => setSelectedMatchId(Number(e.target.value))}
+                    className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold dark:border-slate-700 dark:bg-slate-950"
+                  >
+                    {playableMatches.length === 0 && (
+                      <option value="">Belum ada pertandingan</option>
+                    )}
+                    {playableMatches.map((m) => {
+                      const tA = m.teamAId ? teamMap.get(m.teamAId)?.name : 'TBD';
+                      const tB = m.teamBId ? teamMap.get(m.teamBId)?.name : 'TBD';
+                      const mRounds = data.matches
+                        .filter(
+                          (x) =>
+                            x.tournamentId === m.tournamentId &&
+                            x.bracketType === 'main'
+                        )
+                        .map((x) => x.round);
+                      const mTotal = mRounds.length > 0 ? Math.max(...mRounds) : 3;
+                      const stageLbl = formatInternationalStageLabel(m, mTotal);
+                      const st =
+                        m.status === 'live'
+                          ? 'LIVE'
+                          : m.status === 'finished'
+                            ? 'FINAL'
+                            : 'UPCOMING';
+                      return (
+                        <option key={m.id} value={m.id}>
+                          [{st}] {stageLbl} • {tA} vs {tB} ({m.courtName})
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
 
               {/* Media Source Mode Selector: Multi-Photo (1-3) vs Single Video + Cut */}
               <div>
-                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                  Jenis Dokumentasi Momen
-                </label>
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                    Sumber Media
+                  </label>
+                  <InfoTooltip text="Foto mendukung 1–3 gambar (kolase & slideshow); Klip Video mendukung trimmer ala WhatsApp maks 15 detik." />
+                </div>
                 <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-950">
                   <button
                     type="button"
@@ -4996,7 +5882,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                     }`}
                   >
                     <ImagePlus className="h-4 w-4 shrink-0" />
-                    Foto Momen (1 - {MAX_STUDIO_PHOTOS})
+                    Foto (1–{MAX_STUDIO_PHOTOS})
                   </button>
                   <button
                     type="button"
@@ -5008,7 +5894,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                     }`}
                   >
                     <Video className="h-4 w-4 shrink-0" />
-                    Klip Video (Maks 1 + Cut)
+                    Klip Video (Cut)
                   </button>
                 </div>
               </div>
@@ -5017,20 +5903,20 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 <div className="space-y-3">
                   {photoItems.length < MAX_STUDIO_PHOTOS && (
                     <label
-                      className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm font-semibold text-slate-700 transition hover:border-amber-600 hover:text-amber-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:border-amber-400 dark:hover:text-amber-300 ${
+                      className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center text-sm font-semibold text-slate-700 transition hover:border-amber-600 hover:text-amber-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:border-amber-400 dark:hover:text-amber-300 ${
                         convertingMedia ? 'pointer-events-none opacity-60' : ''
                       }`}
                     >
                       <ImagePlus className="h-7 w-7 text-amber-600 dark:text-amber-400" />
                       <span>
                         {convertingMedia
-                          ? 'Mengonversi & mengoptimalkan foto di browser...'
+                          ? 'Mengonversi foto di browser...'
                           : photoItems.length === 0
-                            ? `Pilih 1 s.d. ${MAX_STUDIO_PHOTOS} Foto (JPG / PNG / WebP / HEIC iPhone)`
-                            : `Tambah Foto Lagi (${photoItems.length}/${MAX_STUDIO_PHOTOS} terpilih)`}
+                            ? `Pilih 1–${MAX_STUDIO_PHOTOS} Foto`
+                            : `Tambah Foto (${photoItems.length}/${MAX_STUDIO_PHOTOS})`}
                       </span>
                       <span className="text-xs font-normal text-slate-500 dark:text-slate-400">
-                        Mendukung HEIC iPhone otomatis (engine browser) • Kolase &amp; slideshow siap pakai
+                        JPG, PNG, WebP, HEIC iPhone
                       </span>
                       <input
                         type="file"
@@ -5046,87 +5932,144 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   )}
 
                   {photoItems.length > 0 && (
-                    <div className="space-y-2">
+                    <div className="space-y-2.5">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="font-bold text-slate-700 dark:text-slate-300">
-                          Urutan Foto Terpilih ({photoItems.length}/{MAX_STUDIO_PHOTOS})
+                        <span className="inline-flex items-center gap-1.5 font-bold text-slate-700 dark:text-slate-300">
+                          Foto Terpilih ({photoItems.length}/{MAX_STUDIO_PHOTOS})
+                          <InfoTooltip text="Foto #1 dipakai sebagai cover utama. Klik ikon Crop pada foto atau langsung geser & pinch di Live Preview." />
                         </span>
-                        <span className="text-[11px] text-amber-800 dark:text-amber-400">
-                          #1 jadi Foto Utama • Durasi Video: {timeline.totalDurationSec}s
+                        <span className="text-[11px] font-semibold text-amber-800 dark:text-amber-400">
+                          Durasi {timeline.totalDurationSec}s
                         </span>
                       </div>
                       <div className="grid grid-cols-3 gap-2.5">
-                        {photoItems.map((item, idx) => (
-                          <div
-                            key={item.id}
-                            className={`overflow-hidden rounded-xl border bg-slate-950 ${
-                              idx === 0
-                                ? 'border-amber-500 ring-1 ring-amber-500/40'
-                                : 'border-slate-200 dark:border-slate-800'
-                            }`}
-                          >
-                            <div className="relative aspect-[4/3]">
-                              <img
-                                src={item.url}
-                                alt={`Foto ${idx + 1}`}
-                                className="h-full w-full object-cover"
-                              />
-                              <span className="absolute left-1.5 top-1.5 rounded bg-slate-950/85 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300">
-                                {idx === 0 ? '#1 UTAMA' : `#${idx + 1}`}
-                              </span>
-                            </div>
-                            <div className="flex items-center justify-between bg-white px-1 py-1 dark:bg-slate-900">
-                              <div className="flex items-center gap-0.5">
-                                <button
-                                  type="button"
-                                  disabled={idx === 0}
-                                  onClick={() => handleMovePhoto(idx, -1)}
-                                  aria-label="Geser foto ke kiri"
-                                  className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-slate-600 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-300 dark:hover:bg-slate-800"
-                                >
-                                  <ArrowLeft className="h-3.5 w-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={idx === photoItems.length - 1}
-                                  onClick={() => handleMovePhoto(idx, 1)}
-                                  aria-label="Geser foto ke kanan"
-                                  className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-slate-600 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-300 dark:hover:bg-slate-800"
-                                >
-                                  <ArrowRight className="h-3.5 w-3.5" />
-                                </button>
+                        {photoItems.map((item, idx) => {
+                          const hasCustomFraming =
+                            (item.zoom ?? 1) > 1.01 ||
+                            Math.abs(item.panX ?? 0) > 0.01 ||
+                            Math.abs(item.panY ?? 0) > 0.01;
+                          const isFramingOpen = activeFramingKey === item.id;
+                          return (
+                            <div
+                              key={item.id}
+                              className={`overflow-hidden rounded-xl border bg-slate-950 ${
+                                isFramingOpen
+                                  ? 'border-sky-500 ring-1 ring-sky-500/40'
+                                  : idx === 0
+                                    ? 'border-amber-500 ring-1 ring-amber-500/40'
+                                    : 'border-slate-200 dark:border-slate-800'
+                              }`}
+                            >
+                              <div className="relative aspect-[4/3]">
+                                <img
+                                  src={item.url}
+                                  alt={`Foto ${idx + 1}`}
+                                  className="h-full w-full object-cover"
+                                />
+                                <span className="absolute left-1.5 top-1.5 rounded bg-slate-950/85 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300">
+                                  {idx === 0 ? '#1' : `#${idx + 1}`}
+                                </span>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => handleRemovePhoto(item.id)}
-                                aria-label="Hapus foto"
-                                className="inline-flex min-h-9 min-w-9 items-center justify-center rounded text-red-600 hover:bg-red-500/10 dark:text-red-400"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
+                              <div className="flex items-center justify-between bg-white px-1 py-1 dark:bg-slate-900">
+                                <div className="flex items-center gap-0.5">
+                                  <button
+                                    type="button"
+                                    disabled={idx === 0}
+                                    onClick={() => handleMovePhoto(idx, -1)}
+                                    aria-label="Geser foto ke kiri"
+                                    className="inline-flex min-h-8 min-w-7 items-center justify-center rounded text-slate-600 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-300 dark:hover:bg-slate-800"
+                                  >
+                                    <ArrowLeft className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={idx === photoItems.length - 1}
+                                    onClick={() => handleMovePhoto(idx, 1)}
+                                    aria-label="Geser foto ke kanan"
+                                    className="inline-flex min-h-8 min-w-7 items-center justify-center rounded text-slate-600 hover:bg-slate-100 disabled:opacity-30 dark:text-slate-300 dark:hover:bg-slate-800"
+                                  >
+                                    <ArrowRight className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                                <div className="flex items-center gap-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveCanvasSlot(idx);
+                                      setActiveFramingKey((cur) =>
+                                        cur === item.id ? null : item.id
+                                      );
+                                    }}
+                                    aria-label="Crop dan atur posisi foto"
+                                    title="Crop & Geser Posisi"
+                                    className={`inline-flex min-h-8 min-w-7 items-center justify-center rounded transition ${
+                                      isFramingOpen || hasCustomFraming
+                                        ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                        : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+                                    }`}
+                                  >
+                                    <Crop className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemovePhoto(item.id)}
+                                    aria-label="Hapus foto"
+                                    className="inline-flex min-h-8 min-w-7 items-center justify-center rounded text-red-600 hover:bg-red-500/10 dark:text-red-400"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
+
+                      {(() => {
+                        const activeIdx = photoItems.findIndex(
+                          (p) => p.id === activeFramingKey
+                        );
+                        if (activeIdx === -1) return null;
+                        const activePhoto = photoItems[activeIdx]!;
+                        const slotGeom = getCanvasSlotGeometry(activeIdx);
+                        const slotAspect =
+                          slotGeom.slotRect.rw / Math.max(1, slotGeom.slotRect.rh);
+                        return (
+                          <MediaCropBox
+                            title={`Crop Foto #${activeIdx + 1}`}
+                            imageUrl={activePhoto.url}
+                            aspectRatio={slotAspect}
+                            zoom={activePhoto.zoom ?? 1}
+                            panX={activePhoto.panX ?? 0}
+                            panY={activePhoto.panY ?? 0}
+                            cssFilter={COLOR_FILTER_MAP[colorFilter]?.css}
+                            onChange={(next) =>
+                              handleUpdatePhotoFraming(activePhoto.id, next)
+                            }
+                            onReset={() => handleResetPhotoFraming(activePhoto.id)}
+                            onClose={() => setActiveFramingKey(null)}
+                          />
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
               ) : (
-                <div>
+                <div className="space-y-2.5">
                   {!videoClip ? (
                     <label
-                      className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm font-semibold text-slate-700 transition hover:border-amber-600 hover:text-amber-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:border-amber-400 dark:hover:text-amber-300 ${
+                      className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-7 text-center text-sm font-semibold text-slate-700 transition hover:border-amber-600 hover:text-amber-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:border-amber-400 dark:hover:text-amber-300 ${
                         convertingMedia ? 'pointer-events-none opacity-60' : ''
                       }`}
                     >
                       <Video className="h-7 w-7 text-amber-600 dark:text-amber-400" />
                       <span>
                         {convertingMedia
-                          ? 'Menyiapkan / mengonversi video .MOV di browser...'
-                          : 'Pilih 1 Klip Video (.MOV iPhone / .MP4) dari HP atau Laptop'}
+                          ? 'Menyiapkan video di browser...'
+                          : 'Pilih 1 Klip Video'}
                       </span>
                       <span className="text-xs font-normal text-slate-500 dark:text-slate-400">
-                        Support .MOV iPhone &amp; .MP4 (engine browser + cut maks {MAX_VIDEO_CLIP_SEC}s tanpa beban server)
+                        MOV iPhone &amp; MP4 • Cut maks {MAX_VIDEO_CLIP_SEC}s
                       </span>
                       <input
                         type="file"
@@ -5140,12 +6083,70 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                       />
                     </label>
                   ) : (
-                    <VideoTrimmerControl
-                      clip={videoClip}
-                      onChange={setVideoClip}
-                      onCaptureCover={(img) => setVideoCoverImg(img)}
-                      onRemove={handleRemoveVideoClip}
-                    />
+                    <>
+                      <VideoTrimmerControl
+                        clip={videoClip}
+                        onChange={setVideoClip}
+                        onCaptureCover={(img) => setVideoCoverImg(img)}
+                        onRemove={handleRemoveVideoClip}
+                      />
+                      <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-950/70">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setActiveFramingKey((cur) =>
+                              cur === 'video' ? null : 'video'
+                            )
+                          }
+                          className="flex w-full items-center justify-between px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100/70 dark:text-slate-200 dark:hover:bg-slate-900"
+                        >
+                          <span className="inline-flex items-center gap-1.5">
+                            <Crop className="h-3.5 w-3.5 text-amber-500" />
+                            Crop &amp; Posisi Video
+                          </span>
+                          <ChevronDown
+                            className={`h-4 w-4 text-slate-400 transition-transform ${
+                              activeFramingKey === 'video' ? 'rotate-180' : ''
+                            }`}
+                          />
+                        </button>
+                        {activeFramingKey === 'video' && (
+                          <div className="border-t border-slate-200 p-2 dark:border-slate-800">
+                            <MediaCropBox
+                              title="Crop & Posisi Video"
+                              imageUrl={videoCoverImg?.src ?? null}
+                              aspectRatio={
+                                DIMENSIONS[ratio].w / DIMENSIONS[ratio].h
+                              }
+                              zoom={videoClip.zoom ?? 1}
+                              panX={videoClip.panX ?? 0}
+                              panY={videoClip.panY ?? 0}
+                              cssFilter={COLOR_FILTER_MAP[colorFilter]?.css}
+                              onChange={(next) =>
+                                setVideoClip((prev) =>
+                                  prev
+                                    ? {
+                                        ...prev,
+                                        zoom: next.zoom,
+                                        panX: next.panX,
+                                        panY: next.panY,
+                                      }
+                                    : prev
+                                )
+                              }
+                              onReset={() =>
+                                setVideoClip((prev) =>
+                                  prev
+                                    ? { ...prev, zoom: 1, panX: 0, panY: 0 }
+                                    : prev
+                                )
+                              }
+                              onClose={() => setActiveFramingKey(null)}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </>
                   )}
                 </div>
               )}
@@ -5165,23 +6166,30 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
           {step === 2 && (
             <div className="animate-page-enter space-y-4">
-              <h2 className="font-display text-lg font-extrabold uppercase tracking-wider">
-                Langkah 2: Format, Gaya &amp; Caption
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="font-display text-lg font-extrabold uppercase tracking-wider">
+                  Langkah 2: Format, Gaya &amp; Caption
+                </h2>
+                <InfoTooltip text="Pilih template siaran, rasio konten, filter warna, caption/kredit, dan musik latar." />
+              </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Broadcast Template
-                  </label>
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Template Siaran
+                    </label>
+                    <InfoTooltip text="Sesuaikan layout grafis overlay dengan momen: Live, Final, Jadwal Harian, Highlight, atau Podium Juara." />
+                  </div>
                   <div className="grid gap-1.5">
                     {(
                       [
-                        ['live', 'LIVE MATCH (Active Set Score)'],
-                        ['final', 'FINAL SCORE (Full-Time Result)'],
-                        ['upcoming', 'UPCOMING MATCH (Fixture)'],
-                        ['highlight', 'MATCH HIGHLIGHT (Action)'],
-                        ['champion', 'CHAMPIONS & PODIUM (Winners)'],
+                        ['live', 'LIVE MATCH'],
+                        ['final', 'FINAL SCORE'],
+                        ['upcoming', 'UPCOMING MATCH'],
+                        ['highlight', 'MATCH HIGHLIGHT'],
+                        ['schedule_day', 'JADWAL HARIAN'],
+                        ['champion', 'CHAMPIONS & PODIUM'],
                       ] as const
                     ).map(([val, label]) => (
                       <button
@@ -5200,15 +6208,21 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                         {val === 'champion' && (
                           <Crown className="h-3.5 w-3.5 shrink-0 text-amber-500" />
                         )}
+                        {val === 'schedule_day' && (
+                          <CalendarDays className="h-3.5 w-3.5 shrink-0 text-sky-500" />
+                        )}
                       </button>
                     ))}
                   </div>
                 </div>
 
                 <div>
-                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Aspect Ratio
-                  </label>
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Aspect Ratio
+                    </label>
+                    <InfoTooltip text="9:16 untuk IG Story/Reels/TikTok, 4:5 untuk Feed IG, 1:1 untuk kotak, 16:9 untuk YouTube/TV." />
+                  </div>
                   <div className="grid gap-1.5">
                     {(Object.keys(DIMENSIONS) as AspectRatio[]).map((r) => (
                       <button
@@ -5228,13 +6242,13 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 </div>
               </div>
 
-              {/* Stage Theme Selector (Quarter-Final, Semi-Final, 3rd Place, Grand Final) OR Champion/Podium Selector */}
+              {/* Conditional Template Theme Box: Champion Podium OR Daily Schedule Day Selector OR Stage Badge */}
               {template === 'champion' ? (
                 <div className="space-y-3 rounded-2xl border border-amber-500/40 bg-gradient-to-br from-amber-500/10 via-amber-500/5 to-transparent p-3.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-amber-800 dark:text-amber-300">
                       <Trophy className="h-4 w-4" />
-                      Championship &amp; Podium Variant
+                      Podium &amp; Juara
                     </span>
                     <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
                       {tournament?.name}
@@ -5272,7 +6286,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   {podiumVariant !== 'podium_all' && (
                     <div>
                       <label className="mb-1 block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                        Spotlight Team (Auto from Bracket / Manual Override)
+                        Spotlight Tim
                       </label>
                       <select
                         value={customSpotlightTeamId ?? ''}
@@ -5301,23 +6315,57 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                     </div>
                   )}
                 </div>
+              ) : template === 'schedule_day' ? (
+                <div className="space-y-2.5 rounded-2xl border border-sky-500/35 bg-sky-500/8 p-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-sky-800 dark:text-sky-300">
+                      <CalendarDays className="h-4 w-4" />
+                      Pilih Hari Jadwal
+                      <InfoTooltip text="Menampilkan hingga 8 pertandingan pada hari terpilih ke dalam poster Jadwal Harian." />
+                    </span>
+                    <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-extrabold uppercase text-sky-700 dark:text-sky-300">
+                      {activeScheduleDay
+                        ? `${activeScheduleDay.dayLabel} • ${activeScheduleDay.items.length} Match`
+                        : 'Belum ada jadwal'}
+                    </span>
+                  </div>
+                  {scheduleDayGroups.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {scheduleDayGroups.map((grp, gIdx) => (
+                        <button
+                          key={grp.dayKey}
+                          type="button"
+                          onClick={() => setSelectedScheduleDayIdx(gIdx)}
+                          className={`rounded-lg border px-2.5 py-1.5 text-xs font-bold transition ${
+                            safeScheduleDayIdx === gIdx
+                              ? 'border-sky-500 bg-sky-500 text-slate-950 shadow-xs'
+                              : 'border-slate-200 bg-white text-slate-700 hover:border-sky-500/50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300'
+                          }`}
+                        >
+                          Hari {gIdx + 1}: {grp.dayLabel} ({grp.items.length})
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/80 p-3.5 dark:border-slate-800 dark:bg-slate-950/60">
                   <div className="flex flex-wrap items-center justify-between gap-1">
-                    <label className="text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                      Match Stage Badge &amp; Visual Theme
-                    </label>
+                    <span className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                      Lencana Babak
+                      <InfoTooltip text="Otomatis mendeteksi babak dari bagan atau pilih manual (Pool, R16, QF, SF, 3rd, Final)." />
+                    </span>
                     <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-extrabold uppercase text-amber-800 dark:text-amber-300">
-                      Active: {stageDisplayBadge}
+                      {stageDisplayBadge}
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {(
                       [
-                        ['auto', 'Auto (From Match)'],
-                        ['pool', 'Pool Stage'],
-                        ['r16', 'Round of 16'],
-                        ['qf', 'Quarter-Final'],
+                        ['auto', 'Auto'],
+                        ['pool', 'Pool'],
+                        ['r16', 'R16'],
+                        ['qf', 'QF'],
                         ['sf', 'Semi-Final'],
                         ['third', '3rd Place'],
                         ['final', 'Grand Final'],
@@ -5340,11 +6388,40 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 </div>
               )}
 
-              {mediaMode === 'photo' && photoItems.length >= 2 && (
+              {/* Quick Color Filter Presets */}
+              <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/80 p-3.5 dark:border-slate-800 dark:bg-slate-950/60">
+                <div className="flex items-center gap-1.5">
+                  <Palette className="h-3.5 w-3.5 text-amber-500" />
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                    Filter Warna
+                  </span>
+                  <InfoTooltip text="Preset gradasi warna instan pada foto maupun klip video di canvas export." />
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                  {(Object.keys(COLOR_FILTER_MAP) as ColorFilterPreset[]).map(
+                    (fKey) => (
+                      <button
+                        key={fKey}
+                        type="button"
+                        onClick={() => setColorFilter(fKey)}
+                        className={`rounded-xl border px-2.5 py-2 text-xs font-bold transition ${
+                          colorFilter === fKey
+                            ? 'border-amber-500 bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300'
+                        }`}
+                      >
+                        {COLOR_FILTER_MAP[fKey].label}
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+
+              {mediaMode === 'photo' && photoItems.length >= 2 && template !== 'schedule_day' && (
                 <div className="rounded-2xl border border-amber-500/30 bg-amber-500/8 p-3.5">
                   <label className="mb-1.5 flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-amber-800 dark:text-amber-300">
                     <LayoutGrid className="h-3.5 w-3.5" />
-                    Tampilan Poster PNG &amp; Live Report ({photoItems.length} Foto)
+                    Layout Poster PNG ({photoItems.length} Foto)
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     <button
@@ -5377,7 +6454,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 <div className="grid gap-3 rounded-2xl border border-sky-500/35 bg-sky-500/8 p-3.5 sm:grid-cols-2">
                   <div>
                     <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-sky-800 dark:text-sky-300">
-                      Jadwal Tanding (Otomatis dari Bagan)
+                      Jadwal Tanding
                     </label>
                     <input
                       type="text"
@@ -5389,7 +6466,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   </div>
                   <div>
                     <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-sky-800 dark:text-sky-300">
-                      Lapangan (Otomatis dari Bagan)
+                      Lapangan
                     </label>
                     <input
                       type="text"
@@ -5402,17 +6479,34 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 </div>
               )}
 
-              <div>
-                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">
-                  Caption / Keterangan Singkat
-                </label>
-                <input
-                  type="text"
-                  value={caption}
-                  onChange={(e) => setCaption(e.target.value)}
-                  placeholder="Contoh: Spike keras penentu kemenangan di Set 2!"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-950"
-                />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Caption Singkat
+                  </label>
+                  <input
+                    type="text"
+                    value={caption}
+                    onChange={(e) => setCaption(e.target.value)}
+                    placeholder="Contoh: Spike keras penentu Set 2!"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-950"
+                  />
+                </div>
+                <div>
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Kredit Foto / Video
+                    </label>
+                    <InfoTooltip text="Opsional. Nama/akun fotografer atau videografer yang muncul sebagai kredit kecil pada poster." />
+                  </div>
+                  <input
+                    type="text"
+                    value={photoCredit}
+                    onChange={(e) => setPhotoCredit(e.target.value)}
+                    placeholder="Contoh: @timmedia.svc"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-950"
+                  />
+                </div>
               </div>
 
               {/* Smart Auto-First BGM & ReactBits SFX Controls */}
@@ -5421,11 +6515,12 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   <div className="flex items-center gap-2">
                     <Music className="h-4 w-4 text-amber-500" />
                     <span className="text-xs font-extrabold uppercase tracking-wider text-slate-800 dark:text-slate-100">
-                      Musik Video &amp; SFX Transisi
+                      Musik &amp; SFX
                     </span>
+                    <InfoTooltip text="Lagu dipilih otomatis sesuai template. Klik Dengar untuk pratinjau atau Pilih Manual." />
                     <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-extrabold uppercase text-amber-600 dark:text-amber-400">
                       {audioMode === 'auto'
-                        ? 'Auto-Pick'
+                        ? 'Auto'
                         : audioMode === 'manual'
                           ? 'Manual'
                           : 'Mute'}
@@ -5436,10 +6531,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                       type="button"
                       onClick={handleShuffleTrack}
                       className="inline-flex items-center gap-1 rounded-lg border border-amber-500/40 bg-white px-2.5 py-1 text-[11px] font-bold text-amber-600 transition hover:bg-amber-500/10 dark:bg-slate-900 dark:text-amber-400"
-                      title="Acak lagu lain yang cocok dengan template ini"
+                      title="Acak lagu lain"
                     >
                       <Shuffle className="h-3 w-3" />
-                      Acak Ulang
+                      Acak
                     </button>
                     <button
                       type="button"
@@ -5449,7 +6544,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                       }}
                       className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-600 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
                     >
-                      {audioMode === 'manual' ? 'Kembali Otomatis' : 'Pilih Manual'}
+                      {audioMode === 'manual' ? 'Auto' : 'Manual'}
                     </button>
                   </div>
                 </div>
@@ -5498,7 +6593,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                       }}
                       className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-900"
                     >
-                      <optgroup label="Rekomendasi Sesuai Template Ini">
+                      <optgroup label="Rekomendasi Template Ini">
                         {recommendedTracks.map((tr) => (
                           <option key={tr.id} value={tr.id}>
                             {tr.title} • {tr.vibe} ({tr.bpm} BPM)
@@ -5512,7 +6607,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                           </option>
                         ))}
                       </optgroup>
-                      <option value="__none__">Tanpa Musik Latar (Hanya SFX / Bisu)</option>
+                      <option value="__none__">Tanpa Musik Latar (Bisu)</option>
                     </select>
                   </div>
                 )}
@@ -5546,7 +6641,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                       checked={enableSfx}
                       onChange={(e) => setEnableSfx(e.target.checked)}
                     />
-                    <span>SFX Transisi (Whoosh &amp; Impact)</span>
+                    <span>SFX Transisi</span>
                   </label>
                 </div>
               </div>
@@ -5557,8 +6652,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   checked={includeOutro}
                   onChange={(e) => setIncludeOutro(e.target.checked)}
                 />
-                Sertakan Penutup Logo Penyelenggara (SMANSAGE/AVERSA) &amp; Sponsor (
-                {sponsorList.length} logo)
+                <span>
+                  Outro Penyelenggara &amp; Sponsor ({sponsorList.length} logo)
+                </span>
+                <InfoTooltip text="Tambahkan layar penutup logo SVC/AVERSA dan seluruh logo sponsor di akhir video." />
               </label>
 
               <div className="flex justify-between pt-2">
@@ -5583,29 +6680,33 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
           {step === 3 && (
             <div className="animate-page-enter space-y-4">
-              <h2 className="font-display text-lg font-extrabold uppercase tracking-wider">
-                Langkah 3: Preview, Export &amp; Publish
-              </h2>
-              <p className="text-xs text-slate-600 dark:text-slate-400">
-                <ShinyText className="font-bold">
-                  Engine 3D Three.js + ReactBits Motion ({timeline.totalDurationSec}s Adaptif Tanpa Cut Kasar):
-                </ShinyText>{' '}
-                <strong>Intro SVC 3D</strong> → <strong>Ribbon Stinger</strong> →{' '}
-                <strong>{teamA?.shortCode || 'TIM A'} vs {teamB?.shortCode || 'TIM B'}</strong> →{' '}
-                <strong>
-                  {mediaMode === 'video'
-                    ? 'Shutter Split ke Klip Video + Skor'
-                    : photoItems.length >= 2
-                      ? `Shutter Split ke ${photoItems.length} Foto Momen + Skor`
-                      : 'Shutter Split ke Foto + Skor'}
-                </strong>{' '}
-                {includeOutro && (
-                  <>
-                    → <strong>Penyelenggara &amp; Sponsor</strong>
-                  </>
-                )}
-                .
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <h2 className="font-display text-lg font-extrabold uppercase tracking-wider">
+                    Langkah 3: Preview, Export &amp; Publish
+                  </h2>
+                  <InfoTooltip text="Putar animasi 3D, unduh PNG atau Paket IG (9:16 + 4:5), render video broadcast, lalu salin caption atau publish ke Galeri." />
+                </div>
+                <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px]">
+                  <ShinyText className="font-bold">
+                    {timeline.totalDurationSec}s • 3D Motion
+                  </ShinyText>
+                  <InfoTooltip
+                    align="right"
+                    text={`Alur: Intro SVC 3D → Ribbon Stinger → ${
+                      template === 'schedule_day'
+                        ? activeScheduleDay?.dayLabel || 'Jadwal Harian'
+                        : `${teamA?.shortCode || 'TIM A'} vs ${teamB?.shortCode || 'TIM B'}`
+                    } → ${
+                      mediaMode === 'video'
+                        ? 'Klip Video + Skor'
+                        : photoItems.length >= 2
+                          ? `${photoItems.length} Foto Momen + Skor`
+                          : 'Foto + Skor'
+                    }${includeOutro ? ' → Sponsor & Penyelenggara' : ''}`}
+                  />
+                </div>
+              </div>
 
               <div className="grid gap-2.5 sm:grid-cols-2">
                 <button
@@ -5617,7 +6718,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   <Play className="h-4 w-4" />
                   {previewPlaying
                     ? 'Memutar Preview...'
-                    : `Putar Preview Animasi (${timeline.totalDurationSec}s)`}
+                    : `Putar Preview (${timeline.totalDurationSec}s)`}
                 </button>
 
                 <button
@@ -5627,10 +6728,22 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 >
                   <Download className="h-4 w-4" />
                   {mediaMode === 'video'
-                    ? 'Export Cover Poster (PNG)'
-                    : photoItems.length >= 2 && posterLayout === 'collage'
+                    ? 'Export Cover (PNG)'
+                    : photoItems.length >= 2 && posterLayout === 'collage' && template !== 'schedule_day'
                       ? `Export Kolase ${photoItems.length} Foto (PNG)`
-                      : 'Export Foto (PNG)'}
+                      : 'Export Poster (PNG)'}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={exportingBatchIg || exportingVideo}
+                  onClick={handleDownloadIgPack}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-sky-500/40 bg-sky-500/10 px-4 py-3 text-xs font-bold text-sky-800 transition hover:bg-sky-500/20 disabled:opacity-50 dark:text-sky-300"
+                >
+                  <LayoutGrid className="h-4 w-4" />
+                  {exportingBatchIg
+                    ? 'Menyiapkan Paket IG...'
+                    : 'Unduh Paket IG (9:16 + 4:5)'}
                 </button>
 
                 <button
@@ -5642,14 +6755,14 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   <Film className="h-4 w-4" />
                   {exportingVideo
                     ? `Merender ${videoProgress}%...`
-                    : `Export Video Broadcast (${timeline.totalDurationSec}s)`}
+                    : `Export Video (${timeline.totalDurationSec}s)`}
                 </button>
 
                 <button
                   type="button"
                   disabled={publishing || !activeMatch}
                   onClick={handlePublish}
-                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-3 text-xs font-bold text-slate-950 shadow-lg shadow-amber-500/20 transition hover:bg-amber-400 disabled:opacity-50"
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-3 text-xs font-bold text-slate-950 shadow-lg shadow-amber-500/20 transition hover:bg-amber-400 disabled:opacity-50 sm:col-span-2"
                 >
                   <Send className="h-4 w-4" />
                   {publishing
@@ -5662,6 +6775,51 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                           ? `Publish Slide (${photoItems.length} Foto + Poster)`
                           : 'Publish ke Galeri Momen'}
                 </button>
+              </div>
+
+              {/* Auto-Caption & Hashtag Social Media Generator */}
+              <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/80 p-3.5 dark:border-slate-800 dark:bg-slate-950/60">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                    Caption Sosmed Siap Posting
+                    <InfoTooltip text="Dibuat otomatis dari data pertandingan atau jadwal, catatan, kredit media, dan tagar resmi turnamen." />
+                  </span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(generatedSocialCaption);
+                        setCopiedSocialCaption(true);
+                        window.setTimeout(() => setCopiedSocialCaption(false), 2000);
+                      } catch {
+                        setStatusMsg('Gagal menyalin otomatis. Silakan blok & salin teks caption.');
+                      }
+                    }}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                      copiedSocialCaption
+                        ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
+                    }`}
+                  >
+                    {copiedSocialCaption ? (
+                      <>
+                        <Check className="h-3.5 w-3.5" />
+                        Tersalin
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3.5 w-3.5" />
+                        Salin Caption
+                      </>
+                    )}
+                  </button>
+                </div>
+                <textarea
+                  readOnly
+                  rows={4}
+                  value={generatedSocialCaption}
+                  className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs leading-relaxed text-slate-700 focus:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
+                />
               </div>
 
               <div className="flex justify-start pt-1">
@@ -5685,20 +6843,25 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
             <Camera className="h-4 w-4 text-amber-500" />
             Live Preview ({ratio})
           </span>
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
             {ratio === '9:16' && (
-              <button
-                type="button"
-                onClick={() => setShowSafeZone((v) => !v)}
-                className={`rounded-lg border px-2 py-1 text-[11px] font-bold transition ${
-                  showSafeZone
-                    ? 'border-amber-500/50 bg-amber-500/15 text-amber-500'
-                    : 'border-slate-300 text-slate-500 dark:border-slate-700 dark:text-slate-400'
-                }`}
-                title="Garis bantu area aman Instagram Story (hanya tampil di pratinjau, tidak ikut ter-export)"
-              >
-                {showSafeZone ? 'Safe Zone IG: ON' : 'Safe Zone IG: OFF'}
-              </button>
+              <div className="inline-flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setShowSafeZone((v) => !v)}
+                  className={`rounded-lg border px-2 py-1 text-[11px] font-bold transition ${
+                    showSafeZone
+                      ? 'border-amber-500/50 bg-amber-500/15 text-amber-500'
+                      : 'border-slate-300 text-slate-500 dark:border-slate-700 dark:text-slate-400'
+                  }`}
+                >
+                  {showSafeZone ? 'Safe Zone IG: ON' : 'Safe Zone IG: OFF'}
+                </button>
+                <InfoTooltip
+                  align="right"
+                  text="Garis bantu area aman IG Story agar teks tidak terpotong UI Instagram (tidak ikut ter-export)."
+                />
+              </div>
             )}
             <span>
               {DIMENSIONS[ratio].w}×{DIMENSIONS[ratio].h}
@@ -5706,12 +6869,71 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           </div>
         </div>
 
-        <div className="flex w-full items-center justify-center overflow-hidden rounded-xl bg-slate-950 p-2">
+        <div
+          ref={canvasWrapRef}
+          className="flex w-full items-center justify-center overflow-hidden rounded-xl bg-slate-950 p-2"
+        >
           <canvas
             ref={canvasRef}
-            className="max-h-[520px] max-w-full rounded-lg object-contain shadow-xl"
+            onPointerDown={handleCanvasPointerDown}
+            onPointerMove={handleCanvasPointerMove}
+            onPointerUp={handleCanvasPointerEnd}
+            onPointerCancel={handleCanvasPointerEnd}
+            onDoubleClick={handleCanvasDoubleClick}
+            className={`max-h-[520px] max-w-full rounded-lg object-contain shadow-xl ${
+              hasInteractiveCanvasMedia
+                ? 'touch-none select-none cursor-grab active:cursor-grabbing'
+                : ''
+            }`}
           />
         </div>
+
+        {hasInteractiveCanvasMedia && (
+          <div className="mt-2.5 flex w-full flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-800 dark:bg-slate-950/70">
+            <span className="inline-flex items-center gap-1.5 font-semibold text-slate-600 dark:text-slate-300">
+              <Move className="h-3.5 w-3.5 text-amber-500" />
+              <span>Geser &amp; Pinch/Scroll</span>
+              <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-extrabold uppercase text-amber-700 dark:text-amber-300">
+                {mediaMode === 'video' ? 'Video' : `Foto #${clampedCanvasSlot + 1}`}
+              </span>
+            </span>
+
+            <div className="flex items-center gap-1.5">
+              <div className="inline-flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5 dark:border-slate-700 dark:bg-slate-900">
+                <button
+                  type="button"
+                  disabled={activeCanvasGeom.cur.zoom <= 1}
+                  onClick={() => handleStepActiveCanvasZoom(-0.2)}
+                  aria-label="Perkecil zoom preview"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-600 hover:bg-slate-100 disabled:opacity-35 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  <ZoomOut className="h-3.5 w-3.5" />
+                </button>
+                <span className="min-w-10 text-center font-mono text-[11px] font-bold text-slate-800 tabular-nums dark:text-amber-300">
+                  {activeCanvasGeom.cur.zoom.toFixed(1)}x
+                </span>
+                <button
+                  type="button"
+                  disabled={activeCanvasGeom.cur.zoom >= 3}
+                  onClick={() => handleStepActiveCanvasZoom(0.2)}
+                  aria-label="Perbesar zoom preview"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-600 hover:bg-slate-100 disabled:opacity-35 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  <ZoomIn className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={handleResetActiveCanvasSlot}
+                aria-label="Reset zoom dan posisi preview"
+                className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Reset
+              </button>
+            </div>
+          </div>
+        )}
 
         {exportedVideoUrl && (
           <div className="mt-4 w-full space-y-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
@@ -5745,15 +6967,11 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       {data.reports.length > 0 && (
         <div className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2 dark:border-slate-800 dark:bg-slate-900">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 className="flex items-center gap-2 font-display text-base font-extrabold uppercase tracking-wider">
-                <LayoutGrid className="h-4 w-4 text-amber-700 dark:text-amber-400" />
-                Galeri Momen Terpublikasi ({data.reports.length})
-              </h3>
-              <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
-                Mendukung geser multi-slide foto dan pemutar video langsung di Portal Publik maupun Rincian Pertandingan.
-              </p>
-            </div>
+            <h3 className="flex items-center gap-2 font-display text-base font-extrabold uppercase tracking-wider">
+              <LayoutGrid className="h-4 w-4 text-amber-700 dark:text-amber-400" />
+              Galeri Momen Terpublikasi ({data.reports.length})
+              <InfoTooltip text="Mendukung geser multi-slide foto dan pemutar video langsung di Portal Publik maupun Rincian Pertandingan." />
+            </h3>
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {data.reports.slice(0, 9).map((rep) => (
