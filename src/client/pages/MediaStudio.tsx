@@ -78,6 +78,7 @@ import {
   VIDEO_INPUT_ACCEPT,
   normalizeImageInBrowser,
   prepareVideoInBrowser,
+  transcodeToSocialMp4,
 } from '../lib/mediaConverter';
 import {
   createOffscreenVolleyball3D,
@@ -889,6 +890,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     podium1Logo: HTMLImageElement | null;
     podium2Logo: HTMLImageElement | null;
     podium3Logo: HTMLImageElement | null;
+    teamLogos: Map<number, HTMLImageElement>;
     sponsors: Array<{ item: SponsorItem; img: HTMLImageElement | null }>;
   }>({
     photos: [],
@@ -906,6 +908,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     podium1Logo: null,
     podium2Logo: null,
     podium3Logo: null,
+    teamLogos: new Map(),
     sponsors: [],
   });
 
@@ -988,6 +991,21 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     Math.max(0, scheduleDayGroups.length - 1)
   );
   const activeScheduleDay = scheduleDayGroups[safeScheduleDayIdx] ?? null;
+  const SCHEDULE_ITEMS_PER_SLIDE = 4;
+  const schedulePages = useMemo(() => {
+    const allItems = activeScheduleDay?.items ?? [];
+    if (allItems.length === 0) return [[]];
+    const pages: typeof allItems[] = [];
+    for (let i = 0; i < allItems.length; i += SCHEDULE_ITEMS_PER_SLIDE) {
+      pages.push(allItems.slice(i, i + SCHEDULE_ITEMS_PER_SLIDE));
+    }
+    return pages;
+  }, [activeScheduleDay]);
+  const [scheduleSlideIdx, setScheduleSlideIdx] = useState(0);
+  const safeScheduleSlideIdx = Math.min(
+    scheduleSlideIdx,
+    Math.max(0, schedulePages.length - 1)
+  );
   const catTeams = data.teams.filter((t) => t.tournamentId === tournament?.id);
   const mainRoundNums = catMatches
     .filter((m) => m.bracketType === 'main')
@@ -1727,12 +1745,31 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         if (cardT <= 0.001) return;
 
         // Dedicated Daily Schedule Card Renderer (template === 'schedule_day')
+        // Max 4 matches per slide, cycles automatically in Video mode, includes Team Logos!
         if (template === 'schedule_day') {
-          const dayItems = (activeScheduleDay?.items ?? []).slice(0, 8);
+          const totalSlides = Math.max(1, schedulePages.length);
+          let activePageIdx = safeScheduleSlideIdx;
+          let slideFadeAlpha = 1;
+
+          if (isVideo && totalSlides > 1) {
+            const schedDur = Math.max(2, timeline.outroStartSec - 4.4);
+            const perSlideDur = schedDur / totalSlides;
+            const localT = Math.max(0, timeSec - 4.4);
+            activePageIdx = Math.min(totalSlides - 1, Math.floor(localT / perSlideDur));
+            const slideElapsed = localT - activePageIdx * perSlideDur;
+            const enterAlpha = easeOutCubic(clamp01(slideElapsed / 0.35));
+            const exitAlpha =
+              activePageIdx < totalSlides - 1 && slideElapsed > perSlideDur - 0.3
+                ? 1 - easeInOutCubic(clamp01((slideElapsed - (perSlideDur - 0.3)) / 0.3))
+                : 1;
+            slideFadeAlpha = enterAlpha * exitAlpha;
+          }
+
+          const dayItems = schedulePages[activePageIdx] ?? [];
           const cardTop = safeTop + Math.round(u * (photoCredit.trim() ? 0.165 : 0.13));
           const cardBot = h - safeBottom - Math.round(u * 0.025);
           const cardH = Math.max(260, cardBot - cardTop);
-          const cardW = isLandscape ? Math.round(w * 0.82) : w - pad * 2;
+          const cardW = isLandscape ? Math.round(w * 0.84) : w - pad * 2;
           const cardX = Math.round((w - cardW) / 2);
           const slideOffset = (1 - easeOutQuint(cardT)) * 90;
           const cardY = cardTop + slideOffset;
@@ -1748,20 +1785,21 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
           // Pill Header
           const pillH = Math.round(u * 0.048);
-          const pillW = Math.min(cardW * 0.82, Math.round(u * 0.62));
+          const pillW = Math.min(cardW * 0.84, Math.round(u * 0.66));
           const pillX = w / 2 - pillW / 2;
           const pillY = cardY - pillH / 2;
           drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 999);
           ctx.fillStyle = '#F5C538';
           ctx.fill();
 
-          const dayPillLabel = `JADWAL • ${(activeScheduleDay?.dayLabel || 'HARI INI').toUpperCase()}`;
+          const slideSuffix = totalSlides > 1 ? ` • SLIDE ${activePageIdx + 1}/${totalSlides}` : '';
+          const dayPillLabel = `JADWAL • ${(activeScheduleDay?.dayLabel || 'HARI INI').toUpperCase()}${slideSuffix}`;
           const fittedDayPill = fitSingleLine(
             ctx,
             dayPillLabel,
             pillW - 28,
-            Math.round(pillH * 0.45),
-            Math.round(pillH * 0.3),
+            Math.round(pillH * 0.44),
+            Math.round(pillH * 0.28),
             '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
           );
           ctx.fillStyle = '#0B0F19';
@@ -1771,20 +1809,23 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           ctx.fillText(fittedDayPill.text, w / 2, pillY + pillH / 2 + 1);
           ctx.textBaseline = 'alphabetic';
 
-          // Schedule Rows Area
-          const innerPadX = Math.round(cardW * 0.045);
-          const headerSpace = Math.round(u * 0.045);
-          const footerSpace = caption.trim() ? Math.round(u * 0.055) : Math.round(u * 0.025);
+          // Schedule Rows Area (Max 4 generous cards with Team Logos)
+          const innerPadX = Math.round(cardW * 0.04);
+          const headerSpace = Math.round(u * 0.042);
+          const footerSpace = caption.trim() ? Math.round(u * 0.052) : Math.round(u * 0.025);
           const listTop = cardY + headerSpace;
           const listAvailH = Math.max(120, cardH - headerSpace - footerSpace);
           const count = Math.max(1, dayItems.length);
-          const rowGap = Math.max(6, Math.round(listAvailH * 0.02));
+          const rowGap = Math.max(10, Math.round(listAvailH * 0.032));
           const rowH = Math.min(
-            Math.round(u * 0.115),
+            Math.round(u * 0.22),
             Math.floor((listAvailH - rowGap * (count - 1)) / count)
           );
           const totalListH = count * rowH + Math.max(0, count - 1) * rowGap;
           const startRowY = listTop + Math.max(0, Math.round((listAvailH - totalListH) / 2));
+
+          ctx.save();
+          ctx.globalAlpha *= slideFadeAlpha;
 
           if (dayItems.length === 0) {
             ctx.fillStyle = '#94A3B8';
@@ -1797,83 +1838,170 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
               const rx = cardX + innerPadX;
               const rw = cardW - innerPadX * 2;
 
-              drawRoundedRect(ctx, rx, ry, rw, rowH, 12);
+              // Row Card Surface
+              drawRoundedRect(ctx, rx, ry, rw, rowH, 16);
               ctx.fillStyle =
                 dm.status === 'live'
                   ? 'rgba(220, 38, 38, 0.22)'
-                  : 'rgba(255, 255, 255, 0.06)';
+                  : 'rgba(255, 255, 255, 0.07)';
               ctx.fill();
-              ctx.lineWidth = 1;
+              ctx.lineWidth = 1.5;
               ctx.strokeStyle =
                 dm.status === 'live'
-                  ? 'rgba(248, 113, 113, 0.55)'
-                  : 'rgba(148, 163, 184, 0.2)';
+                  ? 'rgba(248, 113, 113, 0.65)'
+                  : 'rgba(245, 197, 56, 0.25)';
               ctx.stroke();
 
-              const timePart = parsed.timeLabel || dm.courtName || 'TBA';
-              const tBoxW = Math.round(rw * 0.25);
-              drawRoundedRect(ctx, rx + 8, ry + 6, tBoxW, rowH - 12, 8);
-              ctx.fillStyle = dm.status === 'live' ? '#DC2626' : 'rgba(245, 197, 56, 0.16)';
+              // Top Meta Strip inside Row: Time Pill (Left) + Stage & Court (Right)
+              const metaBarH = Math.round(rowH * 0.28);
+              const metaPadX = Math.round(rw * 0.025);
+              const metaTopY = ry + Math.round(rowH * 0.07);
+              const timeStr = dm.status === 'live' ? 'LIVE NOW' : (parsed.timeLabel || dm.courtName || 'TBA');
+
+              ctx.font = `800 ${Math.max(12, Math.round(metaBarH * 0.56))}px "Plus Jakarta Sans", sans-serif`;
+              const measuredTimeW = ctx.measureText(timeStr).width;
+              const timePillW = Math.min(Math.round(rw * 0.44), Math.round(measuredTimeW + 24));
+              drawRoundedRect(ctx, rx + metaPadX, metaTopY, timePillW, metaBarH, 8);
+              ctx.fillStyle = dm.status === 'live' ? '#DC2626' : 'rgba(245, 197, 56, 0.22)';
               ctx.fill();
 
               const fittedTime = fitSingleLine(
                 ctx,
-                dm.status === 'live' ? 'LIVE NOW' : timePart,
-                tBoxW - 12,
-                Math.round(rowH * 0.28),
-                Math.round(rowH * 0.19),
+                timeStr,
+                timePillW - 14,
+                Math.round(metaBarH * 0.56),
+                11,
                 '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
               );
               ctx.fillStyle = dm.status === 'live' ? '#FFFFFF' : '#FACC15';
               ctx.font = `800 ${fittedTime.fontSize}px "Plus Jakarta Sans", sans-serif`;
               ctx.textAlign = 'center';
               ctx.textBaseline = 'middle';
-              ctx.fillText(fittedTime.text, rx + 8 + tBoxW / 2, ry + rowH / 2);
-
-              const tA = dm.teamAId ? teamMap.get(dm.teamAId)?.name || 'TBD' : 'TBD';
-              const tB = dm.teamBId ? teamMap.get(dm.teamBId)?.name || 'TBD' : 'TBD';
-              const vsText = `${tA}  vs  ${tB}`;
-              const textLeft = rx + tBoxW + 18;
-              const rightPad = dm.status === 'finished' ? Math.round(rw * 0.14) : 12;
-              const textAvailW = Math.max(80, rx + rw - rightPad - textLeft);
-
-              const fittedMatch = fitSingleLine(
-                ctx,
-                vsText,
-                textAvailW,
-                Math.round(rowH * 0.34),
-                Math.round(rowH * 0.2),
-                '800 {SIZE}px "Barlow Condensed", sans-serif'
-              );
-              ctx.fillStyle = '#FFFFFF';
-              ctx.font = `800 ${fittedMatch.fontSize}px "Barlow Condensed", sans-serif`;
-              ctx.textAlign = 'left';
-              ctx.textBaseline = 'alphabetic';
-              ctx.fillText(fittedMatch.text, textLeft, ry + rowH * 0.5);
+              ctx.fillText(fittedTime.text, rx + metaPadX + timePillW / 2, metaTopY + metaBarH / 2 + 1);
 
               const subLine = `${dm.stageLabel || formatInternationalStageLabel(dm, totalMainRounds)} • ${dm.courtName}`;
+              const stageMaxW = Math.max(80, rw - metaPadX * 2 - timePillW - 16);
               const fittedSub = fitSingleLine(
                 ctx,
                 subLine,
-                textAvailW,
-                Math.round(rowH * 0.22),
-                Math.round(rowH * 0.16),
-                '600 {SIZE}px "Plus Jakarta Sans", sans-serif'
+                stageMaxW,
+                Math.round(metaBarH * 0.52),
+                10,
+                '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
               );
               ctx.fillStyle = '#CBD5E1';
-              ctx.font = `600 ${fittedSub.fontSize}px "Plus Jakarta Sans", sans-serif`;
-              ctx.fillText(fittedSub.text, textLeft, ry + rowH * 0.78);
+              ctx.font = `700 ${fittedSub.fontSize}px "Plus Jakarta Sans", sans-serif`;
+              ctx.textAlign = 'right';
+              ctx.fillText(fittedSub.text, rx + rw - metaPadX, metaTopY + metaBarH / 2 + 1);
 
-              if (dm.status === 'finished') {
-                ctx.fillStyle = '#FACC15';
-                ctx.font = `800 ${Math.round(rowH * 0.34)}px "Barlow Condensed", sans-serif`;
-                ctx.textAlign = 'right';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(`${dm.setsWonA}-${dm.setsWonB}`, rx + rw - 12, ry + rowH / 2);
-                ctx.textBaseline = 'alphabetic';
-              }
+              // Main Matchup Band (Bottom 65% of Row): [Logo A] Team A   VS/Score   Team B [Logo B]
+              const bodyCenterY = ry + Math.round(rowH * 0.67);
+              const centerX = rx + rw / 2;
+              const centerPillW = Math.round(Math.min(72, rw * 0.11));
+              const centerPillH = Math.round(rowH * 0.28);
+
+              // Center VS or Score Pill
+              drawRoundedRect(
+                ctx,
+                centerX - centerPillW / 2,
+                bodyCenterY - centerPillH / 2,
+                centerPillW,
+                centerPillH,
+                999
+              );
+              ctx.fillStyle = dm.status === 'finished' ? '#F5C538' : 'rgba(255, 255, 255, 0.14)';
+              ctx.fill();
+
+              const centerTxt = dm.status === 'finished' ? `${dm.setsWonA} : ${dm.setsWonB}` : 'VS';
+              ctx.fillStyle = dm.status === 'finished' ? '#0B0F19' : '#FACC15';
+              ctx.font = `800 ${Math.round(centerPillH * 0.58)}px "Barlow Condensed", sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.fillText(centerTxt, centerX, bodyCenterY + 1);
+
+              const tAObj = dm.teamAId ? teamMap.get(dm.teamAId) : undefined;
+              const tBObj = dm.teamBId ? teamMap.get(dm.teamBId) : undefined;
+              const tAName = tAObj?.name || 'TBD';
+              const tBName = tBObj?.name || 'TBD';
+              const logoImgA = dm.teamAId ? assets.teamLogos.get(dm.teamAId) ?? null : null;
+              const logoImgB = dm.teamBId ? assets.teamLogos.get(dm.teamBId) ?? null : null;
+
+              const logoSize = Math.round(Math.min(rowH * 0.44, rw * 0.085));
+              const sideInnerPad = Math.round(rw * 0.025);
+              const logoToTextGap = Math.round(rw * 0.018);
+              const vsGap = Math.round(rw * 0.02);
+
+              // Left Side: Logo A + Team A Name
+              const leftStartX = rx + sideInnerPad;
+              const leftEndX = centerX - centerPillW / 2 - vsGap;
+              const drawTeamBadge = (
+                bx: number,
+                by: number,
+                size: number,
+                img: HTMLImageElement | null,
+                fallbackName: string
+              ) => {
+                ctx.save();
+                drawRoundedRect(ctx, bx, by, size, size, Math.round(size * 0.22));
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+                ctx.fill();
+                if (img && img.width > 0 && img.height > 0) {
+                  const padImg = Math.round(size * 0.1);
+                  const maxBox = size - padImg * 2;
+                  const scale = Math.min(maxBox / img.width, maxBox / img.height);
+                  const dw = img.width * scale;
+                  const dh = img.height * scale;
+                  ctx.drawImage(img, bx + (size - dw) / 2, by + (size - dh) / 2, dw, dh);
+                } else {
+                  ctx.fillStyle = '#0F172A';
+                  ctx.font = `800 ${Math.round(size * 0.42)}px "Barlow Condensed", sans-serif`;
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  ctx.fillText(fallbackName.slice(0, 2).toUpperCase(), bx + size / 2, by + size / 2 + 1);
+                }
+                ctx.restore();
+              };
+
+              drawTeamBadge(leftStartX, bodyCenterY - logoSize / 2, logoSize, logoImgA, tAName);
+              const textLeftStart = leftStartX + logoSize + logoToTextGap;
+              const textLeftAvailW = Math.max(50, leftEndX - textLeftStart);
+              const fittedA = fitSingleLine(
+                ctx,
+                tAName,
+                textLeftAvailW,
+                Math.round(rowH * 0.28),
+                12,
+                '800 {SIZE}px "Barlow Condensed", sans-serif'
+              );
+              ctx.fillStyle = '#FFFFFF';
+              ctx.font = `800 ${fittedA.fontSize}px "Barlow Condensed", sans-serif`;
+              ctx.textAlign = 'left';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(fittedA.text, textLeftStart, bodyCenterY + 1);
+
+              // Right Side: Team B Name + Logo B
+              const rightStartX = centerX + centerPillW / 2 + vsGap;
+              const rightLogoX = rx + rw - sideInnerPad - logoSize;
+              drawTeamBadge(rightLogoX, bodyCenterY - logoSize / 2, logoSize, logoImgB, tBName);
+              const textRightEnd = rightLogoX - logoToTextGap;
+              const textRightAvailW = Math.max(50, textRightEnd - rightStartX);
+              const fittedB = fitSingleLine(
+                ctx,
+                tBName,
+                textRightAvailW,
+                Math.round(rowH * 0.28),
+                12,
+                '800 {SIZE}px "Barlow Condensed", sans-serif'
+              );
+              ctx.fillStyle = '#FFFFFF';
+              ctx.font = `800 ${fittedB.fontSize}px "Barlow Condensed", sans-serif`;
+              ctx.textAlign = 'right';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(fittedB.text, textRightEnd, bodyCenterY + 1);
+              ctx.textBaseline = 'alphabetic';
             });
           }
+
+          ctx.restore();
 
           if (caption.trim()) {
             const fittedCap = fitSingleLine(
@@ -4225,6 +4353,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       if (t < 5.25) {
         if (t < 4.4) {
           drawScene1Intro(t);
+        } else if (template === 'schedule_day') {
+          drawPhotoAndScoreboard(Math.max(0, t - 4.4), clamp01((t - 4.4) / 0.85), true, t);
         } else {
           drawScene3Matchup(t, 0);
         }
@@ -4444,9 +4574,13 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         return;
       }
 
-      // 2. PURE SCENE 3 MATCHUP (5.25s - 7.60s)
+      // 2. PURE SCENE 3 MATCHUP (5.25s - 7.60s) — skipped in Daily Schedule mode
       if (t < 7.6) {
-        drawScene3Matchup(t, 0);
+        if (template === 'schedule_day') {
+          drawPhotoAndScoreboard(Math.max(0, t - 4.4), 1, true, t);
+        } else {
+          drawScene3Matchup(t, 0);
+        }
         drawSafeZoneOverlay();
         return;
       }
@@ -4454,11 +4588,13 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       // 3. FLUID SHUTTER-DOOR TRANSITION (7.60s - 8.85s) + ADAPTIVE SCENE 4 HOLD
       const shouldRunOutro = includeOutro && t >= timeline.outroStartSec;
       if (!shouldRunOutro) {
-        const elapsedInScene4 = Math.max(0, t - 7.6);
-        const uiProgress = clamp01((t - 7.78) / 0.92);
+        const elapsedInScene4 =
+          template === 'schedule_day' ? Math.max(0, t - 4.4) : Math.max(0, t - 7.6);
+        const uiProgress =
+          template === 'schedule_day' ? 1 : clamp01((t - 7.78) / 0.92);
         drawPhotoAndScoreboard(elapsedInScene4, uiProgress, true, t);
 
-        if (t < 8.88) {
+        if (t < 8.88 && template !== 'schedule_day') {
           const doorSplit = easeFluidCurtain(clamp01((t - 7.6) / 1.22));
           drawScene3Matchup(t, doorSplit);
         }
@@ -4469,7 +4605,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
       // 4. SMOOTH DIAGONAL GOLD WIPE FROM SCENE 4 -> SCENE 5 OUTRO
       if (t < timeline.outroWipeEndSec) {
-        const elapsedInScene4 = Math.max(0, t - 7.6);
+        const elapsedInScene4 =
+          template === 'schedule_day' ? Math.max(0, t - 4.4) : Math.max(0, t - 7.6);
         drawPhotoAndScoreboard(elapsedInScene4, 1, true, t);
 
         const wipeP = easeFluidCurtain(
@@ -4519,6 +4656,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       videoClip?.panX,
       videoClip?.panY,
       activeScheduleDay,
+      schedulePages,
+      safeScheduleSlideIdx,
       totalMainRounds,
       teamMap,
       stageTheme,
@@ -4559,6 +4698,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const teamLogoList = (data.teams ?? []).filter((tm) => Boolean(tm.logoUrl));
       const [
         loadedPhotos,
         mainLogo,
@@ -4575,6 +4715,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         podium1Logo,
         podium2Logo,
         podium3Logo,
+        loadedTeamLogos,
         ...sponsorImgs
       ] = await Promise.all([
         Promise.all(photoItems.map((it) => loadImage(it.url))),
@@ -4592,10 +4733,17 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         resolvedPodium1?.logoUrl ? loadImage(resolvedPodium1.logoUrl) : Promise.resolve(null),
         resolvedPodium2?.logoUrl ? loadImage(resolvedPodium2.logoUrl) : Promise.resolve(null),
         resolvedPodium3?.logoUrl ? loadImage(resolvedPodium3.logoUrl) : Promise.resolve(null),
+        Promise.all(
+          teamLogoList.map(async (tm) => [tm.id, await loadImage(tm.logoUrl!)] as const)
+        ),
         ...sponsorList.map((sp) => loadImage(sp.darkLogoUrl || sp.logoUrl)),
       ]);
 
       if (cancelled) return;
+      const teamLogoMap = new Map<number, HTMLImageElement>();
+      for (const [tid, img] of loadedTeamLogos) {
+        if (img) teamLogoMap.set(tid, img);
+      }
       loadedAssetsRef.current = {
         photos: loadedPhotos.filter((img): img is HTMLImageElement => img !== null),
         mainLogo,
@@ -4612,6 +4760,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         podium1Logo,
         podium2Logo,
         podium3Logo,
+        teamLogos: teamLogoMap,
         sponsors: sponsorList.map((item, idx) => ({
           item,
           img: sponsorImgs[idx] ?? null,
@@ -5566,24 +5715,37 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       const durationMs = totalDur * 1000;
       const startTime = performance.now();
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         syncHiddenVideoAt(0, false);
         audioSession.stop();
-        const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-        const blob = new Blob(chunks, { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        setExportedVideoBlob(blob);
+        const rawExt = mimeType.includes('mp4') ? 'mp4' : 'webm';
+        const rawBlob = new Blob(chunks, { type: mimeType });
+
+        let finalBlob = rawBlob;
+        let finalExt: 'mp4' | 'webm' = rawExt;
+        try {
+          setStatusMsg('Mengoptimalkan format MP4 (H.264 + AAC + FastStart) untuk Instagram/TikTok/WA...');
+          finalBlob = await transcodeToSocialMp4(rawBlob, (msg) => setStatusMsg(msg));
+          finalExt = 'mp4';
+        } catch (convErr) {
+          console.warn('Social MP4 transcode fallback to raw MediaRecorder blob:', convErr);
+        }
+
+        const url = URL.createObjectURL(finalBlob);
+        setExportedVideoBlob(finalBlob);
         setExportedVideoUrl((prev) => {
           if (prev) URL.revokeObjectURL(prev);
           return url;
         });
-        setExportedVideoExt(ext);
+        setExportedVideoExt(finalExt);
         exportingVideoRef.current = false;
         setExportingVideo(false);
         setVideoProgress(0);
         renderFrameRef.current(0, false, showSafeZoneRef.current);
-        setStatusMsg(`Video broadcast ${totalDur} detik (.${ext}) siap diputar!`);
-        setTimeout(() => setStatusMsg(null), 4000);
+        setStatusMsg(
+          `Video broadcast ${totalDur} detik (.${finalExt.toUpperCase()}) siap diunggah ke Sosmed!`
+        );
+        setTimeout(() => setStatusMsg(null), 5000);
       };
 
       recorder.start();
@@ -6384,7 +6546,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                     <span className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-sky-800 dark:text-sky-300">
                       <CalendarDays className="h-4 w-4" />
                       Pilih Hari Jadwal
-                      <InfoTooltip text="Menampilkan hingga 8 pertandingan pada hari terpilih ke dalam poster Jadwal Harian." />
+                      <InfoTooltip text="Menampilkan maksimal 4 pertandingan per slide (dengan logo tim) agar rapi. Dalam mode Video, slide berganti otomatis." />
                     </span>
                     <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-extrabold uppercase text-sky-700 dark:text-sky-300">
                       {activeScheduleDay
@@ -6398,7 +6560,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                         <button
                           key={grp.dayKey}
                           type="button"
-                          onClick={() => setSelectedScheduleDayIdx(gIdx)}
+                          onClick={() => {
+                            setSelectedScheduleDayIdx(gIdx);
+                            setScheduleSlideIdx(0);
+                          }}
                           className={`rounded-lg border px-2.5 py-1.5 text-xs font-bold transition ${
                             safeScheduleDayIdx === gIdx
                               ? 'border-sky-500 bg-sky-500 text-slate-950 shadow-xs'
@@ -6406,6 +6571,27 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                           }`}
                         >
                           Hari {gIdx + 1}: {grp.dayLabel} ({grp.items.length})
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {schedulePages.length > 1 && (
+                    <div className="flex flex-wrap items-center gap-1.5 border-t border-sky-500/20 pt-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-sky-800 dark:text-sky-300">
+                        Slide ({schedulePages.length}):
+                      </span>
+                      {schedulePages.map((pg, pIdx) => (
+                        <button
+                          key={pIdx}
+                          type="button"
+                          onClick={() => setScheduleSlideIdx(pIdx)}
+                          className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                            safeScheduleSlideIdx === pIdx
+                              ? 'border-amber-500 bg-amber-400 text-slate-950'
+                              : 'border-slate-200 bg-white text-slate-700 hover:border-amber-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+                          }`}
+                        >
+                          Slide {pIdx + 1} ({pg.length} Match)
                         </button>
                       ))}
                     </div>

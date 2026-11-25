@@ -366,3 +366,72 @@ export async function prepareVideoInBrowser(
     await ffmpeg.deleteFile(outName).catch(() => {});
   }
 }
+
+/**
+ * Transcodes a browser MediaRecorder Blob (WebM or fragmented MP4) into a
+ * universally compatible Social-Media MP4 (H.264 High@L4.1, yuv420p, 30fps CFR,
+ * AAC-LC 44.1kHz audio, +faststart moov atom at file start) for Instagram,
+ * TikTok, Facebook, and WhatsApp.
+ */
+export async function transcodeToSocialMp4(
+  rawBlob: Blob,
+  onStatus?: (message: string) => void
+): Promise<Blob> {
+  const ffmpeg = await getBrowserFfmpeg(onStatus);
+  const { fetchFile } = await import('@ffmpeg/util');
+
+  const onProgress = ({ progress }: { progress: number }) => {
+    const pct = Math.min(99, Math.max(1, Math.round(progress * 100)));
+    onStatus?.(`Mengoptimalkan MP4 untuk IG/TikTok/WA (${pct}%)...`);
+  };
+  ffmpeg.on('progress', onProgress);
+
+  const ext = rawBlob.type.includes('mp4') ? 'mp4' : 'webm';
+  const inName = `raw-${Date.now()}.${ext}`;
+  const outName = `social-${Date.now()}.mp4`;
+
+  try {
+    onStatus?.('Mengonversi video ke standar MP4 (H.264 + AAC)...');
+    await ffmpeg.writeFile(inName, await fetchFile(rawBlob));
+    await ffmpeg.exec([
+      '-i',
+      inName,
+      '-c:v',
+      'libx264',
+      '-profile:v',
+      'high',
+      '-level',
+      '4.1',
+      '-preset',
+      'ultrafast',
+      '-crf',
+      '22',
+      '-pix_fmt',
+      'yuv420p',
+      '-r',
+      '30',
+      '-vf',
+      'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '128k',
+      '-ar',
+      '44100',
+      '-movflags',
+      '+faststart',
+      outName,
+    ]);
+
+    const outData = await ffmpeg.readFile(outName);
+    const bytes =
+      outData instanceof Uint8Array
+        ? new Uint8Array(outData)
+        : new TextEncoder().encode(String(outData));
+    return new Blob([bytes], { type: 'video/mp4' });
+  } finally {
+    ffmpeg.off('progress', onProgress);
+    await ffmpeg.deleteFile(inName).catch(() => {});
+    await ffmpeg.deleteFile(outName).catch(() => {});
+  }
+}
