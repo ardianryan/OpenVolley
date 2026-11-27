@@ -123,5 +123,17 @@ describe('Media Studio Adaptive Timeline & Video Trimmer Math', () => {
     expect(noMatchup.scene4StartSec).toBe(4.4);
     expect(noMatchup.outroStartSec).toBe(10.2);
     expect(noMatchup.totalDurationSec).toBe(14.8);
+
+    const bracketTour = computeMediaTimeline({
+      mediaMode: 'photo',
+      photoCount: 1,
+      clipDurationSec: 0,
+      includeIntro: true,
+      includeOutro: true,
+      skipScene3: true,
+      minScene4HoldSec: 11.4,
+    });
+    expect(bracketTour.scene4HoldSec).toBe(11.4);
+    expect(bracketTour.totalDurationSec).toBe(20.4);
   });
 });

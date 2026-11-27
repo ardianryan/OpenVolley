@@ -33,6 +33,7 @@ export function computeMediaTimeline(params: {
   includeOutro: boolean;
   includeIntro?: boolean;
   skipScene3?: boolean;
+  minScene4HoldSec?: number;
 }): MediaTimelinePlan {
   const {
     mediaMode,
@@ -41,6 +42,7 @@ export function computeMediaTimeline(params: {
     includeOutro,
     includeIntro = true,
     skipScene3 = false,
+    minScene4HoldSec = 0,
   } = params;
 
   const effectiveScene4Start = !includeIntro
@@ -75,6 +77,12 @@ export function computeMediaTimeline(params: {
         Number((effectiveScene4Start + perSlide * 2 - 0.25).toFixed(2))
       );
     }
+  }
+
+  if (minScene4HoldSec > 0 && scene4HoldSec < minScene4HoldSec) {
+    const outroOverhead = includeOutro ? OUTRO_DURATION_SEC : includeIntro ? 0.85 : 0;
+    const maxHoldAllowed = Math.max(1.0, MAX_TOTAL_VIDEO_SEC - effectiveScene4Start - outroOverhead);
+    scene4HoldSec = Number(Math.min(minScene4HoldSec, maxHoldAllowed).toFixed(2));
   }
 
   const outroStartSec = Number((effectiveScene4Start + scene4HoldSec).toFixed(2));

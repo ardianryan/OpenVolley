@@ -13,7 +13,7 @@ import {
   Timer,
   Undo2,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { groupMatchesByScheduleDay } from '../../shared/schedule';
 import { formatInternationalStageLabel } from '../../shared/stages';
 import { TeamAvatar } from '../components/TeamAvatar';
@@ -146,6 +146,105 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
   const effectiveDecPts =
     activeMatch?.decidingSetPoints ?? activeTournament?.decidingSetPoints ?? 15;
   const effectiveDeuce = activeMatch?.useDeuce ?? activeTournament?.useDeuce ?? true;
+
+  // Local scorer court-side orientation (keeps database & TV/OBS Team A/B accurate)
+  const [swappedSides, setSwappedSides] = useState<boolean>(false);
+  const [compactTwoColMobile, setCompactTwoColMobile] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem('openvolley:live-2col-mobile') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [switchReminder, setSwitchReminder] = useState<string | null>(null);
+  const lastSetTrackerRef = useRef<{ matchId: number; set: number } | null>(null);
+  const deciding8PromptedRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!activeMatch) {
+      setSwappedSides(false);
+      setSwitchReminder(null);
+      return;
+    }
+    try {
+      setSwappedSides(
+        window.localStorage.getItem(`openvolley:court-swapped:${activeMatch.id}`) === '1'
+      );
+    } catch {
+      setSwappedSides(false);
+    }
+    setSwitchReminder(null);
+    lastSetTrackerRef.current = {
+      matchId: activeMatch.id,
+      set: activeMatch.currentSet,
+    };
+    deciding8PromptedRef.current = null;
+  }, [activeMatch?.id]);
+
+  const toggleSwappedSides = () => {
+    setSwappedSides((prev) => {
+      const next = !prev;
+      if (activeMatch) {
+        try {
+          window.localStorage.setItem(
+            `openvolley:court-swapped:${activeMatch.id}`,
+            next ? '1' : '0'
+          );
+        } catch {
+          // ignore storage quota errors
+        }
+      }
+      return next;
+    });
+    setSwitchReminder(null);
+  };
+
+  const toggleCompactTwoColMobile = () => {
+    setCompactTwoColMobile((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem('openvolley:live-2col-mobile', next ? '1' : '0');
+      } catch {
+        // ignore storage quota errors
+      }
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    if (!activeMatch || activeMatch.status !== 'live') return;
+    const prev = lastSetTrackerRef.current;
+    if (prev && prev.matchId === activeMatch.id && activeMatch.currentSet > prev.set) {
+      setSwitchReminder(
+        `Memasuki Set ${activeMatch.currentSet} — apakah tim bertukar posisi lapangan?`
+      );
+    }
+    lastSetTrackerRef.current = {
+      matchId: activeMatch.id,
+      set: activeMatch.currentSet,
+    };
+  }, [activeMatch?.id, activeMatch?.status, activeMatch?.currentSet]);
+
+  useEffect(() => {
+    if (!activeMatch || activeMatch.status !== 'live' || !activeSet) return;
+    const isDecidingSet =
+      effectiveBestOf > 1 && activeMatch.currentSet === effectiveBestOf;
+    if (!isDecidingSet) return;
+    const maxPts = Math.max(activeSet.scoreA, activeSet.scoreB);
+    if (maxPts === 8 && deciding8PromptedRef.current !== activeMatch.id) {
+      deciding8PromptedRef.current = activeMatch.id;
+      setSwitchReminder(
+        'Poin 8 Set Penentuan — apakah tim bertukar posisi lapangan?'
+      );
+    }
+  }, [
+    activeMatch?.id,
+    activeMatch?.status,
+    activeMatch?.currentSet,
+    activeSet?.scoreA,
+    activeSet?.scoreB,
+    effectiveBestOf,
+  ]);
 
   const runAction = async (
     action:
@@ -785,58 +884,156 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
             </div>
           )}
 
-          {/* Scoreboard Control Grid */}
-          <div className="grid gap-4 md:grid-cols-2">
-            {(['A', 'B'] as const).map((side) => {
-              const team = side === 'A' ? teamA : teamB;
-              const setsWon = side === 'A' ? activeMatch.setsWonA : activeMatch.setsWonB;
-              const currentPts =
-                side === 'A' ? (activeSet?.scoreA ?? 0) : (activeSet?.scoreB ?? 0);
-              const isServing = activeMatch.servingTeam === side;
-
-              return (
-                <div
-                  key={side}
-                  className={`flex flex-col justify-between rounded-2xl border p-4 transition ${
-                    isServing
-                      ? 'border-amber-500/70 bg-amber-500/5 dark:bg-amber-500/10'
-                      : 'border-slate-200 bg-slate-50/70 dark:border-slate-800 dark:bg-slate-950/60'
-                  }`}
+          {/* Switch-Sides Reminder Banner (New Set / Deciding Set 8-pt) */}
+          {switchReminder && (
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-sky-500/40 bg-sky-500/10 px-3.5 py-2.5 text-xs">
+              <span className="font-bold text-sky-900 dark:text-sky-200">
+                {switchReminder}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleSwappedSides}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-sky-500"
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <TeamAvatar team={team} size="md" />
-                      <div className="min-w-0">
-                        <p className="truncate text-base font-bold text-slate-900 dark:text-white">
-                          {team?.name}
-                        </p>
-                        <p className="text-xs text-slate-500 dark:text-slate-400">
-                          Set Dimenangkan: <strong className="text-amber-500">{setsWon}</strong>
-                        </p>
-                      </div>
+                  <ArrowLeftRight className="h-3.5 w-3.5" />
+                  Tukar Posisi Sekarang
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSwitchReminder(null)}
+                  className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-white dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  Abaikan
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Local Court-Switch Control Bar */}
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-slate-50/80 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/60">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleSwappedSides}
+                className={`inline-flex min-h-9 items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-bold transition ${
+                  swappedSides
+                    ? 'border-sky-500 bg-sky-500/15 text-sky-800 dark:text-sky-300'
+                    : 'border-slate-300 bg-white text-slate-700 hover:border-amber-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
+                }`}
+              >
+                <ArrowLeftRight className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+                <span>Tukar Posisi (Kiri ↔ Kanan)</span>
+                <span className="rounded bg-slate-200/80 px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                  {swappedSides
+                    ? `${teamB?.shortCode || 'B'} ↔ ${teamA?.shortCode || 'A'}`
+                    : `${teamA?.shortCode || 'A'} ↔ ${teamB?.shortCode || 'B'}`}
+                </span>
+              </button>
+              {swappedSides && (
+                <span className="rounded-full bg-sky-500/15 px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-sky-700 dark:text-sky-300">
+                  Posisi Ditukar (Khusus Layar Juri)
+                </span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={toggleCompactTwoColMobile}
+              className={`inline-flex min-h-9 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition md:hidden ${
+                compactTwoColMobile
+                  ? 'border-amber-500 bg-amber-500/15 text-amber-800 dark:text-amber-300'
+                  : 'border-slate-300 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+              }`}
+            >
+              {compactTwoColMobile ? 'Mode 2 Kolom: ON' : '2 Kolom HP'}
+            </button>
+          </div>
+
+          {/* Scoreboard Control Grid */}
+          <div
+            className={
+              compactTwoColMobile
+                ? 'grid grid-cols-2 gap-2.5 md:gap-4'
+                : 'grid gap-4 md:grid-cols-2'
+            }
+          >
+            {(swappedSides ? (['B', 'A'] as const) : (['A', 'B'] as const)).map(
+              (side, visualIdx) => {
+                const team = side === 'A' ? teamA : teamB;
+                const setsWon = side === 'A' ? activeMatch.setsWonA : activeMatch.setsWonB;
+                const currentPts =
+                  side === 'A' ? (activeSet?.scoreA ?? 0) : (activeSet?.scoreB ?? 0);
+                const isServing = activeMatch.servingTeam === side;
+                const isVisualLeft = visualIdx === 0;
+
+                return (
+                  <div
+                    key={side}
+                    className={`flex flex-col justify-between rounded-2xl border transition ${
+                      compactTwoColMobile ? 'p-2.5 sm:p-4' : 'p-4'
+                    } ${
+                      isServing
+                        ? 'border-amber-500/70 bg-amber-500/5 dark:bg-amber-500/10'
+                        : 'border-slate-200 bg-slate-50/70 dark:border-slate-800 dark:bg-slate-950/60'
+                    }`}
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span
+                        className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider ${
+                          isVisualLeft
+                            ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300'
+                            : 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300'
+                        }`}
+                      >
+                        {isVisualLeft ? 'Lap. Kiri' : 'Lap. Kanan'}
+                      </span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                        Tim {side}
+                      </span>
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={busy || activeMatch.status === 'finished'}
-                      onClick={() => runAction('serve', { team: side })}
-                      className={`rounded-full px-3 py-1 text-xs font-bold transition ${
-                        isServing
-                          ? 'bg-amber-500 text-slate-950 shadow-sm'
-                          : 'bg-slate-200 text-slate-600 hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-400'
+                    <div className="flex items-center justify-between gap-2 sm:gap-3">
+                      <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+                        <TeamAvatar team={team} size="md" />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-bold text-slate-900 dark:text-white sm:text-base">
+                            {team?.name}
+                          </p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            Set Dimenangkan:{' '}
+                            <strong className="text-amber-500">{setsWon}</strong>
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={busy || activeMatch.status === 'finished'}
+                        onClick={() => runAction('serve', { team: side })}
+                        className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold transition sm:px-3 ${
+                          isServing
+                            ? 'bg-amber-500 text-slate-950 shadow-sm'
+                            : 'bg-slate-200 text-slate-600 hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-400'
+                        }`}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          <VolleyballIcon className="h-3.5 w-3.5" />
+                          <span className={compactTwoColMobile ? 'hidden sm:inline' : ''}>
+                            {isServing ? 'Servis' : 'Set Servis'}
+                          </span>
+                        </span>
+                      </button>
+                    </div>
+
+                    {/* Big Score Display */}
+                    <div
+                      className={`my-4 text-center font-display font-extrabold leading-none tabular-nums text-slate-900 dark:text-white sm:my-5 ${
+                        compactTwoColMobile ? 'text-5xl sm:text-7xl' : 'text-7xl'
                       }`}
                     >
-                      <span className="inline-flex items-center gap-1.5">
-                        <VolleyballIcon className="h-3.5 w-3.5" />
-                        {isServing ? 'Servis' : 'Set Servis'}
-                      </span>
-                    </button>
-                  </div>
-
-                  {/* Big Score Display */}
-                  <div className="my-5 text-center font-display text-7xl font-extrabold leading-none tabular-nums text-slate-900 dark:text-white">
-                    {currentPts}
-                  </div>
+                      {currentPts}
+                    </div>
 
                   {/* +1 / -1 Touch Controls */}
                   <div className="grid grid-cols-[1fr_2fr] gap-2.5">

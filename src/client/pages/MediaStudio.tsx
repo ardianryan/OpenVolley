@@ -99,10 +99,13 @@ type TemplateStyle =
   | 'highlight'
   | 'champion'
   | 'schedule_day'
+  | 'bracket'
   | 'clean_frame'
   | 'event_moment'
   | 'venue_rules'
   | 'announcement';
+
+type BracketFocusMode = 'auto_tour' | 'left' | 'right' | 'finals' | 'full';
 
 const NON_MATCH_TEMPLATES: TemplateStyle[] = [
   'clean_frame',
@@ -118,7 +121,16 @@ function isNonMatchTemplate(tpl: TemplateStyle): boolean {
 function toAudioTarget(
   tpl: TemplateStyle
 ): 'live' | 'final' | 'upcoming' | 'highlight' | 'champion' | 'schedule_day' {
-  return isNonMatchTemplate(tpl) ? 'schedule_day' : (tpl as 'live' | 'final' | 'upcoming' | 'highlight' | 'champion' | 'schedule_day');
+  if (
+    tpl === 'clean_frame' ||
+    tpl === 'event_moment' ||
+    tpl === 'venue_rules' ||
+    tpl === 'announcement'
+  ) {
+    return 'schedule_day';
+  }
+  if (tpl === 'bracket') return 'champion';
+  return tpl;
 }
 type ColorFilterPreset = 'original' | 'crisp' | 'warm' | 'bw';
 type StageSelection = 'auto' | StagePresetKey;
@@ -802,6 +814,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   const [colorFilter, setColorFilter] = useState<ColorFilterPreset>('original');
   const [photoCredit, setPhotoCredit] = useState('');
   const [selectedScheduleDayIdx, setSelectedScheduleDayIdx] = useState(0);
+  const [selectedBracketTournamentId, setSelectedBracketTournamentId] = useState<number>(
+    () => data.tournaments[0]?.id ?? 1
+  );
+  const [bracketFocus, setBracketFocus] = useState<BracketFocusMode>('auto_tour');
   const [activeFramingKey, setActiveFramingKey] = useState<string | null>(null);
   const [activeCanvasSlot, setActiveCanvasSlot] = useState(0);
   const [canvasDragging, setCanvasDragging] = useState(false);
@@ -887,6 +903,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   });
   const hiddenVideoRef = useRef<HTMLVideoElement | null>(null);
   const lastVideoFrameCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastVideoResyncAtRef = useRef<number>(0);
   const previewRafRef = useRef<number>(0);
   const previewPlayingRef = useRef(false);
   const exportingVideoRef = useRef(false);
@@ -907,7 +924,12 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       : 6,
     includeIntro,
     includeOutro,
-    skipScene3: template === 'schedule_day' || isNonMatchTemplate(template),
+    skipScene3:
+      template === 'schedule_day' ||
+      template === 'bracket' ||
+      isNonMatchTemplate(template),
+    minScene4HoldSec:
+      template === 'bracket' && bracketFocus === 'auto_tour' ? 11.4 : 0,
   });
 
   useEffect(() => {
@@ -977,7 +999,13 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   useEffect(() => {
     if (!activeMatch) return;
     setTemplate((prev) => {
-      if (prev === 'champion' || prev === 'schedule_day' || isNonMatchTemplate(prev)) return prev;
+      if (
+        prev === 'champion' ||
+        prev === 'schedule_day' ||
+        prev === 'bracket' ||
+        isNonMatchTemplate(prev)
+      )
+        return prev;
       if (activeMatch.status === 'finished') return 'final';
       if (activeMatch.status === 'live') return 'live';
       return 'upcoming';
@@ -1065,6 +1093,22 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     .map((m) => m.round);
   const totalMainRounds =
     mainRoundNums.length > 0 ? Math.max(...mainRoundNums) : 3;
+
+  const bracketTournament =
+    data.tournaments.find((t) => t.id === selectedBracketTournamentId) ??
+    tournament;
+  const bracketMatches = useMemo(
+    () =>
+      data.matches.filter(
+        (m) => m.tournamentId === bracketTournament?.id && m.bracketType !== 'pool'
+      ),
+    [data.matches, bracketTournament?.id]
+  );
+  const bracketMainRounds = bracketMatches
+    .filter((m) => m.bracketType === 'main')
+    .map((m) => m.round);
+  const bracketTotalRounds =
+    bracketMainRounds.length > 0 ? Math.max(...bracketMainRounds) : 3;
 
   const effectiveStageKey: StagePresetKey =
     stageTheme === 'auto'
@@ -2074,6 +2118,514 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           return;
         }
 
+        // Dedicated Cinematic Symmetric Bracket Renderer (template === 'bracket')
+        if (template === 'bracket') {
+          let viewMode: 'left' | 'right' | 'finals' | 'full' = 'left';
+          let actProgress = 1;
+          let actFade = 1;
+
+          if (isVideo && bracketFocus === 'auto_tour') {
+            const tourDur = Math.max(3, timeline.outroStartSec - timeline.scene4StartSec);
+            const pTour = clamp01(elapsedInScene4 / tourDur);
+            if (pTour < 0.36) {
+              viewMode = 'left';
+              actProgress = clamp01(pTour / 0.24);
+              const localExit = pTour > 0.32 ? 1 - clamp01((pTour - 0.32) / 0.04) : 1;
+              actFade = clamp01(pTour / 0.05) * localExit;
+            } else if (pTour < 0.72) {
+              viewMode = 'right';
+              const rel = pTour - 0.36;
+              actProgress = clamp01(rel / 0.24);
+              const localExit = rel > 0.32 ? 1 - clamp01((rel - 0.32) / 0.04) : 1;
+              actFade = clamp01(rel / 0.05) * localExit;
+            } else {
+              viewMode = 'finals';
+              const rel = pTour - 0.72;
+              actProgress = clamp01(rel / 0.22);
+              actFade = clamp01(rel / 0.05);
+            }
+          } else if (!isVideo && bracketFocus === 'auto_tour') {
+            viewMode = isLandscape ? 'full' : 'left';
+            actProgress = 1;
+            actFade = 1;
+          } else {
+            viewMode = bracketFocus === 'auto_tour' ? 'left' : bracketFocus;
+            actProgress = isVideo ? clamp01(elapsedInScene4 / 1.4) : 1;
+            actFade = 1;
+          }
+
+          const cardTop = safeTop + Math.round(u * (photoCredit.trim() ? 0.16 : 0.125));
+          const cardBot = h - safeBottom - Math.round(u * 0.022);
+          const cardH = Math.max(260, cardBot - cardTop);
+          const cardW = isLandscape ? Math.round(w * 0.92) : w - pad * 1.6;
+          const cardX = Math.round((w - cardW) / 2);
+          const slideOffset = (1 - easeOutQuint(cardT)) * 85;
+          const cardY = cardTop + slideOffset;
+
+          ctx.save();
+          ctx.globalAlpha = easeOutCubic(cardT);
+          drawRoundedRect(ctx, cardX, cardY, cardW, cardH, 24);
+          ctx.fillStyle = 'rgba(11, 16, 30, 0.92)';
+          ctx.fill();
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(245, 197, 56, 0.8)';
+          ctx.stroke();
+
+          const viewBadgeLabel =
+            viewMode === 'left'
+              ? 'BAGAN KIRI • POOL A'
+              : viewMode === 'right'
+                ? 'BAGAN KANAN • POOL B'
+                : viewMode === 'finals'
+                  ? 'GRAND FINAL & JUARA 3'
+                  : 'BAGAN PENUH';
+          const pillH = Math.round(u * 0.046);
+          const pillW = Math.min(cardW * 0.86, Math.round(u * 0.68));
+          const pillX = w / 2 - pillW / 2;
+          const pillY = cardY - pillH / 2;
+          drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 999);
+          ctx.fillStyle = '#F5C538';
+          ctx.fill();
+
+          const catTitle = (bracketTournament?.name || 'PUTRA').toUpperCase();
+          const pillStr = `BAGAN ${catTitle} • ${viewBadgeLabel}`;
+          const fittedPill = fitSingleLine(
+            ctx,
+            pillStr,
+            pillW - 28,
+            Math.round(pillH * 0.44),
+            11,
+            '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
+          );
+          ctx.fillStyle = '#0B0F19';
+          ctx.font = `800 ${fittedPill.fontSize}px "Plus Jakarta Sans", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(fittedPill.text, w / 2, pillY + pillH / 2 + 1);
+          ctx.textBaseline = 'alphabetic';
+
+          const mainBrMatches = bracketMatches.filter((m) => m.bracketType === 'main');
+          const thirdBrMatch = bracketMatches.find((m) => m.bracketType === 'third_place') ?? null;
+          const grandFinalBrMatch =
+            mainBrMatches.find((m) => m.round === bracketTotalRounds) ?? null;
+          const preFinalRounds = Array.from(
+            { length: Math.max(0, bracketTotalRounds - 1) },
+            (_, i) => i + 1
+          );
+
+          const drawMiniTeamLogo = (
+            lx: number,
+            ly: number,
+            lSize: number,
+            teamId: number | null,
+            fallbackTxt: string
+          ) => {
+            const img = teamId ? assets.teamLogos.get(teamId) ?? null : null;
+            ctx.save();
+            drawRoundedRect(ctx, lx, ly, lSize, lSize, Math.round(lSize * 0.24));
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+            ctx.fill();
+            if (img && img.width > 0 && img.height > 0) {
+              const pImg = Math.max(2, Math.round(lSize * 0.1));
+              const maxB = lSize - pImg * 2;
+              const sc = Math.min(maxB / img.width, maxB / img.height);
+              const dw = img.width * sc;
+              const dh = img.height * sc;
+              ctx.drawImage(img, lx + (lSize - dw) / 2, ly + (lSize - dh) / 2, dw, dh);
+            } else {
+              ctx.fillStyle = '#0F172A';
+              ctx.font = `800 ${Math.max(8, Math.round(lSize * 0.42))}px "Barlow Condensed", sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(fallbackTxt.slice(0, 2).toUpperCase(), lx + lSize / 2, ly + lSize / 2 + 1);
+            }
+            ctx.restore();
+          };
+
+          const drawBracketMatchCard = (
+            m: Match | undefined,
+            mx: number,
+            my: number,
+            mw: number,
+            mh: number,
+            revealP: number,
+            isSpotlight = false
+          ) => {
+            if (revealP <= 0.01) return;
+            const slideShift = (1 - easeOutCubic(revealP)) * 18;
+            ctx.save();
+            ctx.globalAlpha *= easeOutCubic(revealP);
+            const ry = my + slideShift;
+
+            drawRoundedRect(ctx, mx, ry, mw, mh, Math.min(14, Math.round(mh * 0.16)));
+            const isFin = m?.status === 'finished';
+            const isLv = m?.status === 'live';
+            ctx.fillStyle = isSpotlight
+              ? 'rgba(30, 41, 59, 0.96)'
+              : isLv
+                ? 'rgba(185, 28, 28, 0.24)'
+                : 'rgba(255, 255, 255, 0.07)';
+            ctx.fill();
+            ctx.lineWidth = isSpotlight ? 2.5 : 1.2;
+            ctx.strokeStyle = isSpotlight
+              ? 'rgba(245, 197, 56, 0.9)'
+              : isLv
+                ? 'rgba(248, 113, 113, 0.7)'
+                : isFin
+                  ? 'rgba(245, 197, 56, 0.48)'
+                  : 'rgba(148, 163, 184, 0.28)';
+            ctx.stroke();
+
+            if (!m) {
+              ctx.fillStyle = '#64748B';
+              ctx.font = `700 ${Math.max(10, Math.round(mh * 0.22))}px "Plus Jakarta Sans", sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText('TBD', mx + mw / 2, ry + mh / 2);
+              ctx.restore();
+              return;
+            }
+
+            const tA = m.teamAId ? teamMap.get(m.teamAId) : undefined;
+            const tB = m.teamBId ? teamMap.get(m.teamBId) : undefined;
+            const winA = isFin && m.winnerId && m.winnerId === m.teamAId;
+            const winB = isFin && m.winnerId && m.winnerId === m.teamBId;
+            const isBye = m.status === 'bye';
+
+            const rowH = mh / 2;
+            const padX = Math.max(6, Math.round(mw * 0.045));
+            const logoS = Math.max(14, Math.min(Math.round(rowH * 0.68), Math.round(mw * 0.16)));
+            const scoreW = Math.max(20, Math.round(mw * 0.14));
+
+            // Divider line between Team A & Team B
+            ctx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(mx + padX, ry + rowH);
+            ctx.lineTo(mx + mw - padX, ry + rowH);
+            ctx.stroke();
+
+            const drawSlotRow = (
+              teamObj: Team | undefined,
+              teamId: number | null,
+              scoreVal: number,
+              isWinner: boolean,
+              slotY: number
+            ) => {
+              const nameStr = teamObj?.name || 'TBD';
+              drawMiniTeamLogo(
+                mx + padX,
+                slotY + (rowH - logoS) / 2,
+                logoS,
+                teamId,
+                nameStr
+              );
+
+              const textStart = mx + padX + logoS + Math.max(5, Math.round(padX * 0.8));
+              const textMaxW = Math.max(30, mx + mw - padX - scoreW - 6 - textStart);
+              const fittedName = fitSingleLine(
+                ctx,
+                nameStr,
+                textMaxW,
+                Math.max(10, Math.round(rowH * 0.44)),
+                8,
+                '700 {SIZE}px "Barlow Condensed", sans-serif'
+              );
+              ctx.fillStyle = isWinner ? '#FACC15' : teamObj ? '#F8FAFC' : '#64748B';
+              ctx.font = `${isWinner ? '800' : '700'} ${fittedName.fontSize}px "Barlow Condensed", sans-serif`;
+              ctx.textAlign = 'left';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(fittedName.text, textStart, slotY + rowH / 2 + 1);
+
+              // Score box
+              const scTxt = isBye ? (teamObj ? 'W' : '-') : (isFin || isLv ? `${scoreVal}` : '-');
+              ctx.fillStyle = isWinner ? '#FACC15' : isLv ? '#F87171' : '#94A3B8';
+              ctx.font = `800 ${Math.max(10, Math.round(rowH * 0.46))}px "Barlow Condensed", sans-serif`;
+              ctx.textAlign = 'right';
+              ctx.fillText(scTxt, mx + mw - padX, slotY + rowH / 2 + 1);
+            };
+
+            drawSlotRow(tA, m.teamAId, m.setsWonA, Boolean(winA), ry);
+            drawSlotRow(tB, m.teamBId, m.setsWonB, Boolean(winB), ry + rowH);
+            ctx.restore();
+          };
+
+          const drawBracketWing = (
+            side: 'left' | 'right',
+            wx: number,
+            wy: number,
+            ww: number,
+            wh: number,
+            wingP: number
+          ) => {
+            const cols = side === 'left' ? preFinalRounds : [...preFinalRounds].reverse();
+            const numCols = Math.max(1, cols.length);
+            const colGap = Math.max(12, Math.round(ww * 0.04));
+            const colW = (ww - colGap * (numCols - 1)) / numCols;
+            const headerH = Math.round(u * 0.032);
+            const bodyTop = wy + headerH;
+            const bodyH = Math.max(120, wh - headerH);
+
+            // Compute coordinates for all nodes in this wing
+            const nodeCoords = new Map<
+              number,
+              Array<{ x: number; y: number; w: number; h: number; match?: Match }>
+            >();
+
+            cols.forEach((rNum, cIdx) => {
+              const allRoundMatches = mainBrMatches
+                .filter((m) => m.round === rNum)
+                .sort((a, b) => a.matchIndex - b.matchIndex);
+              const half = Math.ceil(allRoundMatches.length / 2);
+              const wingMatches =
+                side === 'left' ? allRoundMatches.slice(0, half) : allRoundMatches.slice(half);
+              const count = Math.max(1, wingMatches.length);
+              const colX = wx + cIdx * (colW + colGap);
+
+              // Stage Column Header
+              const roundLbl = formatInternationalStageLabel(
+                { round: rNum, bracketType: 'main' },
+                bracketTotalRounds
+              ).toUpperCase();
+              const fittedColHdr = fitSingleLine(
+                ctx,
+                roundLbl,
+                colW,
+                Math.max(10, Math.round(headerH * 0.54)),
+                8,
+                '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
+              );
+              ctx.fillStyle = '#FDE68A';
+              ctx.font = `800 ${fittedColHdr.fontSize}px "Plus Jakarta Sans", sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(fittedColHdr.text, colX + colW / 2, wy + headerH / 2);
+
+              const slotSpan = bodyH / count;
+              const boxH = Math.min(Math.round(u * 0.115), Math.max(36, slotSpan * 0.78));
+
+              const list: Array<{ x: number; y: number; w: number; h: number; match?: Match }> = [];
+              for (let i = 0; i < count; i++) {
+                const boxY = bodyTop + i * slotSpan + (slotSpan - boxH) / 2;
+                list.push({ x: colX, y: boxY, w: colW, h: boxH, match: wingMatches[i] });
+              }
+              nodeCoords.set(rNum, list);
+            });
+
+            // Draw Progressive Neon Gold Connector Lines between Rounds
+            for (let rIdx = 0; rIdx < preFinalRounds.length - 1; rIdx++) {
+              const rFrom = preFinalRounds[rIdx];
+              const rTo = preFinalRounds[rIdx + 1];
+              const fromList = nodeCoords.get(rFrom) ?? [];
+              const toList = nodeCoords.get(rTo) ?? [];
+              const connP = clamp01((wingP - rIdx * 0.22) / 0.42);
+              if (connP <= 0.01) continue;
+
+              toList.forEach((targetNode, tIdx) => {
+                const srcA = fromList[tIdx * 2];
+                const srcB = fromList[tIdx * 2 + 1];
+                const tCenterY = targetNode.y + targetNode.h / 2;
+                const tEdgeX =
+                  side === 'left' ? targetNode.x : targetNode.x + targetNode.w;
+
+                [srcA, srcB].forEach((src) => {
+                  if (!src) return;
+                  const sEdgeX = side === 'left' ? src.x + src.w : src.x;
+                  const sCenterY = src.y + src.h / 2;
+                  const midX = (sEdgeX + tEdgeX) / 2;
+                  const hasWin = Boolean(src.match?.winnerId);
+
+                  ctx.save();
+                  ctx.strokeStyle = hasWin
+                    ? 'rgba(245, 197, 56, 0.88)'
+                    : 'rgba(148, 163, 184, 0.35)';
+                  ctx.lineWidth = hasWin ? 2.4 : 1.4;
+                  if (hasWin) {
+                    ctx.shadowColor = 'rgba(245, 197, 56, 0.5)';
+                    ctx.shadowBlur = 8;
+                  }
+                  ctx.beginPath();
+                  ctx.moveTo(sEdgeX, sCenterY);
+                  const seg1X = sEdgeX + (midX - sEdgeX) * clamp01(connP * 2.2);
+                  ctx.lineTo(seg1X, sCenterY);
+                  if (connP > 0.38) {
+                    const vP = clamp01((connP - 0.38) / 0.35);
+                    ctx.lineTo(midX, sCenterY + (tCenterY - sCenterY) * vP);
+                  }
+                  if (connP > 0.7) {
+                    const hP = clamp01((connP - 0.7) / 0.3);
+                    ctx.lineTo(midX + (tEdgeX - midX) * hP, tCenterY);
+                  }
+                  ctx.stroke();
+                  ctx.restore();
+                });
+              });
+            }
+
+            // Draw Match Cards Staggered by Round
+            cols.forEach((rNum) => {
+              const orderIdx = preFinalRounds.indexOf(rNum);
+              const roundP = clamp01((wingP - orderIdx * 0.2) / 0.45);
+              const list = nodeCoords.get(rNum) ?? [];
+              list.forEach((node) => {
+                drawBracketMatchCard(node.match, node.x, node.y, node.w, node.h, roundP);
+              });
+            });
+          };
+
+          const drawBracketFinals = (
+            fx: number,
+            fy: number,
+            fw: number,
+            fh: number,
+            finP: number
+          ) => {
+            const p = easeOutCubic(finP);
+            const has3rd = bracketTournament?.hasThirdPlace !== false;
+            const gfW = Math.min(fw, Math.round(u * 0.72));
+            const gfH = Math.round(Math.min(fh * 0.42, u * 0.24));
+            const gfX = fx + (fw - gfW) / 2;
+            const gfY = fy + (has3rd ? Math.round(fh * 0.14) : Math.round((fh - gfH) / 2));
+
+            // GRAND FINAL Title
+            ctx.save();
+            ctx.globalAlpha *= p;
+            ctx.fillStyle = '#FACC15';
+            ctx.font = `800 ${Math.round(u * 0.032)}px "Barlow Condensed", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.fillText('🏆 GRAND FINAL', fx + fw / 2, gfY - Math.round(u * 0.018));
+            ctx.restore();
+
+            drawBracketMatchCard(
+              grandFinalBrMatch ?? undefined,
+              gfX,
+              gfY,
+              gfW,
+              gfH,
+              p,
+              true
+            );
+
+            // 3rd Place or Juara 3 Bersama
+            const thirdY = gfY + gfH + Math.round(u * 0.075);
+            const thirdH = Math.round(Math.min(fh * 0.28, u * 0.165));
+            const thirdW = Math.round(gfW * 0.9);
+            const thirdX = fx + (fw - thirdW) / 2;
+
+            ctx.save();
+            ctx.globalAlpha *= clamp01((finP - 0.25) / 0.55);
+            ctx.fillStyle = '#CBD5E1';
+            ctx.font = `800 ${Math.round(u * 0.025)}px "Barlow Condensed", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.fillText(
+              has3rd ? '🥉 PEREBUTAN JUARA 3' : '🥉 JUARA 3 BERSAMA',
+              fx + fw / 2,
+              thirdY - Math.round(u * 0.014)
+            );
+            ctx.restore();
+
+            if (has3rd) {
+              drawBracketMatchCard(
+                thirdBrMatch ?? undefined,
+                thirdX,
+                thirdY,
+                thirdW,
+                thirdH,
+                clamp01((finP - 0.25) / 0.55),
+                false
+              );
+            } else {
+              const brRes = resolveTournamentPodium(
+                { id: bracketTournament?.id ?? 1, hasThirdPlace: false },
+                bracketMatches,
+                data.teams ?? []
+              );
+              const jointNames =
+                brRes.jointThirdTeams.length > 0
+                  ? brRes.jointThirdTeams.map((t) => t.name).join('  &  ')
+                  : 'Semifinalis Pool A & Pool B';
+              ctx.save();
+              ctx.globalAlpha *= clamp01((finP - 0.25) / 0.55);
+              drawRoundedRect(ctx, thirdX, thirdY, thirdW, thirdH * 0.72, 14);
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.07)';
+              ctx.fill();
+              ctx.strokeStyle = 'rgba(245, 197, 56, 0.45)';
+              ctx.lineWidth = 1.5;
+              ctx.stroke();
+
+              const fittedJoint = fitSingleLine(
+                ctx,
+                jointNames,
+                thirdW - 28,
+                Math.round(u * 0.028),
+                11,
+                '700 {SIZE}px "Barlow Condensed", sans-serif'
+              );
+              ctx.fillStyle = '#FDE68A';
+              ctx.font = `700 ${fittedJoint.fontSize}px "Barlow Condensed", sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(fittedJoint.text, fx + fw / 2, thirdY + (thirdH * 0.72) / 2);
+              ctx.restore();
+            }
+          };
+
+          const innerPadX = Math.round(cardW * 0.035);
+          const innerTop = cardY + Math.round(u * 0.042);
+          const innerBot = cardY + cardH - (caption.trim() ? Math.round(u * 0.048) : Math.round(u * 0.022));
+          const innerW = cardW - innerPadX * 2;
+          const innerH = Math.max(140, innerBot - innerTop);
+
+          ctx.save();
+          ctx.globalAlpha *= actFade;
+          if (viewMode === 'left') {
+            drawBracketWing('left', cardX + innerPadX, innerTop, innerW, innerH, actProgress);
+          } else if (viewMode === 'right') {
+            drawBracketWing('right', cardX + innerPadX, innerTop, innerW, innerH, actProgress);
+          } else if (viewMode === 'finals') {
+            drawBracketFinals(cardX + innerPadX, innerTop, innerW, innerH, actProgress);
+          } else {
+            // Full overview: 37% Left, 26% Center, 37% Right
+            const sideW = Math.round(innerW * 0.37);
+            const centerW = Math.round(innerW * 0.24);
+            const gapW = Math.round(innerW * 0.01);
+            drawBracketWing('left', cardX + innerPadX, innerTop, sideW, innerH, actProgress);
+            drawBracketFinals(
+              cardX + innerPadX + sideW + gapW,
+              innerTop,
+              centerW,
+              innerH,
+              actProgress
+            );
+            drawBracketWing(
+              'right',
+              cardX + innerPadX + sideW + gapW * 2 + centerW,
+              innerTop,
+              sideW,
+              innerH,
+              actProgress
+            );
+          }
+          ctx.restore();
+
+          if (caption.trim()) {
+            const fittedCap = fitSingleLine(
+              ctx,
+              caption.trim(),
+              cardW - 36,
+              Math.round(u * 0.022),
+              10,
+              '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
+            );
+            ctx.fillStyle = '#FDE68A';
+            ctx.font = `700 ${fittedCap.fontSize}px "Plus Jakarta Sans", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.fillText(fittedCap.text, w / 2, cardY + cardH - Math.round(u * 0.016));
+          }
+          ctx.restore();
+          return;
+        }
+
         // 1. FRAME POLOS (clean_frame): Foto/video penuh + header logo resmi & optional strip footer tipis
         if (template === 'clean_frame') {
           if (cleanFrameShowFooter) {
@@ -2207,6 +2759,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           return;
         }
 
+
         // 3. TATA TERTIB & LARANGAN (venue_rules): Panel peraturan tegas & mudah dibaca
         if (template === 'venue_rules') {
           const cardTop = safeTop + Math.round(u * (photoCredit.trim() ? 0.165 : 0.13));
@@ -2333,6 +2886,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           return;
         }
 
+
         // 4. PENGUMUMAN / INFO CEPAT (announcement): Kartu pengumuman terpusat dengan headline + isi
         if (template === 'announcement') {
           const slideY = (1 - easeOutQuint(cardT)) * 95;
@@ -2432,6 +2986,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           ctx.restore();
           return;
         }
+
 
         const slideY = (1 - easeOutQuint(cardT)) * 120;
         const floatY = animSlide ? Math.sin(globalT * 2.1) * 4 : 0;
@@ -2850,6 +3405,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         }
 
 
+
         // Center Score inside [boxY + 0.18*boxH .. boxY + 0.72*boxH]
         const countEase = animSlide ? easeOutQuint(clamp01((uiProgress - 0.18) / 0.82)) : 1;
         const dispA = Math.round(scoreA * countEase);
@@ -3103,7 +3659,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 : 'CHAMPIONS'
           : template === 'schedule_day'
             ? `JADWAL • ${activeScheduleDay?.dayLabel?.toUpperCase() || 'PERTANDINGAN'}`
-            : template === 'clean_frame'
+            : template === 'bracket'
+              ? `BAGAN ${(bracketTournament?.name || 'TURNAMEN').toUpperCase()}`
+              : template === 'clean_frame'
               ? (data.settings?.eventName || 'AVERSA 44 • SMANSAGE').toUpperCase()
               : template === 'event_moment'
                 ? (eventMomentBadge.trim() || 'MOMEN SPESIAL').toUpperCase()
@@ -3387,6 +3945,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           ctx.restore();
           return;
         }
+
 
 
         // ============================================================
@@ -4679,6 +5238,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         }
 
 
+
         // ============================================================
         // 9:16, 4:5, & 1:1 CENTERED & TIGHTLY HUGGED OUTRO STACK
         // ============================================================
@@ -5122,6 +5682,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       activeScheduleDay,
       schedulePages,
       safeScheduleSlideIdx,
+      bracketTournament,
+      bracketMatches,
+      bracketTotalRounds,
+      bracketFocus,
       totalMainRounds,
       teamMap,
       stageTheme,
@@ -5625,7 +6189,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     setConvertingMedia(true);
     try {
       const prepared = await prepareVideoInBrowser(file, {
-        maxFallbackSeconds: 20,
+        maxFallbackSeconds: MAX_VIDEO_CLIP_SEC,
         onStatus: setStatusMsg,
       });
       const initialEnd = Number(
@@ -5668,10 +6232,12 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         if (!v.seeking && Math.abs(v.currentTime - videoClip.trimStart) > 0.05) {
           v.currentTime = videoClip.trimStart;
         }
+        lastVideoResyncAtRef.current = 0;
         return;
       }
 
-      if (elapsedSec < 7.48) {
+      const preStartGate = Math.max(0, timeline.scene4StartSec - 0.12);
+      if (elapsedSec < preStartGate) {
         if (!v.paused) v.pause();
         if (!v.seeking && Math.abs(v.currentTime - videoClip.trimStart) > 0.15) {
           v.currentTime = videoClip.trimStart;
@@ -5686,14 +6252,26 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
       const relSec = Math.max(0, elapsedSec - timeline.scene4StartSec);
       const targetSec = Math.min(videoClip.trimEnd, videoClip.trimStart + relSec);
-      if (v.paused && targetSec < videoClip.trimEnd - 0.05) {
+      if (v.ended || targetSec >= videoClip.trimEnd - 0.05) {
+        if (!v.paused) v.pause();
+        return;
+      }
+      if (v.paused) {
         v.play().catch(() => {});
       }
-      if (!v.seeking && Math.abs(v.currentTime - targetSec) > 0.65) {
+      // Avoid aggressive mid-playback seeks that cause infinite keyframe seek loops on >15s clips.
+      // Only resync if drift is catastrophic (> 2.5s) with a 2s cooldown.
+      const nowMs = performance.now();
+      if (
+        !v.seeking &&
+        Math.abs(v.currentTime - targetSec) > 2.5 &&
+        nowMs - lastVideoResyncAtRef.current > 2000
+      ) {
+        lastVideoResyncAtRef.current = nowMs;
         v.currentTime = targetSec;
       }
     },
-    [mediaMode, videoClip, timeline.outroWipeEndSec]
+    [mediaMode, videoClip, timeline.scene4StartSec, timeline.outroWipeEndSec]
   );
 
   useEffect(() => {
@@ -6053,7 +6631,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       const baseSlug =
         template === 'schedule_day'
           ? `JADWAL-${(activeScheduleDay?.dayLabel || 'HARIAN').replace(/[^a-zA-Z0-9]+/g, '-')}`
-          : isNonMatchTemplate(template)
+          : template === 'bracket'
+            ? `BAGAN-${(bracketTournament?.name || 'TURNAMEN').replace(/[^a-zA-Z0-9]+/g, '-')}`
+            : isNonMatchTemplate(template)
             ? template.toUpperCase().replace(/[^a-zA-Z0-9]+/g, '-')
             : `${teamA?.shortCode || 'TIMA'}-vs-${teamB?.shortCode || 'TIMB'}`;
 
@@ -6095,6 +6675,21 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         return `• ${rawTime} | ${tA} vs ${tB}`;
       });
       return `📅 JADWAL PERTANDINGAN — ${dayTitle.toUpperCase()}\n${eventTitle} (${tournament?.name || 'Umum'})\n\n${lines.join('\n') || 'Jadwal segera diperbarui.'}${noteLine}${creditLine}\n\n${hashtags}`;
+    }
+
+    if (template === 'bracket') {
+      const catName = bracketTournament?.name || tournament?.name || 'Turnamen';
+      const focusDesc =
+        bracketFocus === 'left'
+          ? 'Bagan Kiri (Pool A)'
+          : bracketFocus === 'right'
+            ? 'Bagan Kanan (Pool B)'
+            : bracketFocus === 'finals'
+              ? 'Grand Final & Perebutan Juara 3'
+              : bracketFocus === 'full'
+                ? 'Bagan Lengkap'
+                : 'Tur Bagan Lengkap (Pool A → Pool B → Grand Final)';
+      return `🏆 BAGAN GUGUR (${catName.toUpperCase()}) — ${eventTitle}\n📌 ${focusDesc}${noteLine}${creditLine}\n\n${subTitle}\n${hashtags}`;
     }
 
     if (template === 'clean_frame') {
@@ -6157,6 +6752,8 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     caption,
     template,
     activeScheduleDay,
+    bracketTournament?.name,
+    bracketFocus,
     tournament?.name,
     teamMap,
     podiumVariant,
@@ -6534,6 +7131,48 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   >
                     Kembali ke Match
                   </button>
+                </div>
+              ) : template === 'bracket' ? (
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <label className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                      <Trophy className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                      Kategori Bagan Turnamen
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setTemplate(
+                          activeMatch?.status === 'live'
+                            ? 'live'
+                            : activeMatch?.status === 'finished'
+                              ? 'final'
+                              : 'upcoming'
+                        )
+                      }
+                      className="text-[11px] font-bold text-amber-700 hover:underline dark:text-amber-400"
+                    >
+                      Pilih per Match
+                    </button>
+                  </div>
+                  <select
+                    value={bracketTournament?.id ?? ''}
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        setSelectedBracketTournamentId(Number(e.target.value));
+                      }
+                    }}
+                    className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold dark:border-slate-700 dark:bg-slate-950"
+                  >
+                    {data.tournaments.length === 0 && (
+                      <option value="">Belum ada kategori turnamen</option>
+                    )}
+                    {data.tournaments.map((tItem) => (
+                      <option key={tItem.id} value={tItem.id}>
+                        {tItem.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               ) : template === 'schedule_day' ? (
                 <div>
@@ -6943,6 +7582,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                         ['upcoming', 'UPCOMING MATCH'],
                         ['highlight', 'MATCH HIGHLIGHT'],
                         ['schedule_day', 'JADWAL HARIAN'],
+                        ['bracket', 'BAGAN / BRACKET'],
                         ['champion', 'CHAMPIONS & PODIUM'],
                       ] as const
                     ).map(([val, label]) => (
@@ -6964,6 +7604,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                         )}
                         {val === 'schedule_day' && (
                           <CalendarDays className="h-3.5 w-3.5 shrink-0 text-sky-500" />
+                        )}
+                        {val === 'bracket' && (
+                          <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-amber-500" />
                         )}
                       </button>
                     ))}
@@ -7096,6 +7739,46 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                       </select>
                     </div>
                   )}
+                </div>
+              ) : template === 'bracket' ? (
+                <div className="space-y-2.5 rounded-2xl border border-amber-500/35 bg-amber-500/8 p-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-amber-800 dark:text-amber-300">
+                      <LayoutGrid className="h-4 w-4" />
+                      Fokus Bagan / Tur Kamera
+                      <InfoTooltip text="Mode Auto Tour akan menggerakkan kamera sinematik secara berurutan dari Bagan Kiri (Pool A) → Bagan Kanan (Pool B) → Grand Final & Juara 3 saat mode Video/Preview." />
+                    </span>
+                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-extrabold uppercase text-amber-800 dark:text-amber-300">
+                      {bracketTournament?.name || 'Turnamen'} • {bracketMatches.length} Match
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        ['auto_tour', 'Auto Tour 3-Babak'],
+                        ['left', 'Kiri (Pool A)'],
+                        ['right', 'Kanan (Pool B)'],
+                        ['finals', 'Grand Final'],
+                        ['full', 'Full Overview'],
+                      ] as const
+                    ).map(([fKey, fLabel]) => (
+                      <button
+                        key={fKey}
+                        type="button"
+                        onClick={() => setBracketFocus(fKey)}
+                        className={`rounded-lg border px-2.5 py-1.5 text-xs font-bold transition ${
+                          bracketFocus === fKey
+                            ? 'border-amber-500 bg-amber-500 text-slate-950 shadow-xs'
+                            : 'border-slate-200 bg-white text-slate-700 hover:border-amber-500/50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300'
+                        }`}
+                      >
+                        {fLabel}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                    Tips: Anda bisa langsung export PNG/IG Pack/Video MP4 tanpa mengunggah foto/video (otomatis memakai arena navy-gold animatif).
+                  </p>
                 </div>
               ) : template === 'schedule_day' ? (
                 <div className="space-y-2.5 rounded-2xl border border-sky-500/35 bg-sky-500/8 p-3.5">
@@ -7685,13 +8368,19 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                     text={`Alur: Intro SVC 3D → Ribbon Stinger → ${
                       template === 'schedule_day'
                         ? activeScheduleDay?.dayLabel || 'Jadwal Harian'
-                        : `${teamA?.shortCode || 'TIM A'} vs ${teamB?.shortCode || 'TIM B'}`
+                        : template === 'bracket'
+                          ? `Bagan ${bracketTournament?.name || 'Turnamen'}`
+                          : `${teamA?.shortCode || 'TIM A'} vs ${teamB?.shortCode || 'TIM B'}`
                     } → ${
-                      mediaMode === 'video'
-                        ? 'Klip Video + Skor'
-                        : photoItems.length >= 2
-                          ? `${photoItems.length} Foto Momen + Skor`
-                          : 'Foto + Skor'
+                      template === 'bracket'
+                        ? bracketFocus === 'auto_tour'
+                          ? 'Tur Kamera 3-Babak (Pool A → Pool B → Final)'
+                          : 'Tampilan Bagan'
+                        : mediaMode === 'video'
+                          ? 'Klip Video + Skor'
+                          : photoItems.length >= 2
+                            ? `${photoItems.length} Foto Momen + Skor`
+                            : 'Foto + Skor'
                     }${includeOutro ? ' → Sponsor & Penyelenggara' : ''}`}
                   />
                 </div>
