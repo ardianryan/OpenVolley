@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.2] - 2026-11-27
+
+### Added
+- **Scorer Local Court-Side Switch (`LiveOperator.tsx`)**:
+  - Added a **Tukar Posisi (Kiri ↔ Kanan)** toggle bar directly above the live scoreboard cards so court referees/scorers can flip left/right card positions on their device when teams switch courts, without altering `teamA`/`teamB` data in the database or on Arena TV / OBS displays.
+  - Added clear **`Lap. Kiri`** / **`Lap. Kanan`** badges per card, a **`2 Kolom HP`** compact side-by-side layout toggle for mobile portrait devices, `localStorage` persistence per match, and automatic non-blocking switch reminders on new sets or at point 8 in a deciding set.
+- **Cinematic 3-Act Bracket Template (`MediaStudio.tsx`, `media-timeline.ts`)**:
+  - Added **`BAGAN / BRACKET`** template in Media Studio with symmetric Left (Pool A), Right (Pool B), and Grand Final / 3rd Place views (`auto_tour`, `left`, `right`, `finals`, `full`), progressive neon-gold connector lines, team logos, and animated navy-gold arena backdrop (exportable as PNG, IG Pack, or Video MP4 even without uploaded media).
+  - Added `minScene4HoldSec` support in `computeMediaTimeline` (`11.4s` minimum hold for 3-Act `auto_tour`) while capping total video duration at 60 seconds.
+- **Non-Match Media Studio Templates & Intro Toggle (`MediaStudio.tsx`)**:
+  - Added 4 schedule-free broadcast templates: **`FRAME POLOS`** (`clean_frame`), **`CEREMONY / BOOTH`** (`event_moment`), **`TATA TERTIB`** (`venue_rules`), and **`PENGUMUMAN`** (`announcement`).
+  - Added an **Intro Pembuka 3D** toggle (`includeIntro`) and expanded maximum video clip / total export duration to 60 seconds (`MAX_VIDEO_CLIP_SEC = 60.0`).
+- **Multi-Slide Daily Schedule with Team Logos (`MediaStudio.tsx`)**:
+  - Upgraded **`JADWAL HARIAN`** (`schedule_day`) to paginate up to 4 matches per slide with team logos and automatic slide transitions in Video mode, skipping the single-matchup Scene 3 card.
+
+### Fixed
+- **>15s Video Playback & Export Freeze (`MediaStudio.tsx`)**:
+  - Fixed video freezing around ~15 seconds during Preview & Video Export by replacing the hardcoded `7.48s` gate in `syncHiddenVideoAt` with dynamic `timeline.scene4StartSec` tracking (included in `useCallback` dependencies) and adding a `2000ms` resync cooldown (`lastVideoResyncAtRef`) with a `> 2.5s` drift threshold to prevent keyframe seek-loops.
+- **Social Media MP4 Export Compatibility (`MediaStudio.tsx`)**:
+  - Improved MP4 transcoding compatibility for social media uploads (Instagram/TikTok/WhatsApp).
+
+---
+
 ## [0.3.1] - 2026-11-19
 
 ### Added

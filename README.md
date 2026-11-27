@@ -6,7 +6,7 @@
   [![CI](https://github.com/ardianryan/OpenVolley/actions/workflows/ci.yml/badge.svg)](https://github.com/ardianryan/OpenVolley/actions/workflows/ci.yml)
   [![CodeQL](https://github.com/ardianryan/OpenVolley/actions/workflows/codeql.yml/badge.svg)](https://github.com/ardianryan/OpenVolley/actions/workflows/codeql.yml)
   [![Release & GHCR](https://github.com/ardianryan/OpenVolley/actions/workflows/release-and-packages.yml/badge.svg)](https://github.com/ardianryan/OpenVolley/actions/workflows/release-and-packages.yml)
-  [![Version](https://img.shields.io/badge/version-0.3.1-F5C538?labelColor=0B0F19)](https://github.com/ardianryan/OpenVolley/releases)
+  [![Version](https://img.shields.io/badge/version-0.3.2-F5C538?labelColor=0B0F19)](https://github.com/ardianryan/OpenVolley/releases)
   [![License](https://img.shields.io/badge/license-Apache--2.0%20%20%2B%20Commons%20Clause-F5C538?labelColor=0B0F19)](LICENSE)
   [![Runtime](https://img.shields.io/badge/runtime-Bun%201.x-000000?logo=bun&logoColor=FBF0DF)](https://bun.sh)
   [![Docker](https://img.shields.io/badge/ghcr.io-ardianryan%2Fopenvolley-0EA5E9?logo=docker&logoColor=white)](https://github.com/ardianryan/OpenVolley/pkgs/container/openvolley)
@@ -117,7 +117,7 @@ docker run -d \
   -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e ADMIN_DEFAULT_PASSWORD="change-me-immediately" \
   -v openvolley_data:/app/data \
-  ghcr.io/ardianryan/openvolley:0.3.1
+  ghcr.io/ardianryan/openvolley:0.3.2
 ```
 
 ### Default Seeded Accounts (First Boot Only)
