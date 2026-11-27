@@ -57,5 +57,15 @@ describe('Media Direct Crop & Cover-Bounded Framing Math', () => {
 
     const singleRect = getCollageSlotRects(3, 'single', 1080, 1920, 140, 180, 1080, false);
     expect(singleRect).toEqual([{ rx: 0, ry: 0, rw: 1080, rh: 1920 }]);
+
+    const rects4 = getCollageSlotRects(4, 'collage', 1080, 1920, 140, 180, 1080, false);
+    expect(rects4).toHaveLength(4);
+
+    const rects5 = getCollageSlotRects(5, 'collage', 1920, 1080, 50, 50, 1080, true);
+    expect(rects5).toHaveLength(5);
+
+    const rects6 = getCollageSlotRects(6, 'collage', 1080, 1920, 140, 180, 1080, false);
+    expect(rects6).toHaveLength(6);
+    expect(hitTestCollageSlot(rects6, 900, 1800)).toBe(5);
   });
 });

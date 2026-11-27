@@ -163,22 +163,91 @@ export function getCollageSlotRects(
     ];
   }
 
-  if (isLandscape) {
-    const splitX = Math.round(w * 0.56);
-    const splitY = Math.round(h * 0.5);
+  if (photoCount === 3) {
+    if (isLandscape) {
+      const splitX = Math.round(w * 0.56);
+      const splitY = Math.round(h * 0.5);
+      return [
+        { rx: 0, ry: 0, rw: splitX, rh: h },
+        { rx: splitX, ry: 0, rw: w - splitX, rh: splitY },
+        { rx: splitX, ry: splitY, rw: w - splitX, rh: h - splitY },
+      ];
+    }
+
+    const splitY = Math.round(visTop + (visBot - visTop) * 0.54);
+    const splitX = Math.round(w * 0.5);
     return [
-      { rx: 0, ry: 0, rw: splitX, rh: h },
-      { rx: splitX, ry: 0, rw: w - splitX, rh: splitY },
+      { rx: 0, ry: 0, rw: w, rh: splitY },
+      { rx: 0, ry: splitY, rw: splitX, rh: h - splitY },
       { rx: splitX, ry: splitY, rw: w - splitX, rh: h - splitY },
     ];
   }
 
-  const splitY = Math.round(visTop + (visBot - visTop) * 0.54);
+  if (photoCount === 4) {
+    const splitX = Math.round(w * 0.5);
+    const splitY = isLandscape
+      ? Math.round(h * 0.5)
+      : Math.round((visTop + visBot) * 0.5);
+    return [
+      { rx: 0, ry: 0, rw: splitX, rh: splitY },
+      { rx: splitX, ry: 0, rw: w - splitX, rh: splitY },
+      { rx: 0, ry: splitY, rw: splitX, rh: h - splitY },
+      { rx: splitX, ry: splitY, rw: w - splitX, rh: h - splitY },
+    ];
+  }
+
+  if (photoCount === 5) {
+    if (isLandscape) {
+      const heroW = Math.round(w * 0.46);
+      const remW = w - heroW;
+      const colW = Math.round(remW * 0.5);
+      const rowH = Math.round(h * 0.5);
+      return [
+        { rx: 0, ry: 0, rw: heroW, rh: h },
+        { rx: heroW, ry: 0, rw: colW, rh: rowH },
+        { rx: heroW + colW, ry: 0, rw: remW - colW, rh: rowH },
+        { rx: heroW, ry: rowH, rw: colW, rh: h - rowH },
+        { rx: heroW + colW, ry: rowH, rw: remW - colW, rh: h - rowH },
+      ];
+    }
+    const heroH = Math.round(visTop + (visBot - visTop) * 0.44);
+    const remH = h - heroH;
+    const rowH = Math.round((visBot - heroH) * 0.55);
+    const splitX = Math.round(w * 0.5);
+    return [
+      { rx: 0, ry: 0, rw: w, rh: heroH },
+      { rx: 0, ry: heroH, rw: splitX, rh: rowH },
+      { rx: splitX, ry: heroH, rw: w - splitX, rh: rowH },
+      { rx: 0, ry: heroH + rowH, rw: splitX, rh: remH - rowH },
+      { rx: splitX, ry: heroH + rowH, rw: w - splitX, rh: remH - rowH },
+    ];
+  }
+
+  // 6 photos: 3x2 grid on landscape, 2x3 grid on portrait/square
+  if (isLandscape) {
+    const c1 = Math.round(w / 3);
+    const c2 = Math.round((w * 2) / 3);
+    const splitY = Math.round(h * 0.5);
+    return [
+      { rx: 0, ry: 0, rw: c1, rh: splitY },
+      { rx: c1, ry: 0, rw: c2 - c1, rh: splitY },
+      { rx: c2, ry: 0, rw: w - c2, rh: splitY },
+      { rx: 0, ry: splitY, rw: c1, rh: h - splitY },
+      { rx: c1, ry: splitY, rw: c2 - c1, rh: h - splitY },
+      { rx: c2, ry: splitY, rw: w - c2, rh: h - splitY },
+    ];
+  }
+
   const splitX = Math.round(w * 0.5);
+  const r1 = Math.round(visTop + (visBot - visTop) * 0.34);
+  const r2 = Math.round(visTop + (visBot - visTop) * 0.68);
   return [
-    { rx: 0, ry: 0, rw: w, rh: splitY },
-    { rx: 0, ry: splitY, rw: splitX, rh: h - splitY },
-    { rx: splitX, ry: splitY, rw: w - splitX, rh: h - splitY },
+    { rx: 0, ry: 0, rw: splitX, rh: r1 },
+    { rx: splitX, ry: 0, rw: w - splitX, rh: r1 },
+    { rx: 0, ry: r1, rw: splitX, rh: r2 - r1 },
+    { rx: splitX, ry: r1, rw: w - splitX, rh: r2 - r1 },
+    { rx: 0, ry: r2, rw: splitX, rh: h - r2 },
+    { rx: splitX, ry: r2, rw: w - splitX, rh: h - r2 },
   ];
 }
 

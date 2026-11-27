@@ -1604,28 +1604,14 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           ctx.strokeStyle = '#F5C538';
           ctx.lineWidth = Math.max(4, Math.round(u * 0.0045));
           ctx.beginPath();
-          if (slotRects.length === 2) {
-            const r1 = slotRects[1]!;
-            if (isLandscape) {
-              ctx.moveTo(r1.rx, 0);
-              ctx.lineTo(r1.rx, h);
-            } else {
-              ctx.moveTo(0, r1.ry);
-              ctx.lineTo(w, r1.ry);
+          for (const sr of slotRects) {
+            if (sr.rx > 0) {
+              ctx.moveTo(sr.rx, sr.ry);
+              ctx.lineTo(sr.rx, sr.ry + sr.rh);
             }
-          } else if (slotRects.length >= 3) {
-            const r1 = slotRects[1]!;
-            const r2 = slotRects[2]!;
-            if (isLandscape) {
-              ctx.moveTo(r1.rx, 0);
-              ctx.lineTo(r1.rx, h);
-              ctx.moveTo(r1.rx, r2.ry);
-              ctx.lineTo(w, r2.ry);
-            } else {
-              ctx.moveTo(0, r1.ry);
-              ctx.lineTo(w, r1.ry);
-              ctx.moveTo(r2.rx, r1.ry);
-              ctx.lineTo(r2.rx, h);
+            if (sr.ry > 0) {
+              ctx.moveTo(sr.rx, sr.ry);
+              ctx.lineTo(sr.rx + sr.rw, sr.ry);
             }
           }
           ctx.stroke();

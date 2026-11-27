@@ -1,6 +1,6 @@
 export type StudioMediaMode = 'photo' | 'video';
 
-export const MAX_STUDIO_PHOTOS = 3;
+export const MAX_STUDIO_PHOTOS = 6;
 export const MIN_VIDEO_CLIP_SEC = 2.0;
 export const MAX_VIDEO_CLIP_SEC = 60.0;
 export const MAX_TOTAL_VIDEO_SEC = 60.0;
