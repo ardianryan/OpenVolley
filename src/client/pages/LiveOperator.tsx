@@ -13,7 +13,7 @@ import {
   Timer,
   Undo2,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { groupMatchesByScheduleDay } from '../../shared/schedule';
 import { formatInternationalStageLabel } from '../../shared/stages';
 import { TeamAvatar } from '../components/TeamAvatar';
@@ -159,6 +159,12 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
   const [switchReminder, setSwitchReminder] = useState<string | null>(null);
   const lastSetTrackerRef = useRef<{ matchId: number; set: number } | null>(null);
   const deciding8PromptedRef = useRef<number | null>(null);
+  const cardRefs = useRef<Record<'A' | 'B', HTMLDivElement | null>>({
+    A: null,
+    B: null,
+  });
+  const flipRectsRef = useRef<{ A: DOMRect; B: DOMRect } | null>(null);
+  const flipTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!activeMatch) {
@@ -182,6 +188,11 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
   }, [activeMatch?.id]);
 
   const toggleSwappedSides = () => {
+    const rectA = cardRefs.current.A?.getBoundingClientRect();
+    const rectB = cardRefs.current.B?.getBoundingClientRect();
+    if (rectA && rectB) {
+      flipRectsRef.current = { A: rectA, B: rectB };
+    }
     setSwappedSides((prev) => {
       const next = !prev;
       if (activeMatch) {
@@ -198,6 +209,58 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
     });
     setSwitchReminder(null);
   };
+
+  useLayoutEffect(() => {
+    const prevRects = flipRectsRef.current;
+    if (!prevRects) return;
+    flipRectsRef.current = null;
+
+    if (flipTimerRef.current !== null) {
+      window.clearTimeout(flipTimerRef.current);
+      flipTimerRef.current = null;
+    }
+
+    const animatedEls: HTMLDivElement[] = [];
+    for (const side of ['A', 'B'] as const) {
+      const el = cardRefs.current[side];
+      if (!el) continue;
+      const nextRect = el.getBoundingClientRect();
+      const dx = prevRects[side].left - nextRect.left;
+      const dy = prevRects[side].top - nextRect.top;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+
+      el.style.transition = 'none';
+      el.style.transform = `translate3d(${dx}px, ${dy}px, 0) scale(${side === 'A' ? 0.98 : 1.02})`;
+      el.style.zIndex = side === 'A' ? '10' : '20';
+      el.style.willChange = 'transform';
+      animatedEls.push(el);
+    }
+
+    if (animatedEls.length === 0) return;
+    // Force reflow so the inverted transform is committed before animating to 0
+    void document.body.offsetHeight;
+
+    const rafId = window.requestAnimationFrame(() => {
+      for (const el of animatedEls) {
+        el.style.transition = 'transform 420ms cubic-bezier(0.22, 1, 0.36, 1)';
+        el.style.transform = 'translate3d(0, 0, 0) scale(1)';
+      }
+    });
+
+    flipTimerRef.current = window.setTimeout(() => {
+      for (const el of animatedEls) {
+        el.style.transition = '';
+        el.style.transform = '';
+        el.style.zIndex = '';
+        el.style.willChange = '';
+      }
+      flipTimerRef.current = null;
+    }, 450);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [swappedSides]);
 
   const toggleCompactTwoColMobile = () => {
     setCompactTwoColMobile((prev) => {
@@ -922,7 +985,11 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
                     : 'border-slate-300 bg-white text-slate-700 hover:border-amber-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
                 }`}
               >
-                <ArrowLeftRight className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+                <ArrowLeftRight
+                  className={`h-3.5 w-3.5 text-sky-600 transition-transform duration-300 dark:text-sky-400 ${
+                    swappedSides ? 'rotate-180' : ''
+                  }`}
+                />
                 <span>Tukar Posisi (Kiri ↔ Kanan)</span>
                 <span className="rounded bg-slate-200/80 px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-slate-800 dark:bg-slate-800 dark:text-slate-200">
                   {swappedSides
@@ -970,6 +1037,9 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
                 return (
                   <div
                     key={side}
+                    ref={(el) => {
+                      cardRefs.current[side] = el;
+                    }}
                     className={`flex flex-col justify-between rounded-2xl border transition ${
                       compactTwoColMobile ? 'p-2.5 sm:p-4' : 'p-4'
                     } ${
@@ -1109,7 +1179,11 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
 
                             <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 dark:border-slate-800 dark:bg-slate-900">
                               <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
-                                <ArrowLeftRight className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+                                <ArrowLeftRight
+                  className={`h-3.5 w-3.5 text-sky-600 transition-transform duration-300 dark:text-sky-400 ${
+                    swappedSides ? 'rotate-180' : ''
+                  }`}
+                />
                                 <span>
                                   SUB{' '}
                                   <strong className="tabular-nums text-sky-700 dark:text-sky-300">

@@ -5332,7 +5332,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       // COMPOSITE TIMELINE WITH SMOOTH OVERLAPPING TRANSITIONS
       // ================================================================
 
-      const skipMatchup = template === 'schedule_day' || isNonMatchTemplate(template);
+      const skipMatchup =
+        template === 'schedule_day' ||
+        template === 'bracket' ||
+        isNonMatchTemplate(template);
 
       // 0. DIRECT TO SCENE 4 WHEN INTRO IS DISABLED
       if (!includeIntro) {
