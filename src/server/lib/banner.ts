@@ -109,7 +109,7 @@ export function printOpenVolleyBanner(options: {
   const lines: string[] = [
     '',
     ...logoLines,
-    `  ${c.bold}OpenVolley v0.2.0${c.reset} ${c.slate}• Live Score, Bracket, Arena TV & Broadcast Studio${c.reset}`,
+    `  ${c.bold}OpenVolley v0.3.2${c.reset} ${c.slate}• Live Score, Bracket, Arena TV & Broadcast Studio${c.reset}`,
     divider,
     `  ${c.slate}Mode       :${c.reset} ${modeBadge}`,
     `  ${c.slate}Local (PC) :${c.reset} ${c.cyan}${c.bold}http://localhost:${port}${c.reset}`,
