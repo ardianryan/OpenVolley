@@ -15,6 +15,7 @@ import {
   HelpCircle,
   ImagePlus,
   LayoutGrid,
+  Lock,
   Medal,
   Move,
   Music,
@@ -26,9 +27,11 @@ import {
   Square,
   Trash2,
   Trophy,
+  Unlock,
   Video,
   Volume2,
   VolumeX,
+  X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
@@ -878,6 +881,11 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   const [exportedVideoUrl, setExportedVideoUrl] = useState<string | null>(null);
   const [exportedVideoBlob, setExportedVideoBlob] = useState<Blob | null>(null);
   const [exportedVideoExt, setExportedVideoExt] = useState<'mp4' | 'webm'>('webm');
+  const [exportStale, setExportStale] = useState(false);
+  const [cropUnlocked, setCropUnlocked] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
+  );
+  const exportedCardRef = useRef<HTMLDivElement | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [deletingReportId, setDeletingReportId] = useState<number | null>(null);
   const [convertingMedia, setConvertingMedia] = useState(false);
@@ -6039,7 +6047,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   };
 
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!hasInteractiveCanvasMedia) return;
+    if (!hasInteractiveCanvasMedia || !cropUnlocked) return;
     e.preventDefault();
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -6284,11 +6292,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   }, [renderFrame, previewPlaying, exportingVideo, showSafeZone]);
 
   useEffect(() => {
-    setExportedVideoBlob(null);
-    setExportedVideoUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return null;
-    });
+    if (exportedVideoUrl) {
+      setExportStale(true);
+    }
   }, [
     selectedMatchId,
     ratio,
@@ -6298,8 +6304,20 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     videoClip?.url,
     videoClip?.trimStart,
     videoClip?.trimEnd,
+    videoClip?.panX,
+    videoClip?.panY,
+    videoClip?.zoom,
     includeOutro,
   ]);
+
+  const handleDismissExportedVideo = useCallback(() => {
+    setExportedVideoBlob(null);
+    setExportedVideoUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setExportStale(false);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -6841,6 +6859,10 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           return url;
         });
         setExportedVideoExt(finalExt);
+        setExportStale(false);
+        if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+          setCropUnlocked(false);
+        }
         exportingVideoRef.current = false;
         setExportingVideo(false);
         setVideoProgress(0);
@@ -6848,6 +6870,12 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         setStatusMsg(
           `Video broadcast ${totalDur} detik (.${finalExt.toUpperCase()}) siap diunggah ke Sosmed!`
         );
+        window.setTimeout(() => {
+          exportedCardRef.current?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'nearest',
+          });
+        }, 80);
         setTimeout(() => setStatusMsg(null), 5000);
       };
 
@@ -8552,6 +8580,54 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           </div>
         </div>
 
+        {exportedVideoUrl && (
+          <div
+            ref={exportedCardRef}
+            className="mb-4 w-full space-y-2.5 rounded-xl border border-amber-500/40 bg-amber-500/8 p-3"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                  <Film className="h-3.5 w-3.5" />
+                  Hasil Video Broadcast ({exportedVideoExt.toUpperCase()})
+                </span>
+                {exportStale && (
+                  <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber-800 dark:text-amber-200">
+                    Ada perubahan baru
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <a
+                  href={exportedVideoUrl}
+                  download={`SVC-AVERSA-BROADCAST-${Date.now()}.${exportedVideoExt}`}
+                  className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Unduh Video
+                </a>
+                <button
+                  type="button"
+                  onClick={handleDismissExportedVideo}
+                  aria-label="Tutup hasil video"
+                  title="Tutup hasil video"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-300 bg-white/80 text-slate-600 hover:bg-white hover:text-red-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+            <video
+              src={exportedVideoUrl}
+              controls
+              autoPlay
+              loop
+              playsInline
+              className="max-h-[340px] w-full rounded-lg bg-black object-contain"
+            />
+          </div>
+        )}
+
         <div
           ref={canvasWrapRef}
           className="flex w-full items-center justify-center overflow-hidden rounded-xl bg-slate-950 p-2"
@@ -8565,7 +8641,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
             onDoubleClick={handleCanvasDoubleClick}
             className={`max-h-[520px] max-w-full rounded-lg object-contain shadow-xl ${
               hasInteractiveCanvasMedia
-                ? 'touch-none select-none cursor-grab active:cursor-grabbing'
+                ? cropUnlocked
+                  ? 'touch-none select-none cursor-grab active:cursor-grabbing'
+                  : 'touch-pan-y select-none'
                 : ''
             }`}
           />
@@ -8573,13 +8651,27 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
         {hasInteractiveCanvasMedia && (
           <div className="mt-2.5 flex w-full flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-800 dark:bg-slate-950/70">
-            <span className="inline-flex items-center gap-1.5 font-semibold text-slate-600 dark:text-slate-300">
-              <Move className="h-3.5 w-3.5 text-amber-500" />
-              <span>Geser &amp; Pinch/Scroll</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCropUnlocked((v) => !v)}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                  cropUnlocked
+                    ? 'border-amber-500 bg-amber-500/15 text-amber-800 dark:text-amber-300'
+                    : 'border-slate-300 bg-white text-slate-700 hover:border-amber-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
+                }`}
+              >
+                {cropUnlocked ? (
+                  <Unlock className="h-3.5 w-3.5 text-amber-500" />
+                ) : (
+                  <Lock className="h-3.5 w-3.5 text-emerald-500" />
+                )}
+                <span>{cropUnlocked ? 'Geser Crop: Aktif' : 'Crop Terkunci (Aman Scroll)'}</span>
+              </button>
               <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-extrabold uppercase text-amber-700 dark:text-amber-300">
                 {mediaMode === 'video' ? 'Video' : `Foto #${clampedCanvasSlot + 1}`}
               </span>
-            </span>
+            </div>
 
             <div className="flex items-center gap-1.5">
               <div className="inline-flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white p-0.5 dark:border-slate-700 dark:bg-slate-900">
@@ -8615,33 +8707,6 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 Reset
               </button>
             </div>
-          </div>
-        )}
-
-        {exportedVideoUrl && (
-          <div className="mt-4 w-full space-y-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-500">
-                <Film className="h-3.5 w-3.5" />
-                Hasil Video Broadcast ({exportedVideoExt.toUpperCase()})
-              </span>
-              <a
-                href={exportedVideoUrl}
-                download={`SVC-AVERSA-BROADCAST-${Date.now()}.${exportedVideoExt}`}
-                className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1 text-xs font-bold text-slate-950 hover:bg-amber-400"
-              >
-                <Download className="h-3.5 w-3.5" />
-                Unduh Video
-              </a>
-            </div>
-            <video
-              src={exportedVideoUrl}
-              controls
-              autoPlay
-              loop
-              playsInline
-              className="max-h-[380px] w-full rounded-lg bg-black object-contain"
-            />
           </div>
         )}
       </div>
