@@ -6,8 +6,8 @@ import {
 } from './audio-library';
 
 describe('Audio Library & Smart Auto-Pick', () => {
-  it('contains all 23 S3-hosted tracks with valid https URLs', () => {
-    expect(AUDIO_TRACKS.length).toBe(23);
+  it('contains all 48 S3-hosted tracks with valid https URLs', () => {
+    expect(AUDIO_TRACKS.length).toBe(48);
     for (const track of AUDIO_TRACKS) {
       expect(track.url).toStartWith('https://is3-storage.smage.my.id/svc-media/audio/');
       expect(track.url).toEndWith('.mp3');
