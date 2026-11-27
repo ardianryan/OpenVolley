@@ -6633,15 +6633,58 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     previewRafRef.current = requestAnimationFrame(tick);
   };
 
-  const handleDownloadPng = () => {
+  const triggerCanvasPngDownload = (
+    canvas: HTMLCanvasElement,
+    filename: string
+  ): Promise<void> =>
+    new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error('Gagal membuat file PNG dari kanvas.'));
+            return;
+          }
+          const blobUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = blobUrl;
+          link.download = filename;
+          link.rel = 'noopener';
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          link.click();
+          window.setTimeout(() => {
+            link.remove();
+            URL.revokeObjectURL(blobUrl);
+          }, 2500);
+          resolve();
+        },
+        'image/png',
+        1
+      );
+    });
+
+  const handleDownloadPng = async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    renderFrame(0, false, false);
-    const link = document.createElement('a');
-    link.download = `SVC-AVERSA-${teamA?.shortCode || 'MATCH'}-vs-${teamB?.shortCode || 'MATCH'}.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
-    renderFrame(0, false, showSafeZone);
+    try {
+      setStatusMsg('Menyiapkan file PNG...');
+      renderFrame(0, false, false);
+      const baseSlug =
+        template === 'schedule_day'
+          ? `JADWAL-${(activeScheduleDay?.dayLabel || 'HARIAN').replace(/[^a-zA-Z0-9]+/g, '-')}`
+          : template === 'bracket'
+            ? `BAGAN-${(bracketTournament?.name || 'TURNAMEN').replace(/[^a-zA-Z0-9]+/g, '-')}`
+            : isNonMatchTemplate(template)
+              ? template.toUpperCase().replace(/[^a-zA-Z0-9]+/g, '-')
+              : `${teamA?.shortCode || 'MATCH'}-vs-${teamB?.shortCode || 'MATCH'}`;
+      await triggerCanvasPngDownload(canvas, `SVC-AVERSA-${baseSlug}.png`);
+      setStatusMsg('Poster PNG berhasil diunduh!');
+      window.setTimeout(() => setStatusMsg(null), 3000);
+    } catch (err) {
+      setStatusMsg((err as Error).message || 'Gagal mengunduh PNG.');
+    } finally {
+      renderFrame(0, false, showSafeZone);
+    }
   };
 
   const handleDownloadIgPack = async () => {
@@ -6655,25 +6698,21 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           : template === 'bracket'
             ? `BAGAN-${(bracketTournament?.name || 'TURNAMEN').replace(/[^a-zA-Z0-9]+/g, '-')}`
             : isNonMatchTemplate(template)
-            ? template.toUpperCase().replace(/[^a-zA-Z0-9]+/g, '-')
-            : `${teamA?.shortCode || 'TIMA'}-vs-${teamB?.shortCode || 'TIMB'}`;
+              ? template.toUpperCase().replace(/[^a-zA-Z0-9]+/g, '-')
+              : `${teamA?.shortCode || 'TIMA'}-vs-${teamB?.shortCode || 'TIMB'}`;
 
       renderFrame(0, false, false, '9:16');
-      const linkStory = document.createElement('a');
-      linkStory.download = `SVC-${baseSlug}_Story_9x16.png`;
-      linkStory.href = canvas.toDataURL('image/png');
-      linkStory.click();
+      await triggerCanvasPngDownload(canvas, `SVC-${baseSlug}_Story_9x16.png`);
 
-      await new Promise((r) => window.setTimeout(r, 260));
+      await new Promise((r) => window.setTimeout(r, 300));
 
       renderFrame(0, false, false, '4:5');
-      const linkFeed = document.createElement('a');
-      linkFeed.download = `SVC-${baseSlug}_Feed_4x5.png`;
-      linkFeed.href = canvas.toDataURL('image/png');
-      linkFeed.click();
+      await triggerCanvasPngDownload(canvas, `SVC-${baseSlug}_Feed_4x5.png`);
 
       setStatusMsg('Paket IG (Story 9:16 + Feed 4:5) berhasil diunduh!');
       window.setTimeout(() => setStatusMsg(null), 3500);
+    } catch (err) {
+      setStatusMsg((err as Error).message || 'Gagal mengunduh Paket IG.');
     } finally {
       renderFrame(0, false, showSafeZone);
       setExportingBatchIg(false);
