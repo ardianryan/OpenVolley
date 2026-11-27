@@ -43,6 +43,7 @@ import {
   confirmCurrentSet,
   finishMatchManually,
   getMatchWithSets,
+  overrideMatchScore,
   resetMatchScore,
   setServingTeam,
   startMatch,
@@ -1644,6 +1645,56 @@ adminRoutes.post('/matches/:id/score', async (c) => {
       }
     }
     return c.json({ match: result });
+  } catch (err) {
+    return c.json({ error: (err as Error).message }, 400);
+  }
+});
+
+// Admin-only manual score & set override (fixes input mistakes & syncs bracket/TV)
+adminRoutes.post('/matches/:id/override', async (c) => {
+  const user = c.get('user');
+  if (user.role !== 'admin') {
+    return c.json(
+      {
+        error:
+          'Khusus Admin: hanya akun dengan role admin yang dapat melakukan Override Skor.',
+      },
+      403
+    );
+  }
+
+  const id = Number(c.req.param('id'));
+  const body = await c.req.json<{
+    sets: Array<{
+      scoreA: number;
+      scoreB: number;
+      timeoutsA?: number;
+      timeoutsB?: number;
+      subsA?: number;
+      subsB?: number;
+      isFinished?: boolean;
+    }>;
+    currentSet: number;
+    setsWonA: number;
+    setsWonB: number;
+    status: 'scheduled' | 'live' | 'finished';
+    servingTeam: 'A' | 'B' | null;
+    winnerSide?: 'A' | 'B' | null;
+  }>();
+
+  try {
+    const result = await overrideMatchScore(id, body);
+    await broadcastEvent('match_updated', result);
+    await broadcastEvent('bracket_updated', { tournamentId: result?.tournamentId });
+    if (result?.nextMatchId) {
+      const downstream = await getMatchWithSets(result.nextMatchId);
+      if (downstream) await broadcastEvent('match_updated', downstream);
+    }
+    if (result?.loserNextMatchId) {
+      const loserDownstream = await getMatchWithSets(result.loserNextMatchId);
+      if (loserDownstream) await broadcastEvent('match_updated', loserDownstream);
+    }
+    return c.json({ ok: true, match: result });
   } catch (err) {
     return c.json({ error: (err as Error).message }, 400);
   }

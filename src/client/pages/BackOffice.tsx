@@ -16,6 +16,7 @@ import {
   Palette,
   Radio,
   Shield,
+  ShieldAlert,
   Trophy,
   Users,
 } from 'lucide-react';
@@ -42,6 +43,7 @@ import { IntegrationsManager } from './IntegrationsManager';
 import { ObsControllerManager } from './ObsControllerManager';
 import { OfficialDocuments } from './OfficialDocuments';
 import { ScheduleCourtsManager } from './ScheduleCourtsManager';
+import { ScoreOverrideManager } from './ScoreOverrideManager';
 import { TvScreensManager } from './TvScreensManager';
 
 type BackOfficeSection =
@@ -49,6 +51,7 @@ type BackOfficeSection =
   | 'contingents'
   | 'schedule'
   | 'tv_screens'
+  | 'score_override'
   | 'obs_overlays'
   | 'operator'
   | 'tournaments'
@@ -63,6 +66,7 @@ const SECTION_TO_PATH: Record<BackOfficeSection, string> = {
   contingents: '/back-office/kontingen',
   schedule: '/back-office/jadwal',
   tv_screens: '/back-office/layar-tv',
+  score_override: '/back-office/override',
   obs_overlays: '/back-office/obs',
   operator: '/back-office/operator',
   tournaments: '/back-office/bagan',
@@ -78,6 +82,7 @@ const PATH_TO_SECTION: Record<string, BackOfficeSection> = {
   '/back-office/kontingen': 'contingents',
   '/back-office/jadwal': 'schedule',
   '/back-office/layar-tv': 'tv_screens',
+  '/back-office/override': 'score_override',
   '/back-office/obs': 'obs_overlays',
   '/back-office/operator': 'operator',
   '/back-office/bagan': 'tournaments',
@@ -93,6 +98,7 @@ function canUserAccessSection(
   section: BackOfficeSection
 ): boolean {
   if (!user) return false;
+  if (section === 'score_override') return user.role === 'admin';
   return hasAnyPermission(user.permissions, user.role, [section as PermissionKey]);
 }
 
@@ -130,6 +136,7 @@ export function BackOffice() {
     tournaments: 'master',
     operator: 'arena',
     tv_screens: 'arena',
+    score_override: 'arena',
     documents: 'media_pub',
     media: 'media_pub',
     obs_overlays: 'media_pub',
@@ -460,6 +467,12 @@ export function BackOffice() {
       icon: Monitor,
     },
     {
+      id: 'score_override',
+      label: 'Override Skor',
+      shortLabel: 'Override',
+      icon: ShieldAlert,
+    },
+    {
       id: 'obs_overlays',
       label: 'OBS Broadcast',
       shortLabel: 'OBS',
@@ -704,7 +717,7 @@ export function BackOffice() {
                 {
                   key: 'arena',
                   title: 'Arena & Layar TV',
-                  ids: ['operator', 'tv_screens'] as BackOfficeSection[],
+                  ids: ['operator', 'tv_screens', 'score_override'] as BackOfficeSection[],
                 },
                 {
                   key: 'media_pub',
@@ -1126,6 +1139,11 @@ export function BackOffice() {
           {data && section === 'tv_screens' && (
             <div key="sec-tv-screens" className="animate-page-enter">
               <TvScreensManager data={data} onRefresh={() => loadData(user)} />
+            </div>
+          )}
+          {data && section === 'score_override' && user.role === 'admin' && (
+            <div key="sec-score-override" className="animate-page-enter">
+              <ScoreOverrideManager data={data} onRefresh={() => loadData(user)} />
             </div>
           )}
           {data && section === 'obs_overlays' && (

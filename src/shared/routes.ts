@@ -23,6 +23,7 @@ const EXACT_SPA_PATHS = new Set([
   '/back-office/kontingen',
   '/back-office/jadwal',
   '/back-office/layar-tv',
+  '/back-office/override',
   '/back-office/obs',
   '/back-office/operator',
   '/back-office/bagan',

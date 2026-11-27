@@ -8,6 +8,7 @@ import {
   confirmCurrentSet,
   finishMatchManually,
   getMatchWithSets,
+  overrideMatchScore,
   resetMatchScore,
   startMatch,
   undoLastAction,
@@ -212,5 +213,70 @@ describe('Scoring Engine', () => {
 
     qf = await getMatchWithSets(qfMatch.id);
     expect(qf?.teamBId).toBeNull();
+  });
+
+  test('overrideMatchScore updates per-set scores, currentSet, and syncs bracket advancement', async () => {
+    const currentM = await getMatchWithSets(matchId);
+    const [qfMatch] = await db
+      .insert(matches)
+      .values({
+        tournamentId: currentM!.tournamentId,
+        round: 2,
+        matchIndex: 0,
+        bracketType: 'main',
+        status: 'scheduled',
+      })
+      .returning();
+
+    await db
+      .update(matches)
+      .set({ nextMatchId: qfMatch.id, nextMatchSlot: 'A' })
+      .where(eq(matches.id, matchId));
+
+    // Finish initially for Team B
+    await finishMatchManually(matchId, 'B');
+    let qf = await getMatchWithSets(qfMatch.id);
+    expect(qf?.teamAId).toBe(teamBId);
+
+    // Admin overrides to Team A winning 2-1 with corrected per-set scores
+    const updated = await overrideMatchScore(matchId, {
+      sets: [
+        { scoreA: 25, scoreB: 19, isFinished: true },
+        { scoreA: 22, scoreB: 25, isFinished: true },
+        { scoreA: 15, scoreB: 10, isFinished: true },
+      ],
+      currentSet: 3,
+      setsWonA: 2,
+      setsWonB: 1,
+      status: 'finished',
+      servingTeam: 'A',
+      winnerSide: 'A',
+    });
+
+    expect(updated?.setsWonA).toBe(2);
+    expect(updated?.setsWonB).toBe(1);
+    expect(updated?.currentSet).toBe(3);
+    expect(updated?.sets.length).toBe(3);
+    expect(updated?.sets[1]?.scoreB).toBe(25);
+    expect(updated?.winnerId).toBe(teamAId);
+
+    qf = await getMatchWithSets(qfMatch.id);
+    expect(qf?.teamAId).toBe(teamAId);
+
+    // Override back to live (Set 2 in progress) retracts downstream slot
+    await overrideMatchScore(matchId, {
+      sets: [
+        { scoreA: 25, scoreB: 19, isFinished: true },
+        { scoreA: 12, scoreB: 14, isFinished: false },
+      ],
+      currentSet: 2,
+      setsWonA: 1,
+      setsWonB: 0,
+      status: 'live',
+      servingTeam: 'B',
+    });
+
+    qf = await getMatchWithSets(qfMatch.id);
+    expect(qf?.teamAId).toBeNull();
   });
 });

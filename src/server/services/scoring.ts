@@ -545,6 +545,130 @@ export async function resetMatchScore(matchId: number) {
   return getMatchWithSets(matchId);
 }
 
+export interface OverrideSetInput {
+  scoreA: number;
+  scoreB: number;
+  timeoutsA?: number;
+  timeoutsB?: number;
+  subsA?: number;
+  subsB?: number;
+  isFinished?: boolean;
+}
+
+export interface OverrideMatchScoreInput {
+  sets: OverrideSetInput[];
+  currentSet: number;
+  setsWonA: number;
+  setsWonB: number;
+  status: 'scheduled' | 'live' | 'finished';
+  servingTeam: 'A' | 'B' | null;
+  winnerSide?: 'A' | 'B' | null;
+}
+
+export async function overrideMatchScore(
+  matchId: number,
+  input: OverrideMatchScoreInput
+) {
+  const match = await db.query.matches.findFirst({ where: eq(matches.id, matchId) });
+  if (!match) throw new Error('Pertandingan tidak ditemukan');
+  if (match.status === 'bye') {
+    throw new Error('Pertandingan BYE tidak dapat di-override');
+  }
+  if (!Array.isArray(input.sets) || input.sets.length < 1 || input.sets.length > 5) {
+    throw new Error('Jumlah set harus antara 1 sampai 5 set');
+  }
+  if (!['scheduled', 'live', 'finished'].includes(input.status)) {
+    throw new Error('Status pertandingan tidak valid');
+  }
+
+  const normalizedSets = input.sets.map((s, idx) => {
+    const scoreA = Math.max(0, Math.min(99, Math.trunc(Number(s.scoreA) || 0)));
+    const scoreB = Math.max(0, Math.min(99, Math.trunc(Number(s.scoreB) || 0)));
+    const timeoutsA = Math.max(0, Math.min(2, Math.trunc(Number(s.timeoutsA) || 0)));
+    const timeoutsB = Math.max(0, Math.min(2, Math.trunc(Number(s.timeoutsB) || 0)));
+    const subsA = Math.max(0, Math.min(6, Math.trunc(Number(s.subsA) || 0)));
+    const subsB = Math.max(0, Math.min(6, Math.trunc(Number(s.subsB) || 0)));
+    const isFinished =
+      typeof s.isFinished === 'boolean' ? s.isFinished : idx + 1 < input.currentSet;
+    const winnerId =
+      isFinished && scoreA !== scoreB
+        ? scoreA > scoreB
+          ? match.teamAId
+          : match.teamBId
+        : null;
+    return {
+      setNumber: idx + 1,
+      scoreA,
+      scoreB,
+      timeoutsA,
+      timeoutsB,
+      subsA,
+      subsB,
+      isFinished,
+      winnerId,
+    };
+  });
+
+  const currentSet = Math.max(
+    1,
+    Math.min(normalizedSets.length, Math.trunc(Number(input.currentSet) || 1))
+  );
+  const setsWonA = Math.max(0, Math.min(5, Math.trunc(Number(input.setsWonA) || 0)));
+  const setsWonB = Math.max(0, Math.min(5, Math.trunc(Number(input.setsWonB) || 0)));
+
+  let winnerId: number | null = null;
+  if (input.status === 'finished') {
+    const chosenSide: 'A' | 'B' =
+      input.winnerSide === 'A' || input.winnerSide === 'B'
+        ? input.winnerSide
+        : setsWonA >= setsWonB
+          ? 'A'
+          : 'B';
+    winnerId = chosenSide === 'A' ? match.teamAId : match.teamBId;
+    if (!winnerId) {
+      throw new Error('Tim pemenang tidak valid untuk status selesai');
+    }
+  }
+
+  // Retract any previous downstream bracket advancement before rewriting match state
+  await retractAdvancement(matchId);
+  undoStacks.delete(matchId);
+
+  await db.delete(matchSets).where(eq(matchSets.matchId, matchId));
+  for (const s of normalizedSets) {
+    await db.insert(matchSets).values({
+      matchId,
+      setNumber: s.setNumber,
+      scoreA: s.scoreA,
+      scoreB: s.scoreB,
+      timeoutsA: s.timeoutsA,
+      timeoutsB: s.timeoutsB,
+      subsA: s.subsA,
+      subsB: s.subsB,
+      isFinished: s.isFinished,
+      winnerId: s.winnerId,
+    });
+  }
+
+  await db
+    .update(matches)
+    .set({
+      currentSet,
+      setsWonA,
+      setsWonB,
+      servingTeam: input.servingTeam === 'A' || input.servingTeam === 'B' ? input.servingTeam : null,
+      status: input.status,
+      winnerId,
+    })
+    .where(eq(matches.id, matchId));
+
+  if (input.status === 'finished' && winnerId) {
+    await advanceWinner(matchId);
+  }
+
+  return getMatchWithSets(matchId);
+}
+
 export async function getMatchWithSets(matchId: number) {
   const match = await db.query.matches.findFirst({ where: eq(matches.id, matchId) });
   if (!match) return null;
