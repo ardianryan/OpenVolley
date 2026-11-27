@@ -303,7 +303,7 @@ export async function prepareVideoInBrowser(
 
   // Tier 2: Browser WASM Transcode Fallback when native video codec is unsupported
   URL.revokeObjectURL(nativeUrl);
-  const maxSec = options?.maxFallbackSeconds ?? 20;
+  const maxSec = options?.maxFallbackSeconds ?? 60;
   const ffmpeg = await getBrowserFfmpeg(options?.onStatus);
   const { fetchFile } = await import('@ffmpeg/util');
 

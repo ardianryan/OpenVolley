@@ -2,9 +2,11 @@ export type StudioMediaMode = 'photo' | 'video';
 
 export const MAX_STUDIO_PHOTOS = 3;
 export const MIN_VIDEO_CLIP_SEC = 2.0;
-export const MAX_VIDEO_CLIP_SEC = 15.0;
+export const MAX_VIDEO_CLIP_SEC = 60.0;
+export const MAX_TOTAL_VIDEO_SEC = 60.0;
 export const DEFAULT_VIDEO_CLIP_SEC = 10.0;
 export const SCENE4_START_SEC = 7.65;
+export const SCENE4_NO_MATCHUP_START_SEC = 4.4;
 export const OUTRO_DURATION_SEC = 4.55;
 export const OUTRO_WIPE_SPAN_SEC = 1.1;
 
@@ -29,15 +31,32 @@ export function computeMediaTimeline(params: {
   photoCount: number;
   clipDurationSec: number;
   includeOutro: boolean;
+  includeIntro?: boolean;
+  skipScene3?: boolean;
 }): MediaTimelinePlan {
-  const { mediaMode, photoCount, clipDurationSec, includeOutro } = params;
+  const {
+    mediaMode,
+    photoCount,
+    clipDurationSec,
+    includeOutro,
+    includeIntro = true,
+    skipScene3 = false,
+  } = params;
+
+  const effectiveScene4Start = !includeIntro
+    ? 0
+    : skipScene3
+      ? SCENE4_NO_MATCHUP_START_SEC
+      : SCENE4_START_SEC;
 
   let scene4HoldSec = 5.8;
   const slideTriggerSecs: number[] = [];
 
   if (mediaMode === 'video') {
+    const outroOverhead = includeOutro ? OUTRO_DURATION_SEC : includeIntro ? 0.85 : 0;
+    const maxHoldAllowed = Math.max(1.0, MAX_TOTAL_VIDEO_SEC - effectiveScene4Start - outroOverhead);
     const validClip = Number.isFinite(clipDurationSec) && clipDurationSec > 0
-      ? clamp(clipDurationSec, 1.0, MAX_VIDEO_CLIP_SEC)
+      ? clamp(clipDurationSec, 1.0, Math.min(MAX_VIDEO_CLIP_SEC, maxHoldAllowed))
       : 6.0;
     scene4HoldSec = Number(validClip.toFixed(2));
   } else {
@@ -47,25 +66,25 @@ export function computeMediaTimeline(params: {
     } else if (count === 2) {
       const perSlide = 3.4;
       scene4HoldSec = perSlide * 2; // 6.8s
-      slideTriggerSecs.push(Number((SCENE4_START_SEC + perSlide - 0.25).toFixed(2)));
+      slideTriggerSecs.push(Number((effectiveScene4Start + perSlide - 0.25).toFixed(2)));
     } else {
       const perSlide = 3.2;
       scene4HoldSec = Number((perSlide * 3).toFixed(2)); // 9.6s
       slideTriggerSecs.push(
-        Number((SCENE4_START_SEC + perSlide - 0.25).toFixed(2)),
-        Number((SCENE4_START_SEC + perSlide * 2 - 0.25).toFixed(2))
+        Number((effectiveScene4Start + perSlide - 0.25).toFixed(2)),
+        Number((effectiveScene4Start + perSlide * 2 - 0.25).toFixed(2))
       );
     }
   }
 
-  const outroStartSec = Number((SCENE4_START_SEC + scene4HoldSec).toFixed(2));
+  const outroStartSec = Number((effectiveScene4Start + scene4HoldSec).toFixed(2));
   const outroWipeEndSec = Number((outroStartSec + OUTRO_WIPE_SPAN_SEC).toFixed(2));
   const totalDurationSec = includeOutro
     ? Number((outroStartSec + OUTRO_DURATION_SEC).toFixed(1))
-    : Number((outroStartSec + 0.85).toFixed(1));
+    : Number((outroStartSec + (includeIntro ? 0.85 : 0)).toFixed(1));
 
   return {
-    scene4StartSec: SCENE4_START_SEC,
+    scene4StartSec: effectiveScene4Start,
     scene4HoldSec,
     outroStartSec,
     outroWipeEndSec,

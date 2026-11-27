@@ -32,7 +32,7 @@ describe('Media Studio Adaptive Timeline & Video Trimmer Math', () => {
     expect(plan.slideTriggerSecs.length).toBe(2);
   });
 
-  test('video clip mode adapts total duration to trimmed clip length (clamped <= 15s)', () => {
+  test('video clip mode adapts total duration to trimmed clip length (capped <= 60s)', () => {
     const plan10 = computeMediaTimeline({
       mediaMode: 'video',
       photoCount: 0,
@@ -46,16 +46,26 @@ describe('Media Studio Adaptive Timeline & Video Trimmer Math', () => {
     const planCapped = computeMediaTimeline({
       mediaMode: 'video',
       photoCount: 0,
-      clipDurationSec: 42,
+      clipDurationSec: 90,
       includeOutro: true,
     });
-    expect(planCapped.scene4HoldSec).toBe(MAX_VIDEO_CLIP_SEC);
+    expect(planCapped.totalDurationSec).toBeLessThanOrEqual(60);
+
+    const planDirect60 = computeMediaTimeline({
+      mediaMode: 'video',
+      photoCount: 0,
+      clipDurationSec: 60,
+      includeIntro: false,
+      includeOutro: false,
+    });
+    expect(planDirect60.scene4HoldSec).toBe(MAX_VIDEO_CLIP_SEC);
+    expect(planDirect60.totalDurationSec).toBe(60);
   });
 
-  test('clampTrimWindow enforces 2s minimum and 15s maximum span cleanly', () => {
-    const tooLong = clampTrimWindow(45, 2, 30, 'end');
-    expect(tooLong.trimEnd).toBe(30);
-    expect(tooLong.trimEnd - tooLong.trimStart).toBe(15);
+  test('clampTrimWindow enforces 2s minimum and 60s maximum span cleanly', () => {
+    const tooLong = clampTrimWindow(90, 2, 75, 'end');
+    expect(tooLong.trimEnd).toBe(75);
+    expect(tooLong.trimEnd - tooLong.trimStart).toBe(60);
 
     const tooShort = clampTrimWindow(20, 8, 8.4, 'start');
     expect(tooShort.trimEnd - tooShort.trimStart).toBe(2);
@@ -88,5 +98,30 @@ describe('Media Studio Adaptive Timeline & Video Trimmer Math', () => {
     const clampedStart = shiftTrimWindow(30, 4, 14, -10);
     expect(clampedStart.trimStart).toBe(0);
     expect(clampedStart.trimEnd).toBe(10);
+  });
+
+  test('computeMediaTimeline supports skipScene3 and includeIntro=false for non-match frames', () => {
+    const directVideo = computeMediaTimeline({
+      mediaMode: 'video',
+      photoCount: 0,
+      clipDurationSec: 10,
+      includeIntro: false,
+      includeOutro: false,
+      skipScene3: true,
+    });
+    expect(directVideo.scene4StartSec).toBe(0);
+    expect(directVideo.totalDurationSec).toBe(10);
+
+    const noMatchup = computeMediaTimeline({
+      mediaMode: 'photo',
+      photoCount: 1,
+      clipDurationSec: 0,
+      includeIntro: true,
+      includeOutro: true,
+      skipScene3: true,
+    });
+    expect(noMatchup.scene4StartSec).toBe(4.4);
+    expect(noMatchup.outroStartSec).toBe(10.2);
+    expect(noMatchup.totalDurationSec).toBe(14.8);
   });
 });

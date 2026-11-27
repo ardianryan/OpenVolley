@@ -92,7 +92,34 @@ interface MediaStudioProps {
 }
 
 type AspectRatio = '9:16' | '4:5' | '16:9' | '1:1';
-type TemplateStyle = 'live' | 'final' | 'upcoming' | 'highlight' | 'champion' | 'schedule_day';
+type TemplateStyle =
+  | 'live'
+  | 'final'
+  | 'upcoming'
+  | 'highlight'
+  | 'champion'
+  | 'schedule_day'
+  | 'clean_frame'
+  | 'event_moment'
+  | 'venue_rules'
+  | 'announcement';
+
+const NON_MATCH_TEMPLATES: TemplateStyle[] = [
+  'clean_frame',
+  'event_moment',
+  'venue_rules',
+  'announcement',
+];
+
+function isNonMatchTemplate(tpl: TemplateStyle): boolean {
+  return NON_MATCH_TEMPLATES.includes(tpl);
+}
+
+function toAudioTarget(
+  tpl: TemplateStyle
+): 'live' | 'final' | 'upcoming' | 'highlight' | 'champion' | 'schedule_day' {
+  return isNonMatchTemplate(tpl) ? 'schedule_day' : (tpl as 'live' | 'final' | 'upcoming' | 'highlight' | 'champion' | 'schedule_day');
+}
 type ColorFilterPreset = 'original' | 'crisp' | 'warm' | 'bw';
 type StageSelection = 'auto' | StagePresetKey;
 type PodiumVariant = 'champion_1' | 'runner_up' | 'third_place' | 'podium_all';
@@ -785,8 +812,31 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   const [podiumVariant, setPodiumVariant] = useState<PodiumVariant>('champion_1');
   const [customSpotlightTeamId, setCustomSpotlightTeamId] = useState<number | null>(null);
   const [caption, setCaption] = useState('');
+  const [includeIntro, setIncludeIntro] = useState(true);
   const [includeOutro, setIncludeOutro] = useState(true);
   const [showSafeZone, setShowSafeZone] = useState(true);
+
+  // Non-Match / General Event Templates State
+  const [cleanFrameShowFooter, setCleanFrameShowFooter] = useState(true);
+  const [eventMomentBadge, setEventMomentBadge] = useState('OPENING CEREMONY');
+  const [eventMomentTitle, setEventMomentTitle] = useState('AVERSA DIES NATALIS KE-44');
+  const [eventMomentSubtitle, setEventMomentSubtitle] = useState(
+    'SMA Negeri 1 Gedeg • Mojokerto'
+  );
+  const [venueRulesTitle, setVenueRulesTitle] = useState(
+    'TATA TERTIB & LARANGAN ARENA'
+  );
+  const [venueRulesItems, setVenueRulesItems] = useState<string[]>([
+    'Dilarang membawa makanan dan minuman dari luar area sekolah.',
+    'Dilarang menerbangkan drone di area acara tanpa izin panitia.',
+    'Dilarang merokok, menggunakan vape, dan membawa benda tajam.',
+    'Wajib menjaga ketertiban, keamanan, dan kebersihan tribun.',
+  ]);
+  const [announcementBadge, setAnnouncementBadge] = useState('PENGUMUMAN');
+  const [announcementTitle, setAnnouncementTitle] = useState('INFO PENONTON & ARENA');
+  const [announcementBody, setAnnouncementBody] = useState(
+    'Pintu tribun dibuka 30 menit sebelum pertandingan dimulai. Mohon patuhi arahan panitia di lapangan.'
+  );
 
   // Multi-Photo (1-3) & Single Trimmed Video Clip State
   const [mediaMode, setMediaMode] = useState<StudioMediaMode>('photo');
@@ -855,7 +905,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     clipDurationSec: videoClip
       ? Math.max(1, videoClip.trimEnd - videoClip.trimStart)
       : 6,
+    includeIntro,
     includeOutro,
+    skipScene3: template === 'schedule_day' || isNonMatchTemplate(template),
   });
 
   useEffect(() => {
@@ -921,11 +973,11 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
     () => activeMatch?.courtName || ''
   );
 
-  // Auto-sync template style & match schedule/court with selected match (preserve 'champion' & 'schedule_day')
+  // Auto-sync template style & match schedule/court with selected match (preserve 'champion', 'schedule_day' & non-match templates)
   useEffect(() => {
     if (!activeMatch) return;
     setTemplate((prev) => {
-      if (prev === 'champion' || prev === 'schedule_day') return prev;
+      if (prev === 'champion' || prev === 'schedule_day' || isNonMatchTemplate(prev)) return prev;
       if (activeMatch.status === 'finished') return 'final';
       if (activeMatch.status === 'live') return 'live';
       return 'upcoming';
@@ -955,8 +1007,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         Math.abs(activeSetObj.scoreA - activeSetObj.scoreB) <= 2
     );
 
+    const audioTarget = toAudioTarget(template);
     setSelectedTrackId((prev) =>
-      pickSmartRandomTrack(template, {
+      pickSmartRandomTrack(audioTarget, {
         excludeId: prev,
         isHighStakes: isFinalRound || isTightScore,
       }).id
@@ -965,7 +1018,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
   const selectedTrack =
     AUDIO_TRACKS.find((t) => t.id === selectedTrackId) ?? AUDIO_TRACKS[0];
-  const recommendedTracks = getTracksForTemplate(template);
+  const recommendedTracks = getTracksForTemplate(toAudioTarget(template));
   const recommendedIdSet = new Set(recommendedTracks.map((t) => t.id));
   const otherTracks = AUDIO_TRACKS.filter((t) => !recommendedIdSet.has(t.id));
   const teamMap = useMemo(
@@ -2021,6 +2074,365 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           return;
         }
 
+        // 1. FRAME POLOS (clean_frame): Foto/video penuh + header logo resmi & optional strip footer tipis
+        if (template === 'clean_frame') {
+          if (cleanFrameShowFooter) {
+            const slideUp = (1 - easeOutQuint(cardT)) * 45;
+            const stripH = Math.round(u * 0.052);
+            const stripW = isLandscape ? Math.round(w * 0.72) : w - pad * 2;
+            const stripX = Math.round((w - stripW) / 2);
+            const stripY = h - safeBottom - stripH - Math.round(u * 0.01) + slideUp;
+
+            ctx.save();
+            ctx.globalAlpha = easeOutCubic(cardT);
+            drawRoundedRect(ctx, stripX, stripY, stripW, stripH, 999);
+            ctx.fillStyle = 'rgba(11, 16, 30, 0.84)';
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = 'rgba(245, 197, 56, 0.7)';
+            ctx.stroke();
+
+            const rawLabel =
+              caption.trim() ||
+              `${data.settings?.eventName || 'SMANSAGE VOLLEYBALL COMPETITION'} • ${data.settings?.eventSubtitle || 'AVERSA 44'}`;
+            const fittedStrip = fitSingleLine(
+              ctx,
+              rawLabel,
+              stripW - 36,
+              Math.round(stripH * 0.42),
+              11,
+              '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
+            );
+            ctx.fillStyle = '#FDE68A';
+            ctx.font = `700 ${fittedStrip.fontSize}px "Plus Jakarta Sans", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(fittedStrip.text, w / 2, stripY + stripH / 2 + 1);
+            ctx.textBaseline = 'alphabetic';
+            ctx.restore();
+          }
+          return;
+        }
+
+        // 2. CEREMONY & BOOTH (event_moment): Lower-third elegan dengan pill + judul + subjudul
+        if (template === 'event_moment') {
+          const slideY = (1 - easeOutQuint(cardT)) * 90;
+          const cardW = isLandscape ? Math.round(w * 0.76) : w - pad * 2;
+          const hasNote = Boolean(caption.trim());
+          const cardH = Math.round(u * (hasNote ? 0.215 : 0.185));
+          const cardX = Math.round((w - cardW) / 2);
+          const cardY = h - safeBottom - cardH - Math.round(u * 0.015) + slideY;
+
+          ctx.save();
+          ctx.globalAlpha = easeOutCubic(cardT);
+          drawRoundedRect(ctx, cardX, cardY, cardW, cardH, 22);
+          ctx.fillStyle = 'rgba(11, 16, 30, 0.9)';
+          ctx.fill();
+          ctx.lineWidth = 2.5;
+          ctx.strokeStyle = 'rgba(245, 197, 56, 0.85)';
+          ctx.stroke();
+
+          // Accent Gold Pill Header
+          const badgeTxt = (eventMomentBadge.trim() || 'MOMEN SPESIAL').toUpperCase();
+          const pillH = Math.round(u * 0.04);
+          ctx.font = `800 ${Math.round(pillH * 0.48)}px "Plus Jakarta Sans", sans-serif`;
+          const pillW = Math.min(
+            cardW * 0.82,
+            Math.max(Math.round(u * 0.28), Math.round(ctx.measureText(badgeTxt).width + 36))
+          );
+          const pillX = w / 2 - pillW / 2;
+          const pillY = cardY - pillH / 2;
+          drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 999);
+          ctx.fillStyle = '#F5C538';
+          ctx.fill();
+
+          const fittedPill = fitSingleLine(
+            ctx,
+            badgeTxt,
+            pillW - 22,
+            Math.round(pillH * 0.48),
+            11,
+            '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
+          );
+          ctx.fillStyle = '#0B0F19';
+          ctx.font = `800 ${fittedPill.fontSize}px "Plus Jakarta Sans", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(fittedPill.text, w / 2, pillY + pillH / 2 + 1);
+
+          // Main Title
+          const mainTitleTxt = (eventMomentTitle.trim() || 'AVERSA DIES NATALIS KE-44').toUpperCase();
+          const fittedTitle = fitSingleLine(
+            ctx,
+            mainTitleTxt,
+            cardW - 44,
+            Math.round(u * 0.052),
+            16,
+            '800 {SIZE}px "Barlow Condensed", sans-serif'
+          );
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = `800 ${fittedTitle.fontSize}px "Barlow Condensed", sans-serif`;
+          ctx.fillText(fittedTitle.text, w / 2, cardY + cardH * (hasNote ? 0.42 : 0.48));
+
+          // Subtitle
+          const subTxt = eventMomentSubtitle.trim() || 'SMA Negeri 1 Gedeg • Mojokerto';
+          const fittedSub = fitSingleLine(
+            ctx,
+            subTxt,
+            cardW - 44,
+            Math.round(u * 0.025),
+            11,
+            '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
+          );
+          ctx.fillStyle = '#CBD5E1';
+          ctx.font = `700 ${fittedSub.fontSize}px "Plus Jakarta Sans", sans-serif`;
+          ctx.fillText(fittedSub.text, w / 2, cardY + cardH * (hasNote ? 0.67 : 0.76));
+
+          if (hasNote) {
+            const fittedNote = fitSingleLine(
+              ctx,
+              caption.trim(),
+              cardW - 44,
+              Math.round(u * 0.02),
+              10,
+              '600 {SIZE}px "Plus Jakarta Sans", sans-serif'
+            );
+            ctx.fillStyle = '#FDE68A';
+            ctx.font = `600 ${fittedNote.fontSize}px "Plus Jakarta Sans", sans-serif`;
+            ctx.fillText(fittedNote.text, w / 2, cardY + cardH * 0.86);
+          }
+
+          ctx.textBaseline = 'alphabetic';
+          ctx.restore();
+          return;
+        }
+
+        // 3. TATA TERTIB & LARANGAN (venue_rules): Panel peraturan tegas & mudah dibaca
+        if (template === 'venue_rules') {
+          const cardTop = safeTop + Math.round(u * (photoCredit.trim() ? 0.165 : 0.13));
+          const cardBot = h - safeBottom - Math.round(u * 0.025);
+          const cardH = Math.max(260, cardBot - cardTop);
+          const cardW = isLandscape ? Math.round(w * 0.84) : w - pad * 2;
+          const cardX = Math.round((w - cardW) / 2);
+          const slideOffset = (1 - easeOutQuint(cardT)) * 90;
+          const cardY = cardTop + slideOffset;
+
+          ctx.save();
+          ctx.globalAlpha = easeOutCubic(cardT);
+          drawRoundedRect(ctx, cardX, cardY, cardW, cardH, 26);
+          ctx.fillStyle = 'rgba(11, 16, 30, 0.93)';
+          ctx.fill();
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(239, 68, 68, 0.85)';
+          ctx.stroke();
+
+          // Red/Gold Alert Pill Header
+          const pillH = Math.round(u * 0.048);
+          const pillW = Math.min(cardW * 0.86, Math.round(u * 0.68));
+          const pillX = w / 2 - pillW / 2;
+          const pillY = cardY - pillH / 2;
+          drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 999);
+          ctx.fillStyle = '#DC2626';
+          ctx.fill();
+
+          const rulesHeaderTxt = (venueRulesTitle.trim() || 'TATA TERTIB & LARANGAN ARENA').toUpperCase();
+          const fittedHdr = fitSingleLine(
+            ctx,
+            rulesHeaderTxt,
+            pillW - 28,
+            Math.round(pillH * 0.44),
+            12,
+            '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
+          );
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = `800 ${fittedHdr.fontSize}px "Plus Jakarta Sans", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(fittedHdr.text, w / 2, pillY + pillH / 2 + 1);
+          ctx.textBaseline = 'alphabetic';
+
+          const cleanRules = venueRulesItems.map((r) => r.trim()).filter(Boolean).slice(0, 6);
+          const innerPadX = Math.round(cardW * 0.05);
+          const headerSpace = Math.round(u * 0.046);
+          const footerSpace = caption.trim() ? Math.round(u * 0.052) : Math.round(u * 0.025);
+          const listTop = cardY + headerSpace;
+          const listAvailH = Math.max(120, cardH - headerSpace - footerSpace);
+          const count = Math.max(1, cleanRules.length);
+          const rowGap = Math.max(10, Math.round(listAvailH * 0.028));
+          const rowH = Math.min(
+            Math.round(u * 0.16),
+            Math.floor((listAvailH - rowGap * (count - 1)) / count)
+          );
+          const totalListH = count * rowH + Math.max(0, count - 1) * rowGap;
+          const startRowY = listTop + Math.max(0, Math.round((listAvailH - totalListH) / 2));
+
+          cleanRules.forEach((ruleText, idx) => {
+            const ry = startRowY + idx * (rowH + rowGap);
+            const rx = cardX + innerPadX;
+            const rw = cardW - innerPadX * 2;
+
+            drawRoundedRect(ctx, rx, ry, rw, rowH, 14);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.07)';
+            ctx.fill();
+            ctx.lineWidth = 1.2;
+            ctx.strokeStyle = 'rgba(248, 113, 113, 0.35)';
+            ctx.stroke();
+
+            const numSize = Math.round(Math.min(rowH * 0.56, rw * 0.085));
+            const numX = rx + Math.round(rw * 0.03);
+            const numY = ry + rowH / 2 - numSize / 2;
+            drawRoundedRect(ctx, numX, numY, numSize, numSize, Math.round(numSize * 0.25));
+            ctx.fillStyle = '#DC2626';
+            ctx.fill();
+
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = `800 ${Math.round(numSize * 0.56)}px "Barlow Condensed", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`${idx + 1}`, numX + numSize / 2, ry + rowH / 2 + 1);
+
+            const textLeft = numX + numSize + Math.round(rw * 0.03);
+            const textAvailW = Math.max(80, rx + rw - Math.round(rw * 0.03) - textLeft);
+            const fontBase = Math.round(Math.min(u * 0.028, rowH * 0.28));
+            const fontMin = Math.max(12, Math.round(u * 0.018));
+            const block = measureWrappedBlock(
+              ctx,
+              ruleText,
+              textAvailW,
+              fontBase,
+              fontMin,
+              '700 {SIZE}px "Plus Jakarta Sans", sans-serif',
+              2
+            );
+            ctx.fillStyle = '#F8FAFC';
+            ctx.font = `700 ${block.fontSize}px "Plus Jakarta Sans", sans-serif`;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+            const textStartY =
+              ry + (rowH - block.totalH) / 2 + Math.round(block.fontSize * 0.85);
+            block.lines.forEach((ln, li) => {
+              ctx.fillText(ln, textLeft, textStartY + li * block.lineH);
+            });
+          });
+
+          if (caption.trim()) {
+            const fittedCap = fitSingleLine(
+              ctx,
+              caption.trim(),
+              cardW - 36,
+              Math.round(u * 0.022),
+              11,
+              '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
+            );
+            ctx.fillStyle = '#FDE68A';
+            ctx.font = `700 ${fittedCap.fontSize}px "Plus Jakarta Sans", sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.fillText(fittedCap.text, w / 2, cardY + cardH - Math.round(u * 0.018));
+          }
+          ctx.restore();
+          return;
+        }
+
+        // 4. PENGUMUMAN / INFO CEPAT (announcement): Kartu pengumuman terpusat dengan headline + isi
+        if (template === 'announcement') {
+          const slideY = (1 - easeOutQuint(cardT)) * 95;
+          const cardW = isLandscape ? Math.round(w * 0.78) : w - pad * 2;
+          const bodyStr = announcementBody.trim() || 'Informasi resmi panitia pelaksana.';
+          const bodyMaxW = cardW - 56;
+          const bodyBlock = measureWrappedBlock(
+            ctx,
+            bodyStr,
+            bodyMaxW,
+            Math.round(u * 0.028),
+            13,
+            '600 {SIZE}px "Plus Jakarta Sans", sans-serif',
+            4
+          );
+          const cardH = Math.max(
+            Math.round(u * 0.24),
+            Math.round(u * 0.165) + bodyBlock.totalH + (caption.trim() ? Math.round(u * 0.04) : 0)
+          );
+          const cardX = Math.round((w - cardW) / 2);
+          const cardY = isLandscape
+            ? h - safeBottom - cardH - Math.round(u * 0.015) + slideY
+            : Math.round((h - cardH) / 2) + Math.round(u * 0.04) + slideY;
+
+          ctx.save();
+          ctx.globalAlpha = easeOutCubic(cardT);
+          drawRoundedRect(ctx, cardX, cardY, cardW, cardH, 24);
+          ctx.fillStyle = 'rgba(11, 16, 30, 0.92)';
+          ctx.fill();
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+          ctx.stroke();
+
+          const pillTxt = (announcementBadge.trim() || 'PENGUMUMAN').toUpperCase();
+          const pillH = Math.round(u * 0.044);
+          ctx.font = `800 ${Math.round(pillH * 0.46)}px "Plus Jakarta Sans", sans-serif`;
+          const pillW = Math.min(
+            cardW * 0.82,
+            Math.max(Math.round(u * 0.3), Math.round(ctx.measureText(pillTxt).width + 38))
+          );
+          const pillX = w / 2 - pillW / 2;
+          const pillY = cardY - pillH / 2;
+          drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 999);
+          ctx.fillStyle = '#0284C7';
+          ctx.fill();
+
+          const fittedPill = fitSingleLine(
+            ctx,
+            pillTxt,
+            pillW - 24,
+            Math.round(pillH * 0.46),
+            11,
+            '800 {SIZE}px "Plus Jakarta Sans", sans-serif'
+          );
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = `800 ${fittedPill.fontSize}px "Plus Jakarta Sans", sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(fittedPill.text, w / 2, pillY + pillH / 2 + 1);
+
+          const titleTxt = (announcementTitle.trim() || 'INFO PENONTON & ARENA').toUpperCase();
+          const fittedTitle = fitSingleLine(
+            ctx,
+            titleTxt,
+            cardW - 48,
+            Math.round(u * 0.048),
+            16,
+            '800 {SIZE}px "Barlow Condensed", sans-serif'
+          );
+          ctx.fillStyle = '#FACC15';
+          ctx.font = `800 ${fittedTitle.fontSize}px "Barlow Condensed", sans-serif`;
+          const titleY = cardY + Math.round(u * 0.068);
+          ctx.fillText(fittedTitle.text, w / 2, titleY);
+
+          ctx.fillStyle = '#F8FAFC';
+          ctx.font = `600 ${bodyBlock.fontSize}px "Plus Jakarta Sans", sans-serif`;
+          ctx.textBaseline = 'alphabetic';
+          const bodyStartY = titleY + Math.round(u * 0.045);
+          bodyBlock.lines.forEach((ln, li) => {
+            ctx.fillText(ln, w / 2, bodyStartY + li * bodyBlock.lineH);
+          });
+
+          if (caption.trim()) {
+            const fittedCap = fitSingleLine(
+              ctx,
+              caption.trim(),
+              cardW - 44,
+              Math.round(u * 0.02),
+              10,
+              '700 {SIZE}px "Plus Jakarta Sans", sans-serif'
+            );
+            ctx.fillStyle = '#94A3B8';
+            ctx.font = `700 ${fittedCap.fontSize}px "Plus Jakarta Sans", sans-serif`;
+            ctx.fillText(fittedCap.text, w / 2, cardY + cardH - Math.round(u * 0.018));
+          }
+
+          ctx.restore();
+          return;
+        }
+
         const slideY = (1 - easeOutQuint(cardT)) * 120;
         const floatY = animSlide ? Math.sin(globalT * 2.1) * 4 : 0;
         const boxW = isLandscape ? Math.round(w * 0.71) : w - pad * 2;
@@ -2199,7 +2611,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         // ================================================================
         // CHAMPION / PODIUM DEDICATED CARD BODY
         // ================================================================
-        if (template === 'champion') {
+    if (template === 'champion') {
           if (podiumVariant === 'podium_all') {
             const rows: Array<{
               rank: string;
@@ -2436,6 +2848,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           ctx.restore();
           return;
         }
+
 
         // Center Score inside [boxY + 0.18*boxH .. boxY + 0.72*boxH]
         const countEase = animSlide ? easeOutQuint(clamp01((uiProgress - 0.18) / 0.82)) : 1;
@@ -2690,11 +3103,19 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 : 'CHAMPIONS'
           : template === 'schedule_day'
             ? `JADWAL • ${activeScheduleDay?.dayLabel?.toUpperCase() || 'PERTANDINGAN'}`
-            : template === 'final'
-              ? `${stageDisplayBadge} • FINAL`
-              : template === 'upcoming'
-                ? `${stageDisplayBadge} • UPCOMING`
-                : `${stageDisplayBadge} • LIVE`;
+            : template === 'clean_frame'
+              ? (data.settings?.eventName || 'AVERSA 44 • SMANSAGE').toUpperCase()
+              : template === 'event_moment'
+                ? (eventMomentBadge.trim() || 'MOMEN SPESIAL').toUpperCase()
+                : template === 'venue_rules'
+                  ? (venueRulesTitle.trim() || 'TATA TERTIB ARENA').toUpperCase()
+                  : template === 'announcement'
+                    ? (announcementBadge.trim() || 'PENGUMUMAN').toUpperCase()
+                    : template === 'final'
+                      ? `${stageDisplayBadge} • FINAL`
+                      : template === 'upcoming'
+                        ? `${stageDisplayBadge} • UPCOMING`
+                        : `${stageDisplayBadge} • LIVE`;
 
       // ----------------------------------------------------------------
       // LAYER HELPER A: Scene 1 (SVC Poster Intro — 16:9 2-Column & Sequential Y-Flow)
@@ -2967,6 +3388,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           return;
         }
 
+
         // ============================================================
         // 9:16, 4:5, & 1:1 SEQUENTIAL Y-CURSOR FLOW (0% Overlap)
         // ============================================================
@@ -3077,7 +3499,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       // LAYER HELPER B: Scene 3 (Matchup VS or Championship Coronation Reveal)
       // ----------------------------------------------------------------
       const drawScene3Matchup = (time: number, doorSplit: number) => {
-        if (template === 'champion') {
+    if (template === 'champion') {
           const enterP = clamp01((time - 4.32) / 0.88);
           const spotTeam =
             podiumVariant === 'runner_up'
@@ -4256,6 +4678,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
           return;
         }
 
+
         // ============================================================
         // 9:16, 4:5, & 1:1 CENTERED & TIGHTLY HUGGED OUTRO STACK
         // ============================================================
@@ -4349,11 +4772,55 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       // COMPOSITE TIMELINE WITH SMOOTH OVERLAPPING TRANSITIONS
       // ================================================================
 
+      const skipMatchup = template === 'schedule_day' || isNonMatchTemplate(template);
+
+      // 0. DIRECT TO SCENE 4 WHEN INTRO IS DISABLED
+      if (!includeIntro) {
+        const shouldRunOutroDirect = includeOutro && t >= timeline.outroStartSec;
+        if (!shouldRunOutroDirect) {
+          drawPhotoAndScoreboard(t, clamp01(t / 0.65), true, t);
+          drawSafeZoneOverlay();
+          return;
+        }
+        if (t < timeline.outroWipeEndSec) {
+          drawPhotoAndScoreboard(t, 1, true, t);
+          const wipeP = easeFluidCurtain(
+            clamp01((t - timeline.outroStartSec) / 1.08)
+          );
+          const leadX = -w * 0.45 + wipeP * (w * 2.15);
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(-w * 0.6, 0);
+          ctx.lineTo(leadX, 0);
+          ctx.lineTo(leadX - w * 0.35, h);
+          ctx.lineTo(-w * 0.95, h);
+          ctx.closePath();
+          ctx.clip();
+          drawScene5Outro(t, timeline.outroStartSec);
+          ctx.restore();
+          ctx.save();
+          ctx.fillStyle = '#F5C538';
+          ctx.beginPath();
+          ctx.moveTo(leadX - w * 0.045, 0);
+          ctx.lineTo(leadX + w * 0.02, 0);
+          ctx.lineTo(leadX - w * 0.33, h);
+          ctx.lineTo(leadX - w * 0.395, h);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+          drawSafeZoneOverlay();
+          return;
+        }
+        drawScene5Outro(t, timeline.outroStartSec);
+        drawSafeZoneOverlay();
+        return;
+      }
+
       // 1. INTRO & STINGER WIPES (0.0s - 5.25s)
       if (t < 5.25) {
         if (t < 4.4) {
           drawScene1Intro(t);
-        } else if (template === 'schedule_day') {
+        } else if (skipMatchup) {
           drawPhotoAndScoreboard(Math.max(0, t - 4.4), clamp01((t - 4.4) / 0.85), true, t);
         } else {
           drawScene3Matchup(t, 0);
@@ -4574,9 +5041,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         return;
       }
 
-      // 2. PURE SCENE 3 MATCHUP (5.25s - 7.60s) — skipped in Daily Schedule mode
+      // 2. PURE SCENE 3 MATCHUP (5.25s - 7.60s) — skipped in Daily Schedule & Non-Match modes
       if (t < 7.6) {
-        if (template === 'schedule_day') {
+        if (skipMatchup) {
           drawPhotoAndScoreboard(Math.max(0, t - 4.4), 1, true, t);
         } else {
           drawScene3Matchup(t, 0);
@@ -4588,13 +5055,11 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       // 3. FLUID SHUTTER-DOOR TRANSITION (7.60s - 8.85s) + ADAPTIVE SCENE 4 HOLD
       const shouldRunOutro = includeOutro && t >= timeline.outroStartSec;
       if (!shouldRunOutro) {
-        const elapsedInScene4 =
-          template === 'schedule_day' ? Math.max(0, t - 4.4) : Math.max(0, t - 7.6);
-        const uiProgress =
-          template === 'schedule_day' ? 1 : clamp01((t - 7.78) / 0.92);
+        const elapsedInScene4 = skipMatchup ? Math.max(0, t - 4.4) : Math.max(0, t - 7.6);
+        const uiProgress = skipMatchup ? 1 : clamp01((t - 7.78) / 0.92);
         drawPhotoAndScoreboard(elapsedInScene4, uiProgress, true, t);
 
-        if (t < 8.88 && template !== 'schedule_day') {
+        if (t < 8.88 && !skipMatchup) {
           const doorSplit = easeFluidCurtain(clamp01((t - 7.6) / 1.22));
           drawScene3Matchup(t, doorSplit);
         }
@@ -4605,8 +5070,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
       // 4. SMOOTH DIAGONAL GOLD WIPE FROM SCENE 4 -> SCENE 5 OUTRO
       if (t < timeline.outroWipeEndSec) {
-        const elapsedInScene4 =
-          template === 'schedule_day' ? Math.max(0, t - 4.4) : Math.max(0, t - 7.6);
+        const elapsedInScene4 = skipMatchup ? Math.max(0, t - 4.4) : Math.max(0, t - 7.6);
         drawPhotoAndScoreboard(elapsedInScene4, 1, true, t);
 
         const wipeP = easeFluidCurtain(
@@ -4678,7 +5142,17 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       timeline.outroWipeEndSec,
       upcomingSchedule,
       upcomingCourt,
+      includeIntro,
       includeOutro,
+      cleanFrameShowFooter,
+      eventMomentBadge,
+      eventMomentTitle,
+      eventMomentSubtitle,
+      venueRulesTitle,
+      venueRulesItems,
+      announcementBadge,
+      announcementTitle,
+      announcementBody,
       activeMatch,
       teamA,
       teamB,
@@ -5210,7 +5684,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         return;
       }
 
-      const relSec = Math.max(0, elapsedSec - 7.6);
+      const relSec = Math.max(0, elapsedSec - timeline.scene4StartSec);
       const targetSec = Math.min(videoClip.trimEnd, videoClip.trimStart + relSec);
       if (v.paused && targetSec < videoClip.trimEnd - 0.05) {
         v.play().catch(() => {});
@@ -5287,7 +5761,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
   const handleShuffleTrack = () => {
     stopMiniAudio();
     setAudioMode('auto');
-    const next = pickSmartRandomTrack(template, { excludeId: selectedTrackId });
+    const next = pickSmartRandomTrack(toAudioTarget(template), { excludeId: selectedTrackId });
     setSelectedTrackId(next.id);
   };
 
@@ -5414,7 +5888,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
           const mediaNode = ctx.createMediaElementSource(clipAudioEl);
           const clipGain = ctx.createGain();
-          const clipStartCtx = startAt + 7.6;
+          const clipStartCtx = startAt + timeline.scene4StartSec;
           const safeSpan = Math.max(0.3, timeline.scene4HoldSec);
 
           clipGain.gain.setValueAtTime(0.0001, ctx.currentTime);
@@ -5579,7 +6053,9 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
       const baseSlug =
         template === 'schedule_day'
           ? `JADWAL-${(activeScheduleDay?.dayLabel || 'HARIAN').replace(/[^a-zA-Z0-9]+/g, '-')}`
-          : `${teamA?.shortCode || 'TIMA'}-vs-${teamB?.shortCode || 'TIMB'}`;
+          : isNonMatchTemplate(template)
+            ? template.toUpperCase().replace(/[^a-zA-Z0-9]+/g, '-')
+            : `${teamA?.shortCode || 'TIMA'}-vs-${teamB?.shortCode || 'TIMB'}`;
 
       renderFrame(0, false, false, '9:16');
       const linkStory = document.createElement('a');
@@ -5619,6 +6095,33 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
         return `• ${rawTime} | ${tA} vs ${tB}`;
       });
       return `📅 JADWAL PERTANDINGAN — ${dayTitle.toUpperCase()}\n${eventTitle} (${tournament?.name || 'Umum'})\n\n${lines.join('\n') || 'Jadwal segera diperbarui.'}${noteLine}${creditLine}\n\n${hashtags}`;
+    }
+
+    if (template === 'clean_frame') {
+      return `📸 ${eventTitle}${noteLine}${creditLine}\n\n${subTitle}\n${hashtags}`;
+    }
+
+    if (template === 'event_moment') {
+      const badgeStr = (eventMomentBadge.trim() || 'MOMEN SPESIAL').toUpperCase();
+      const titleStr = eventMomentTitle.trim() || eventTitle;
+      const subStr = eventMomentSubtitle.trim() ? `\n📍 ${eventMomentSubtitle.trim()}` : '';
+      return `✨ ${badgeStr} — ${titleStr}${subStr}${noteLine}${creditLine}\n\n${subTitle}\n${hashtags}`;
+    }
+
+    if (template === 'venue_rules') {
+      const rulesHdr = (venueRulesTitle.trim() || 'TATA TERTIB & LARANGAN ARENA').toUpperCase();
+      const rulesList = venueRulesItems
+        .map((r, i) => (r.trim() ? `${i + 1}. ${r.trim()}` : ''))
+        .filter(Boolean)
+        .join('\n');
+      return `⚠️ ${rulesHdr}\n${eventTitle}\n\n${rulesList}${noteLine}${creditLine}\n\n${subTitle}\n${hashtags}`;
+    }
+
+    if (template === 'announcement') {
+      const annHdr = (announcementBadge.trim() || 'PENGUMUMAN').toUpperCase();
+      const annTtl = announcementTitle.trim() || eventTitle;
+      const annTxt = announcementBody.trim();
+      return `📢 ${annHdr}: ${annTtl}\n\n${annTxt}${noteLine}${creditLine}\n\n${subTitle}\n${hashtags}`;
     }
 
     if (template === 'champion') {
@@ -6006,7 +6509,33 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 </div>
               </div>
 
-              {template === 'schedule_day' ? (
+              {isNonMatchTemplate(template) ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3.5 py-2.5">
+                  <div>
+                    <div className="text-xs font-extrabold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+                      Mode Umum / Non-Pertandingan
+                    </div>
+                    <div className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                      Template ini tidak terhubung ke jadwal maupun skor pertandingan.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setTemplate(
+                        activeMatch?.status === 'live'
+                          ? 'live'
+                          : activeMatch?.status === 'finished'
+                            ? 'final'
+                            : 'upcoming'
+                      )
+                    }
+                    className="rounded-lg border border-emerald-600/30 bg-white px-2.5 py-1.5 text-[11px] font-bold text-emerald-800 hover:bg-emerald-50 dark:bg-slate-900 dark:text-emerald-300"
+                  >
+                    Kembali ke Match
+                  </button>
+                </div>
+              ) : template === 'schedule_day' ? (
                 <div>
                   <div className="mb-1.5 flex items-center justify-between gap-2">
                     <label className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
@@ -6094,7 +6623,7 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
                     Sumber Media
                   </label>
-                  <InfoTooltip text="Foto mendukung 1–3 gambar (kolase & slideshow); Klip Video mendukung trimmer ala WhatsApp maks 15 detik." />
+                  <InfoTooltip text="Foto mendukung 1–3 gambar (kolase & slideshow); Klip Video mendukung trimmer ala WhatsApp maks 60 detik." />
                 </div>
                 <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1 dark:bg-slate-950">
                   <button
@@ -6439,6 +6968,34 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                       </button>
                     ))}
                   </div>
+                  <div className="mb-1.5 mt-3 flex items-center gap-1.5">
+                    <label className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                      Umum / Non-Pertandingan (Bebas Jadwal)
+                    </label>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(
+                      [
+                        ['clean_frame', 'FRAME POLOS'],
+                        ['event_moment', 'CEREMONY / BOOTH'],
+                        ['venue_rules', 'TATA TERTIB'],
+                        ['announcement', 'PENGUMUMAN'],
+                      ] as const
+                    ).map(([val, label]) => (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setTemplate(val)}
+                        className={`flex items-center justify-between rounded-xl border px-3 py-2 text-left text-xs font-bold transition ${
+                          template === val
+                            ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                            : 'border-slate-200 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        <span>{label}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div>
@@ -6596,6 +7153,178 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                       ))}
                     </div>
                   )}
+                </div>
+              ) : template === 'clean_frame' ? (
+                <div className="space-y-2 rounded-2xl border border-emerald-500/35 bg-emerald-500/8 p-3.5">
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+                    Pengaturan Frame Polos
+                  </div>
+                  <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={cleanFrameShowFooter}
+                      onChange={(e) => setCleanFrameShowFooter(e.target.checked)}
+                    />
+                    <span>Tampilkan Strip Nama Acara / Catatan di Bawah</span>
+                  </label>
+                </div>
+              ) : template === 'event_moment' ? (
+                <div className="space-y-2.5 rounded-2xl border border-emerald-500/35 bg-emerald-500/8 p-3.5">
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+                    Ceremony / Booth / Sponsor Speech
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      'OPENING CEREMONY',
+                      'SPONSOR SPEECH',
+                      'BOOTH BAZAR',
+                      'SPONSOR SPOTLIGHT',
+                      'CLOSING CEREMONY',
+                    ].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setEventMomentBadge(preset)}
+                        className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                          eventMomentBadge === preset
+                            ? 'border-amber-500 bg-amber-400 text-slate-950'
+                            : 'border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <input
+                      type="text"
+                      value={eventMomentBadge}
+                      onChange={(e) => setEventMomentBadge(e.target.value)}
+                      placeholder="Lencana Atas (mis. SPONSOR SPEECH)"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"
+                    />
+                    <input
+                      type="text"
+                      value={eventMomentTitle}
+                      onChange={(e) => setEventMomentTitle(e.target.value)}
+                      placeholder="Judul Utama / Nama Pembicara / Brand"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"
+                    />
+                  </div>
+                  <input
+                    type="text"
+                    value={eventMomentSubtitle}
+                    onChange={(e) => setEventMomentSubtitle(e.target.value)}
+                    placeholder="Subjudul / Jabatan / Lokasi Booth"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-900"
+                  />
+                </div>
+              ) : template === 'venue_rules' ? (
+                <div className="space-y-2.5 rounded-2xl border border-red-500/35 bg-red-500/8 p-3.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold uppercase tracking-wider text-red-700 dark:text-red-300">
+                      Tata Tertib &amp; Larangan Penonton
+                    </span>
+                    {venueRulesItems.length < 6 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setVenueRulesItems((prev) => [...prev, 'Patuhi arahan panitia di arena.'])
+                        }
+                        className="rounded-lg border border-red-500/30 bg-white px-2.5 py-1 text-[11px] font-bold text-red-700 hover:bg-red-50 dark:bg-slate-900 dark:text-red-300"
+                      >
+                        + Tambah Poin
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    value={venueRulesTitle}
+                    onChange={(e) => setVenueRulesTitle(e.target.value)}
+                    placeholder="Judul Kartu Peraturan"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"
+                  />
+                  <div className="space-y-1.5">
+                    {venueRulesItems.map((rule, rIdx) => (
+                      <div key={rIdx} className="flex items-center gap-1.5">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-red-600 text-[11px] font-extrabold text-white">
+                          {rIdx + 1}
+                        </span>
+                        <input
+                          type="text"
+                          value={rule}
+                          onChange={(e) =>
+                            setVenueRulesItems((prev) =>
+                              prev.map((it, idx) => (idx === rIdx ? e.target.value : it))
+                            )
+                          }
+                          className="flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold dark:border-slate-700 dark:bg-slate-900"
+                        />
+                        {venueRulesItems.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setVenueRulesItems((prev) => prev.filter((_, idx) => idx !== rIdx))
+                            }
+                            className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-bold text-slate-600 hover:text-red-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
+                            title="Hapus poin"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : template === 'announcement' ? (
+                <div className="space-y-2.5 rounded-2xl border border-sky-500/35 bg-sky-500/8 p-3.5">
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-sky-800 dark:text-sky-300">
+                    Pengumuman / Info Cepat
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      'PENGUMUMAN',
+                      'OPEN GATE TRIBUN',
+                      'INFO TIKET & PARKIR',
+                      'LIVE STREAMING ON AIR',
+                    ].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setAnnouncementBadge(preset)}
+                        className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
+                          announcementBadge === preset
+                            ? 'border-sky-500 bg-sky-500 text-slate-950'
+                            : 'border-slate-200 bg-white text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <input
+                      type="text"
+                      value={announcementBadge}
+                      onChange={(e) => setAnnouncementBadge(e.target.value)}
+                      placeholder="Lencana (mis. PENGUMUMAN)"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"
+                    />
+                    <input
+                      type="text"
+                      value={announcementTitle}
+                      onChange={(e) => setAnnouncementTitle(e.target.value)}
+                      placeholder="Judul Pengumuman"
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"
+                    />
+                  </div>
+                  <textarea
+                    rows={2}
+                    value={announcementBody}
+                    onChange={(e) => setAnnouncementBody(e.target.value)}
+                    placeholder="Tulis isi pengumuman singkat..."
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-900"
+                  />
                 </div>
               ) : (
                 <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/80 p-3.5 dark:border-slate-800 dark:bg-slate-950/60">
@@ -6895,17 +7624,28 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
                 </div>
               </div>
 
-              <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold dark:border-slate-800 dark:bg-slate-950">
-                <input
-                  type="checkbox"
-                  checked={includeOutro}
-                  onChange={(e) => setIncludeOutro(e.target.checked)}
-                />
-                <span>
-                  Outro Penyelenggara &amp; Sponsor ({sponsorList.length} logo)
-                </span>
-                <InfoTooltip text="Tambahkan layar penutup logo SVC/AVERSA dan seluruh logo sponsor di akhir video." />
-              </label>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold dark:border-slate-800 dark:bg-slate-950">
+                  <input
+                    type="checkbox"
+                    checked={includeIntro}
+                    onChange={(e) => setIncludeIntro(e.target.checked)}
+                  />
+                  <span>Intro Pembuka 3D</span>
+                  <InfoTooltip text="Matikan jika ingin video ber-frame langsung tanpa animasi pembuka." />
+                </label>
+                <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold dark:border-slate-800 dark:bg-slate-950">
+                  <input
+                    type="checkbox"
+                    checked={includeOutro}
+                    onChange={(e) => setIncludeOutro(e.target.checked)}
+                  />
+                  <span>
+                    Outro Sponsor ({sponsorList.length} logo)
+                  </span>
+                  <InfoTooltip text="Tambahkan layar penutup logo SVC/AVERSA dan seluruh logo sponsor di akhir video." />
+                </label>
+              </div>
 
               <div className="flex justify-between pt-2">
                 <button
@@ -7009,20 +7749,22 @@ export function MediaStudio({ data, onRefresh }: MediaStudioProps) {
 
                 <button
                   type="button"
-                  disabled={publishing || !activeMatch}
+                  disabled={publishing || !activeMatch || isNonMatchTemplate(template)}
                   onClick={handlePublish}
                   className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-3 text-xs font-bold text-slate-950 shadow-lg shadow-amber-500/20 transition hover:bg-amber-400 disabled:opacity-50 sm:col-span-2"
                 >
                   <Send className="h-4 w-4" />
-                  {publishing
-                    ? 'Mengunggah ke Galeri...'
-                    : exportedVideoBlob
-                      ? 'Publish Video Broadcast & Poster'
-                      : mediaMode === 'video' && videoClip
-                        ? 'Publish Video Klip & Poster'
-                        : mediaMode === 'photo' && photoItems.length > 1
-                          ? `Publish Slide (${photoItems.length} Foto + Poster)`
-                          : 'Publish ke Galeri Momen'}
+                  {isNonMatchTemplate(template)
+                    ? 'Mode Non-Pertandingan (Gunakan Unduh PNG / Paket IG / Video MP4)'
+                    : publishing
+                      ? 'Mengunggah ke Galeri...'
+                      : exportedVideoBlob
+                        ? 'Publish Video Broadcast & Poster'
+                        : mediaMode === 'video' && videoClip
+                          ? 'Publish Video Klip & Poster'
+                          : mediaMode === 'photo' && photoItems.length > 1
+                            ? `Publish Slide (${photoItems.length} Foto + Poster)`
+                            : 'Publish ke Galeri Momen'}
                 </button>
               </div>
 
