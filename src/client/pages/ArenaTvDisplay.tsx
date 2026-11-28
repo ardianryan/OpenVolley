@@ -111,7 +111,9 @@ function SplitCourtPanel({
   const teamB = match.teamBId ? teamMap.get(match.teamBId) : null;
   const category = tournamentMap.get(match.tournamentId);
   const activeSet = match.sets.find((s) => s.setNumber === match.currentSet);
-  const lastSet = match.sets.length > 0 ? match.sets[match.sets.length - 1] : undefined;
+  const lastSet =
+    [...match.sets].reverse().find((s) => s.isFinished || s.scoreA > 0 || s.scoreB > 0) ??
+    (match.sets.length > 0 ? match.sets[match.sets.length - 1] : undefined);
   const isLive = match.status === 'live';
   const isFinished = match.status === 'finished';
   const isWinnerA = Boolean(isFinished && match.winnerId && match.winnerId === match.teamAId);
@@ -732,7 +734,10 @@ export function ArenaTvDisplay() {
   );
   const lastPlayedSet =
     primaryMatch && primaryMatch.sets.length > 0
-      ? primaryMatch.sets[primaryMatch.sets.length - 1]
+      ? ([...primaryMatch.sets]
+          .reverse()
+          .find((s) => s.isFinished || s.scoreA > 0 || s.scoreB > 0) ??
+        primaryMatch.sets[primaryMatch.sets.length - 1])
       : undefined;
   const isLive = primaryMatch?.status === 'live';
   const isFinished = primaryMatch?.status === 'finished';

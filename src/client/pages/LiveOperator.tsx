@@ -44,7 +44,7 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
     willWinMatch: boolean;
   } | null>(null);
   const [confirmModal, setConfirmModal] = useState<{
-    type: 'finish' | 'reset';
+    type: 'finish' | 'reset' | 'extra_set';
     winnerSide?: 'A' | 'B';
   } | null>(null);
 
@@ -1290,7 +1290,7 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => runAction('extra_set')}
+                  onClick={() => setConfirmModal({ type: 'extra_set' })}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2 text-xs font-bold text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
                 >
                   <Plus className="h-3.5 w-3.5" />
@@ -1356,7 +1356,11 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
                       : 'confirm_match_finish'
                   )
                 }
-                className="w-full rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs font-bold text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
+                className={
+                  setDecisionPrompt.willWinMatch
+                    ? 'w-full rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800'
+                    : 'w-full rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs font-bold text-amber-600 hover:bg-amber-500/20 dark:text-amber-400'
+                }
               >
                 {setDecisionPrompt.willWinMatch
                   ? `Tambah 1 Set Baru (Lanjut Set ${setDecisionPrompt.setNumber + 1})`
@@ -1383,14 +1387,18 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
             <h3 className="text-base font-bold text-slate-900 dark:text-white">
               {confirmModal.type === 'reset'
                 ? 'Reset Skor & Status Permainan?'
-                : 'Selesaikan Pertandingan?'}
+                : confirmModal.type === 'extra_set'
+                  ? 'Buka Set Tambahan (0-0)?'
+                  : 'Selesaikan Pertandingan?'}
             </h3>
             <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
               {confirmModal.type === 'reset'
                 ? 'Semua poin, set, dan status pertandingan ini akan dikembalikan ke kondisi awal (belum dimulai). Jika tim telah lolos ke babak berikutnya (seperti Quarter Final), kelulusannya akan otomatis ditarik kembali dari bagan.'
-                : `Tim ${
-                    confirmModal.winnerSide === 'A' ? teamA?.name : teamB?.name
-                  } akan dinyatakan menang dan otomatis lolos ke babak berikutnya.`}
+                : confirmModal.type === 'extra_set'
+                  ? 'Pertandingan yang sudah selesai akan dibuka kembali menjadi LIVE dengan set baru 0-0, dan kelulusan pemenang di bagan berikutnya akan ditarik sementara sampai set tambahan diselesaikan.'
+                  : `Tim ${
+                      confirmModal.winnerSide === 'A' ? teamA?.name : teamB?.name
+                    } akan dinyatakan menang dan otomatis lolos ke babak berikutnya.`}
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <button
@@ -1406,7 +1414,9 @@ export function LiveOperator({ data, onRefresh }: LiveOperatorProps) {
                 onClick={() =>
                   confirmModal.type === 'reset'
                     ? runAction('reset')
-                    : runAction('finish', { team: confirmModal.winnerSide })
+                    : confirmModal.type === 'extra_set'
+                      ? runAction('extra_set')
+                      : runAction('finish', { team: confirmModal.winnerSide })
                 }
                 className={`rounded-xl px-4 py-2 text-xs font-bold text-white ${
                   confirmModal.type === 'reset'
